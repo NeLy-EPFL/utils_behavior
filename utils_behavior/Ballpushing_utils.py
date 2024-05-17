@@ -35,14 +35,10 @@ from moviepy.editor import VideoFileClip
 from moviepy.video.fx import all as vfx
 import pygame
 
+from .Utils import *
+from .Processing import *
 
-sys.path.insert(0, "..")
-sys.path.insert(0, "../..")
-sys.path.append("/home/durrieu/Tracking_Analysis/Utilities")
-from Utils import *
-from Processing import *
-
-from HoloviewsTemplates import hv_main
+from .HoloviewsTemplates import hv_main
 
 brain_regions_path = get_labserver() / "Experimental_data/Region_map_240122.csv"
 

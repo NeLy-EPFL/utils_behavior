@@ -131,6 +131,8 @@ def get_labserver():
     Path: The data path.
     """
 
+    print("bonsoir monsieur")
+
     if platform.system() == "Darwin":
         return Path("/Volumes/Ramdya-Lab/DURRIEU_Matthias/")
     elif platform.system() == "Linux":

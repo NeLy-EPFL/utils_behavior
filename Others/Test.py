@@ -10,7 +10,7 @@ sys.path.insert(0, "../..")
 sys.path.insert(0, "..")
 sys.path.insert(0, "../../..")
 
-from Utilities.Utils import *
+from Utils import *
 
 time.sleep(20)
 

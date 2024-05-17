@@ -39,8 +39,8 @@ import pygame
 sys.path.insert(0, "..")
 sys.path.insert(0, "../..")
 sys.path.append("/home/durrieu/Tracking_Analysis/Utilities")
-from Utilities.Utils import *
-from Utilities.Processing import *
+from Utils import *
+from Processing import *
 
 from HoloviewsTemplates import hv_main
 

@@ -40,6 +40,10 @@ from .Processing import *
 
 from .HoloviewsTemplates import hv_main
 
+sys.modules["Ballpushing_utils"] = sys.modules[
+    __name__
+]  # This line creates an alias for utils_behavior.Ballpushing_utils to utils_behavior.__init__ so that the previously made pkl files can be loaded.
+
 brain_regions_path = get_labserver() / "Experimental_data/Region_map_240122.csv"
 
 

@@ -100,7 +100,25 @@ hv_irene = {
 # Custom Jitterboxplot function
 
 
-def compute_controls_bs_ci(data, metric, ctrl_label, kdims="Genotype"):
+def clean_data(data, vdim, groupby=None):
+
+    if groupby:
+        # Filter out groups where the vdim column is all NaN
+        data = data.groupby(groupby).filter(lambda x: x[vdim].notna().any())
+    else:
+        # Filter out groups where the vdim column is all NaN
+        data = data[data[vdim].notna()]
+
+    # Clean the data by removing NaN values for this metric
+    data = data.dropna(subset=[vdim])
+
+    # Convert vdim to numeric
+    data[vdim] = pd.to_numeric(data[vdim], errors="coerce")
+
+    return data
+
+
+def compute_controls_bs_ci(data, metric):
     """
     Compute a 95% bootstrap confidence interval for a given metric for flies with specified genotypes. The default usage is to compute the confidence interval for the control genotypes, which are the ones set as default in the genotypes argument. Currently excluded Genotypes that are technically controls : , "TNTxZ2035", "TNTxM6", "TNTxM7"
 
@@ -114,21 +132,195 @@ def compute_controls_bs_ci(data, metric, ctrl_label, kdims="Genotype"):
         np.ndarray: The lower and upper confidence interval bounds.
     """
 
-    # Filter the dataset for flies with control genotypes
-    control_data = data[data[kdims] == ctrl_label]
-
-    # Check if there are any control flies in the dataset
-    if control_data.empty:
-        ic("No flies with control genotypes found in the dataset.")
-        return None
-
     # Drop rows with NaN values in the metric column
-    control_data = control_data.dropna(subset=[metric])
+    data = data.dropna(subset=[metric])
 
     # Compute the bootstrap confidence interval for the given metric
-    ci = Processing.draw_bs_ci(control_data[metric].values)
+    ci = Processing.draw_bs_ci(data[metric].values)
 
     return ci
+
+
+def compute_hline_values(data, vdim, hline_method):
+    if hline_method == "bootstrap":
+        return compute_controls_bs_ci(data, vdim)
+    elif hline_method == "boxplot":
+        # Calculate 25% and 75% quantiles for the control group
+        return (
+            data[vdim].quantile(0.25),
+            data[vdim].quantile(0.75),
+        )
+    else:
+        raise ValueError(
+            "Invalid hline_method. Choose either 'bootstrap' or 'boxplot'."
+        )
+
+
+def create_jitterboxplot(
+    data,
+    vdim,
+    kdims,
+    plot_options,
+    y_min,
+    y_max,
+    hover,
+    metadata=None,
+    scatter_color="black",
+    control=False,
+):
+    """Helper function to create a plot."""
+    scatterplot = hv.Scatter(
+        data=data,
+        vdims=[vdim] + (metadata if metadata is not None else []) + ["fly"],
+        kdims=[kdims],
+    ).opts(
+        **plot_options["scatter"],
+        color=scatter_color,
+        tools=[hover],
+        ylim=(y_min, y_max),
+    )
+
+    boxplot = hv.BoxWhisker(
+        data=data,
+        vdims=vdim,
+        kdims=[kdims],
+    ).opts(**plot_options["boxwhisker"], ylim=(y_min, y_max))
+
+    if control:
+        boxplot = boxplot.opts(box_line_color="green")
+        scatterplot = scatterplot.opts(color="green")
+
+    return boxplot, scatterplot
+
+
+def create_groupby_plots(
+    data,
+    kdims,
+    vdim,
+    groupby,
+    control=None,
+    sort_by=None,
+    scale_max=False,
+    metadata=None,
+    hline=None,  # Changed hline_values to hline
+    plot_options=hv_main,
+    layout=False,
+):
+    data = clean_data(data, vdim, groupby)
+
+    # Pre-calculate common values
+    y_max = data[vdim].quantile(0.95) if scale_max else data[vdim].max()
+    y_min = data[vdim].min()
+
+    # Ensure control is a list
+    if control and not isinstance(control, list):
+        control = [control]
+
+    # Use control argument to get control_data
+    if control:
+        control_data = data[data[kdims].isin(control)]
+    else:
+        control_data = None
+
+    # Get the group value for the control group
+    if control:
+        control_group = control_data[groupby].unique()[0]
+        print(control_group)
+
+    hline_values = None  # Initialize hline_values
+    if control and hline:  # Changed hline_values to hline
+        hline_values = compute_hline_values(
+            control_data,
+            vdim,
+            hline,
+        )
+
+    plots = {}
+    for group in data[groupby].unique():
+        # Use list comprehension for tooltips
+        tooltips = [
+            ("Fly", "@fly"),
+            (vdim.capitalize(), f"@{vdim}"),
+        ]
+        if metadata is not None:
+            tooltips.extend([(var.capitalize(), f"@{var}") for var in metadata])
+
+        hover = HoverTool(tooltips=tooltips)
+        group_data = data[data[groupby] == group]
+
+        if sort_by == "median":
+            median_values = group_data.groupby(kdims)[vdim].median().sort_values()
+            group_data["median"] = group_data[kdims].map(median_values)
+            group_data = group_data.sort_values("median")
+
+        else:
+            # Return the original order with a warning message
+            print(
+                "Invalid sort_by option. No sorting applied. The data will be displayed in the original order."
+            )
+
+        boxplot, scatterplot = create_jitterboxplot(
+            data=group_data,
+            vdim=vdim,
+            kdims=kdims,
+            plot_options=plot_options,
+            y_min=y_min,
+            y_max=y_max,
+            hover=hover,
+            metadata=metadata,
+            scatter_color=kdims,
+        )
+
+        if control and group != control_group:
+            control_boxplot, control_scatterplot = create_jitterboxplot(
+                data=control_data,
+                vdim=vdim,
+                kdims=kdims,
+                plot_options=plot_options,
+                y_min=y_min,
+                y_max=y_max,
+                hover=hover,
+                metadata=metadata,
+                scatter_color="green",
+            )
+
+        if hline_values is not None:
+            hv_hline = hv.HSpan(hline_values[0], hline_values[1]).opts(
+                fill_alpha=0.2, color="red"
+            )
+
+        if control and group != control_group:
+            if hline_values is not None:
+                plot = (
+                    hv_hline
+                    * boxplot
+                    * scatterplot
+                    * control_boxplot
+                    * control_scatterplot
+                ).opts(ylabel=f"{vdim}", **plot_options["plot"])
+            else:
+                plot = (
+                    boxplot * scatterplot * control_boxplot * control_scatterplot
+                ).opts(ylabel=f"{vdim}", **plot_options["plot"])
+        else:
+            if hline_values is not None:
+                plot = (hv_hline * boxplot * scatterplot).opts(
+                    ylabel=f"{vdim}", **plot_options["plot"]
+                )
+            else:
+                plot = (boxplot * scatterplot).opts(
+                    ylabel=f"{vdim}", **plot_options["plot"]
+                )
+
+        plots[group] = plot
+
+    # Create a Layout or a HoloMap with the jitter boxplots for each group
+    if layout:
+        jitter_boxplot = hv.Layout(plots).cols(2)
+    else:
+        jitter_boxplot = hv.HoloMap(plots, kdims=[groupby])
+
+    return jitter_boxplot
 
 
 def jitter_boxplot(
@@ -223,7 +415,6 @@ def jitter_boxplot(
         )
 
         if region != "Control":
-            control_data = data[data[kdims] == "TNTxZ2018"]
             control_boxplot = hv.BoxWhisker(
                 data=control_data,
                 vdims=vdim,

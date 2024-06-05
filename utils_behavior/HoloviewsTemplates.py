@@ -97,6 +97,36 @@ hv_irene = {
     },
 }
 
+# Pooled jitterboxplots : These templates are optimised for bigger plots where all the data is plotted at once instead of as subplots
+
+pooled_opts = {
+    "boxwhisker": {
+        # "box_fill_color": None,
+        # "box_line_color": "black",
+        "outlier_fill_color": None,
+        "outlier_line_color": None,
+        "framewise": True,
+    },
+    "scatter": {
+        "jitter": 0.15,
+        "color": "black",
+        "alpha": 0.8,
+        "size": 2,
+        # "cmap": "Category10",
+        "framewise": True,
+    },
+    "plot": {
+        "width": 1100,
+        "height": 1423,
+        "show_legend": False,
+        "xlabel": "",
+        "invert_axes": True,
+        "show_grid": True,
+        "fontscale": 1,
+        "title": "",
+    },
+}
+
 # Custom Jitterboxplot function
 
 
@@ -156,6 +186,53 @@ def compute_hline_values(data, vdim, hline_method):
         )
 
 
+def sort_data(data, group_by, vdim, sort_by="median"):
+    if isinstance(group_by, list):
+        # Calculate the median for each group
+        median_values = data.groupby(group_by)[vdim].median()
+
+        # Sort the groups by their median
+        group_order = median_values.groupby(group_by[0]).median().sort_values().index
+
+        # Within each group, sort the subgroups by their median
+        subgroup_order_within_group = median_values.groupby(group_by[0]).apply(
+            lambda x: x.sort_values().index.get_level_values(group_by[1])
+        )
+
+        # Create a new category type for the groups with the calculated order
+        data[group_by[0]] = pd.Categorical(
+            data[group_by[0]], categories=group_order, ordered=True
+        )
+
+        # Create a list to hold the correct order of subgroups across all groups
+        correct_order_global = []
+
+        # For each group, add the subgroup order to the global list
+        for group in group_order:
+            correct_order_global.extend(subgroup_order_within_group[group])
+
+        # Convert the subgroups to a categorical type with the global order
+        data[group_by[1]] = pd.Categorical(
+            data[group_by[1]], categories=correct_order_global, ordered=True
+        )
+
+        # Now you can sort
+        data.sort_values(by=group_by, inplace=True)
+
+    elif isinstance(group_by, str):
+        if sort_by == "median":
+            median_values = data.groupby(group_by)[vdim].median().sort_values()
+            data["median"] = data[group_by].map(median_values)
+            data = data.sort_values("median")
+        else:
+            # Return the original order with a warning message
+            print(
+                "Invalid sort_by option. No sorting applied. The data will be displayed in the original order."
+            )
+
+    return data
+
+
 def create_jitterboxplot(
     data,
     vdim,
@@ -193,7 +270,7 @@ def create_jitterboxplot(
     return boxplot, scatterplot
 
 
-def create_groupby_plots(
+def create_groupby_jitterboxplots(
     data,
     kdims,
     vdim,
@@ -202,7 +279,7 @@ def create_groupby_plots(
     sort_by=None,
     scale_max=False,
     metadata=None,
-    hline=None,  # Changed hline_values to hline
+    hline=None,
     plot_options=hv_main,
     layout=False,
 ):
@@ -248,16 +325,7 @@ def create_groupby_plots(
         hover = HoverTool(tooltips=tooltips)
         group_data = data[data[groupby] == group]
 
-        if sort_by == "median":
-            median_values = group_data.groupby(kdims)[vdim].median().sort_values()
-            group_data["median"] = group_data[kdims].map(median_values)
-            group_data = group_data.sort_values("median")
-
-        else:
-            # Return the original order with a warning message
-            print(
-                "Invalid sort_by option. No sorting applied. The data will be displayed in the original order."
-            )
+        group_data = sort_data(group_data, kdims, vdim, sort_by)
 
         boxplot, scatterplot = create_jitterboxplot(
             data=group_data,
@@ -319,6 +387,108 @@ def create_groupby_plots(
         jitter_boxplot = hv.Layout(plots).cols(2)
     else:
         jitter_boxplot = hv.HoloMap(plots, kdims=[groupby])
+
+    return jitter_boxplot
+
+
+# TODO : Find out why groupby jitterboxplot control scatterplot sometimes doesnt display any points (either color is None or they are simply not plotted)
+
+
+def create_pooled_jitterboxplot(
+    data,
+    vdim,
+    kdims,
+    sort_by,
+    control=None,
+    hline=None,
+    metadata=None,
+    scale_max=False,
+    plot_options=pooled_opts,
+    groupby=None,
+    colorby=None,
+):
+
+    data = clean_data(data, vdim)
+
+    # Sort the data
+
+    data = sort_data(data, groupby, vdim, sort_by)
+
+    # Ensure control is a list
+    if control and not isinstance(control, list):
+        control = [control]
+
+    control_data = data[data[kdims].isin(control)]
+
+    hline_values = None  # Initialize hline_values
+    if control and hline:  # Changed hline_values to hline
+        hline_values = compute_hline_values(
+            control_data,
+            vdim,
+            hline,
+        )
+
+    # Get the limits for the y axis
+    y_min = data[vdim].min()
+
+    if scale_max:
+        y_max = data[vdim].quantile(0.95)
+    else:
+        y_max = data[vdim].max()
+
+    # Create the hover tool
+    tooltips = [
+        ("Fly", "@fly"),
+        (vdim.capitalize(), f"@{vdim}"),
+    ]
+
+    hover = HoverTool(tooltips=tooltips)
+
+    # Create the BoxWhisker plot and the Scatter plot
+
+    if colorby:
+        groups = data[colorby].unique()
+
+        boxplot = hv.Overlay(
+            [
+                hv.BoxWhisker(
+                    data[data[colorby] == group],
+                    kdims=kdims,
+                    vdims=vdim,
+                ).opts(**plot_options["boxwhisker"], box_color=color)
+                for group, color in zip(groups, hv.Cycle("Category10"))
+            ]
+        )
+
+        scatterplot = hv.Scatter(
+            data=data,
+            vdims=[vdim] + (metadata if metadata is not None else []) + ["fly"],
+            kdims=[kdims],
+        ).opts(**plot_options["scatter"], tools=[hover], ylim=(y_min, y_max))
+
+    else:
+        boxplot = hv.BoxWhisker(data, kdims=kdims, vdims=vdim).opts(
+            **plot_options["boxwhisker"]
+        )
+
+        scatterplot = hv.Scatter(
+            data=data,
+            vdims=[vdim] + (metadata if metadata is not None else []) + ["fly"],
+            kdims=[kdims],
+        ).opts(**plot_options["scatter"], tools=[hover], ylim=(y_min, y_max))
+
+    # Create the hline
+
+    hv_hline = hv.HSpan(hline_values[0], hline_values[1]).opts(
+        fill_alpha=0.2, color="red"
+    )
+
+    # Create the final plot
+    jitter_boxplot = (
+        (hv_hline * boxplot * scatterplot)
+        .opts(ylabel=f"{vdim}", **plot_options["plot"])
+        .opts(show_grid=False)
+    )
 
     return jitter_boxplot
 

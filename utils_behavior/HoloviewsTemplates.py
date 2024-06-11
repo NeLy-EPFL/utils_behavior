@@ -130,20 +130,27 @@ pooled_opts = {
 # Custom Jitterboxplot function
 
 
-def clean_data(data, vdim, groupby=None):
+def clean_data(data, metric, groupby=None):
+    """Clean the data by removing NaN values for the given metric and converting it to numeric.
+
+    Args:
+        data (pandas DataFrame): The dataset to clean.
+        metric (str): The metric to clean.
+        groupby (str): The column to group by if any.
+    """
 
     if groupby:
-        # Filter out groups where the vdim column is all NaN
-        data = data.groupby(groupby).filter(lambda x: x[vdim].notna().any())
+        # Filter out groups where the metric column is all NaN
+        data = data.groupby(groupby).filter(lambda x: x[metric].notna().any())
     else:
-        # Filter out groups where the vdim column is all NaN
-        data = data[data[vdim].notna()]
+        # Filter out groups where the metric column is all NaN
+        data = data[data[metric].notna()]
 
     # Clean the data by removing NaN values for this metric
-    data = data.dropna(subset=[vdim])
+    data = data.dropna(subset=[metric])
 
-    # Convert vdim to numeric
-    data[vdim] = pd.to_numeric(data[vdim], errors="coerce")
+    # Convert metric to numeric
+    data[metric] = pd.to_numeric(data[metric], errors="coerce")
 
     return data
 
@@ -171,14 +178,23 @@ def compute_controls_bs_ci(data, metric):
     return ci
 
 
-def compute_hline_values(data, vdim, hline_method):
+def compute_hline_values(data, metric, hline_method):
+    """
+    Compute the values for the control area in the jitter boxplot. The values can be computed using either a bootstrap confidence interval or the 25% and 75% quantiles of the control group.
+
+    Args:
+        data (pandas DataFrame): The dataset to compute the values from.
+        metric (str): The metric to compute the values for.
+        hline_method (str): The method to compute the values. Either 'bootstrap' or 'boxplot'.
+
+    """
     if hline_method == "bootstrap":
-        return compute_controls_bs_ci(data, vdim)
+        return compute_controls_bs_ci(data, metric)
     elif hline_method == "boxplot":
         # Calculate 25% and 75% quantiles for the control group
         return (
-            data[vdim].quantile(0.25),
-            data[vdim].quantile(0.75),
+            data[metric].quantile(0.25),
+            data[metric].quantile(0.75),
         )
     else:
         raise ValueError(
@@ -186,10 +202,19 @@ def compute_hline_values(data, vdim, hline_method):
         )
 
 
-def sort_data(data, group_by, vdim, sort_by="median"):
+def sort_data(data, group_by, metric, sort_by="median"):
+    """
+    Sort the data by the median of the metric for each group in group_by.
+
+    Args:
+        data (pandas DataFrame): The dataset to sort.
+        group_by (str or list): The column(s) to group by.
+        metric (str): The metric to sort by.
+        sort_by (str): The method to sort the data. Either 'median' or 'original'.
+    """
     if isinstance(group_by, list):
         # Calculate the median for each group
-        median_values = data.groupby(group_by)[vdim].median()
+        median_values = data.groupby(group_by)[metric].median()
 
         # Sort the groups by their median
         group_order = median_values.groupby(group_by[0]).median().sort_values().index
@@ -221,7 +246,7 @@ def sort_data(data, group_by, vdim, sort_by="median"):
 
     elif isinstance(group_by, str):
         if sort_by == "median":
-            median_values = data.groupby(group_by)[vdim].median().sort_values()
+            median_values = data.groupby(group_by)[metric].median().sort_values()
             data["median"] = data[group_by].map(median_values)
             data = data.sort_values("median")
         else:
@@ -235,7 +260,7 @@ def sort_data(data, group_by, vdim, sort_by="median"):
 
 def create_jitterboxplot(
     data,
-    vdim,
+    metric,
     kdims,
     plot_options,
     y_min,
@@ -245,10 +270,24 @@ def create_jitterboxplot(
     scatter_color="black",
     control=False,
 ):
-    """Helper function to create a plot."""
+    """
+    Create a jitter boxplot with a scatterplot overlay for a given group.
+
+    Args:
+        data (pandas DataFrame): The dataset to create the plot from.
+        metric (str): The metric to plot.
+        kdims (str): The column to plot on the x-axis.
+        plot_options (dict): The plot options to use.
+        y_min (float): The minimum value for the y-axis.
+        y_max (float): The maximum value for the y-axis.
+        hover (HoverTool): The hover tool to use.
+        metadata (list): The metadata columns to include in the tooltips.
+        scatter_color (str): The color to use for the scatterplot.
+        control (bool): Whether the group is the control group.
+    """
     scatterplot = hv.Scatter(
         data=data,
-        vdims=[vdim] + (metadata if metadata is not None else []) + ["fly"],
+        vdims=[metric] + (metadata if metadata is not None else []) + ["fly"],
         kdims=[kdims],
     ).opts(
         **plot_options["scatter"],
@@ -259,7 +298,7 @@ def create_jitterboxplot(
 
     boxplot = hv.BoxWhisker(
         data=data,
-        vdims=vdim,
+        vdims=metric,
         kdims=[kdims],
     ).opts(**plot_options["boxwhisker"], ylim=(y_min, y_max))
 
@@ -273,7 +312,7 @@ def create_jitterboxplot(
 def create_groupby_jitterboxplots(
     data,
     kdims,
-    vdim,
+    metric,
     groupby,
     control=None,
     sort_by=None,
@@ -282,12 +321,13 @@ def create_groupby_jitterboxplots(
     hline=None,
     plot_options=hv_main,
     layout=False,
+    debug=False,
 ):
-    data = clean_data(data, vdim, groupby)
+    data = clean_data(data, metric, groupby)
 
     # Pre-calculate common values
-    y_max = data[vdim].quantile(0.95) if scale_max else data[vdim].max()
-    y_min = data[vdim].min()
+    y_max = data[metric].quantile(0.95) if scale_max else data[metric].max()
+    y_min = data[metric].min()
 
     # Ensure control is a list
     if control and not isinstance(control, list):
@@ -296,28 +336,34 @@ def create_groupby_jitterboxplots(
     # Use control argument to get control_data
     if control:
         control_data = data[data[kdims].isin(control)]
+        if debug:
+            print(f"Control data size: {len(control_data)}")  # Debug print
     else:
         control_data = None
 
     # Get the group value for the control group
     if control:
         control_group = control_data[groupby].unique()[0]
-        print(control_group)
+        if debug:
+            print(f"Control group: {control_group}")  # Debug print
 
     hline_values = None  # Initialize hline_values
     if control and hline:  # Changed hline_values to hline
         hline_values = compute_hline_values(
             control_data,
-            vdim,
+            metric,
             hline,
         )
 
     plots = {}
     for group in data[groupby].unique():
+        if debug:
+
+            print(f"Processing group: {group}")  # Debug print
         # Use list comprehension for tooltips
         tooltips = [
             ("Fly", "@fly"),
-            (vdim.capitalize(), f"@{vdim}"),
+            (metric.capitalize(), f"@{metric}"),
         ]
         if metadata is not None:
             tooltips.extend([(var.capitalize(), f"@{var}") for var in metadata])
@@ -325,11 +371,11 @@ def create_groupby_jitterboxplots(
         hover = HoverTool(tooltips=tooltips)
         group_data = data[data[groupby] == group]
 
-        group_data = sort_data(group_data, kdims, vdim, sort_by)
+        group_data = sort_data(group_data, kdims, metric, sort_by)
 
         boxplot, scatterplot = create_jitterboxplot(
             data=group_data,
-            vdim=vdim,
+            metric=metric,
             kdims=kdims,
             plot_options=plot_options,
             y_min=y_min,
@@ -342,7 +388,7 @@ def create_groupby_jitterboxplots(
         if control and group != control_group:
             control_boxplot, control_scatterplot = create_jitterboxplot(
                 data=control_data,
-                vdim=vdim,
+                metric=metric,
                 kdims=kdims,
                 plot_options=plot_options,
                 y_min=y_min,
@@ -365,19 +411,19 @@ def create_groupby_jitterboxplots(
                     * scatterplot
                     * control_boxplot
                     * control_scatterplot
-                ).opts(ylabel=f"{vdim}", **plot_options["plot"])
+                ).opts(ylabel=f"{metric}", **plot_options["plot"])
             else:
                 plot = (
                     boxplot * scatterplot * control_boxplot * control_scatterplot
-                ).opts(ylabel=f"{vdim}", **plot_options["plot"])
+                ).opts(ylabel=f"{metric}", **plot_options["plot"])
         else:
             if hline_values is not None:
                 plot = (hv_hline * boxplot * scatterplot).opts(
-                    ylabel=f"{vdim}", **plot_options["plot"]
+                    ylabel=f"{metric}", **plot_options["plot"]
                 )
             else:
                 plot = (boxplot * scatterplot).opts(
-                    ylabel=f"{vdim}", **plot_options["plot"]
+                    ylabel=f"{metric}", **plot_options["plot"]
                 )
 
         plots[group] = plot
@@ -396,7 +442,7 @@ def create_groupby_jitterboxplots(
 
 def create_pooled_jitterboxplot(
     data,
-    vdim,
+    metric,
     kdims,
     sort_by,
     control=None,
@@ -408,11 +454,11 @@ def create_pooled_jitterboxplot(
     colorby=None,
 ):
 
-    data = clean_data(data, vdim)
+    data = clean_data(data, metric)
 
     # Sort the data
 
-    data = sort_data(data, groupby, vdim, sort_by)
+    data = sort_data(data, groupby, metric, sort_by)
 
     # Ensure control is a list
     if control and not isinstance(control, list):
@@ -424,22 +470,22 @@ def create_pooled_jitterboxplot(
     if control and hline:  # Changed hline_values to hline
         hline_values = compute_hline_values(
             control_data,
-            vdim,
+            metric,
             hline,
         )
 
     # Get the limits for the y axis
-    y_min = data[vdim].min()
+    y_min = data[metric].min()
 
     if scale_max:
-        y_max = data[vdim].quantile(0.95)
+        y_max = data[metric].quantile(0.95)
     else:
-        y_max = data[vdim].max()
+        y_max = data[metric].max()
 
     # Create the hover tool
     tooltips = [
         ("Fly", "@fly"),
-        (vdim.capitalize(), f"@{vdim}"),
+        (metric.capitalize(), f"@{metric}"),
     ]
 
     hover = HoverTool(tooltips=tooltips)
@@ -454,7 +500,7 @@ def create_pooled_jitterboxplot(
                 hv.BoxWhisker(
                     data[data[colorby] == group],
                     kdims=kdims,
-                    vdims=vdim,
+                    vdims=metric,
                 ).opts(**plot_options["boxwhisker"], box_color=color)
                 for group, color in zip(groups, hv.Cycle("Category10"))
             ]
@@ -462,18 +508,18 @@ def create_pooled_jitterboxplot(
 
         scatterplot = hv.Scatter(
             data=data,
-            vdims=[vdim] + (metadata if metadata is not None else []) + ["fly"],
+            vdims=[metric] + (metadata if metadata is not None else []) + ["fly"],
             kdims=[kdims],
         ).opts(**plot_options["scatter"], tools=[hover], ylim=(y_min, y_max))
 
     else:
-        boxplot = hv.BoxWhisker(data, kdims=kdims, vdims=vdim).opts(
+        boxplot = hv.BoxWhisker(data, kdims=kdims, vdims=metric).opts(
             **plot_options["boxwhisker"]
         )
 
         scatterplot = hv.Scatter(
             data=data,
-            vdims=[vdim] + (metadata if metadata is not None else []) + ["fly"],
+            vdims=[metric] + (metadata if metadata is not None else []) + ["fly"],
             kdims=[kdims],
         ).opts(**plot_options["scatter"], tools=[hover], ylim=(y_min, y_max))
 
@@ -486,7 +532,7 @@ def create_pooled_jitterboxplot(
     # Create the final plot
     jitter_boxplot = (
         (hv_hline * boxplot * scatterplot)
-        .opts(ylabel=f"{vdim}", **plot_options["plot"])
+        .opts(ylabel=f"{metric}", **plot_options["plot"])
         .opts(show_grid=False)
     )
 

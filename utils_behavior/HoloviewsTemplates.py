@@ -541,6 +541,81 @@ def create_pooled_jitterboxplot(
 
 def jitter_boxplot(
     data,
+    metric,
+    kdims,
+    sort_by,
+    control=None,
+    hline=None,
+    metadata=None,
+    scale_max=False,
+    plot_options=None,
+    groupby=None,
+    colorby=None,
+    render="pooled",
+):
+
+    if plot_options is None:
+        if render == "pooled":
+            plot_options = pooled_opts
+        else:
+            plot_options = hv_main
+
+    if render == "pooled":
+        return create_pooled_jitterboxplot(
+            data,
+            metric,
+            kdims,
+            sort_by,
+            control,
+            hline,
+            metadata,
+            scale_max,
+            plot_options,
+            groupby,
+            colorby,
+        )
+    elif render == "grouped":
+        return create_groupby_jitterboxplots(
+            data,
+            kdims,
+            metric,
+            groupby,
+            control,
+            sort_by,
+            scale_max,
+            metadata,
+            hline,
+            plot_options,
+            layout=False,
+        )
+    elif render == "layout":
+        return create_groupby_jitterboxplots(
+            data,
+            kdims,
+            metric,
+            groupby,
+            control,
+            sort_by,
+            scale_max,
+            metadata,
+            hline,
+            plot_options,
+            layout=True,
+        )
+    else:
+        raise ValueError(
+            "Invalid render option. Choose from 'pooled', 'grouped', or 'layout'."
+        )
+
+
+# TODO: handle the case where multiple groupby are passed to the groupby jitterboxplot
+# TODO: handle the case where colorby is passed to the groupby jitterboxplot function
+# TODO: add saving , showing and outpath options to the jitterboxplot functions
+# TODO: better variable names.
+
+
+def jitter_boxplot_old(
+    data,
     vdim,
     metadata,
     folder,

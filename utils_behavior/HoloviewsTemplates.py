@@ -6,6 +6,10 @@ from . import Processing
 import datetime
 from icecream import ic
 import pandas as pd
+import colorcet as cc
+from bokeh.palettes import Category10
+from bokeh.palettes import all_palettes
+
 
 # My main template
 
@@ -112,7 +116,7 @@ pooled_opts = {
         "color": "black",
         "alpha": 0.8,
         "size": 2,
-        # "cmap": "Category10",
+        "cmap": "Category10",
         "framewise": True,
     },
     "plot": {
@@ -269,6 +273,7 @@ def create_jitterboxplot(
     metadata=None,
     scatter_color="black",
     control=False,
+    colorby=None,
 ):
     """
     Create a jitter boxplot with a scatterplot overlay for a given group.
@@ -284,10 +289,25 @@ def create_jitterboxplot(
         metadata (list): The metadata columns to include in the tooltips.
         scatter_color (str): The color to use for the scatterplot.
         control (bool): Whether the group is the control group.
+        colorby (str): The column to color by.
     """
+    boxplot = hv.BoxWhisker(
+        data=data,
+        vdims=metric,
+        kdims=[kdims],
+    ).opts(**plot_options["boxwhisker"], ylim=(y_min, y_max))
+
     scatterplot = hv.Scatter(
         data=data,
-        vdims=[metric] + (metadata if metadata is not None else []) + ["fly"],
+        vdims=[metric]
+        + (
+            [colorby]
+            if colorby is not None
+            and colorby not in (metadata if metadata is not None else [])
+            else []
+        )
+        + (metadata if metadata is not None else [])
+        + ["fly"],
         kdims=[kdims],
     ).opts(
         **plot_options["scatter"],
@@ -296,11 +316,20 @@ def create_jitterboxplot(
         ylim=(y_min, y_max),
     )
 
-    boxplot = hv.BoxWhisker(
-        data=data,
-        vdims=metric,
-        kdims=[kdims],
-    ).opts(**plot_options["boxwhisker"], ylim=(y_min, y_max))
+    color_column = colorby if colorby else kdims
+    unique_values = data[color_column].unique()
+
+    # Get the colormap name from the plot options
+    cmap_name = plot_options["scatter"]["cmap"]
+
+    # Get the colormap from bokeh.palettes
+    cmap = all_palettes[cmap_name][10]  # Adjust the number as needed
+
+    color_mapping = {
+        value: cmap[i % len(cmap)] for i, value in enumerate(unique_values)
+    }
+
+    scatterplot = scatterplot.opts(color=hv.dim(color_column).categorize(color_mapping))
 
     if control:
         boxplot = boxplot.opts(box_line_color="green")
@@ -320,10 +349,16 @@ def create_groupby_jitterboxplots(
     metadata=None,
     hline=None,
     plot_options=hv_main,
+    colorby=None,
     layout=False,
     debug=False,
 ):
     data = clean_data(data, metric, groupby)
+
+    # If groupby is a list, create an interaction term
+    if isinstance(groupby, list):
+        data["interaction"] = data[groupby].apply(lambda x: "-".join(x), axis=1)
+        groupby = "interaction"
 
     # Pre-calculate common values
     y_max = data[metric].quantile(0.95) if scale_max else data[metric].max()
@@ -378,6 +413,7 @@ def create_groupby_jitterboxplots(
             metric=metric,
             kdims=kdims,
             plot_options=plot_options,
+            colorby=colorby,
             y_min=y_min,
             y_max=y_max,
             hover=hover,
@@ -435,9 +471,6 @@ def create_groupby_jitterboxplots(
         jitter_boxplot = hv.HoloMap(plots, kdims=[groupby])
 
     return jitter_boxplot
-
-
-# TODO : Find out why groupby jitterboxplot control scatterplot sometimes doesnt display any points (either color is None or they are simply not plotted)
 
 
 def create_pooled_jitterboxplot(
@@ -586,6 +619,7 @@ def jitter_boxplot(
             metadata,
             hline,
             plot_options,
+            colorby=colorby,
             layout=False,
         )
     elif render == "layout":
@@ -600,6 +634,7 @@ def jitter_boxplot(
             metadata,
             hline,
             plot_options,
+            colorby=colorby,
             layout=True,
         )
     else:
@@ -608,7 +643,7 @@ def jitter_boxplot(
         )
 
 
-# TODO: handle the case where multiple groupby are passed to the groupby jitterboxplot
+# TODO: SOlve bad colorby with pooled plots.
 # TODO: handle the case where colorby is passed to the groupby jitterboxplot function
 # TODO: add saving , showing and outpath options to the jitterboxplot functions
 # TODO: better variable names.

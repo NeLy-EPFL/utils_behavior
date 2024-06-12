@@ -338,6 +338,91 @@ def create_jitterboxplot(
     return boxplot, scatterplot
 
 
+def create_single_jitterboxplot(
+    data,
+    kdims,
+    metric,
+    groupby,
+    control=None,
+    sort_by=None,
+    scale_max=False,
+    metadata=None,
+    hline=None,
+    plot_options=hv_main,
+    colorby=None,
+    debug=False,
+):
+    data = clean_data(data, metric, groupby)
+
+    # If sort_by is set to 'median', sort the data by the median of the metric for each group in groupby
+    if sort_by == "median":
+        data = sort_data(data, groupby, metric, sort_by)
+
+    # Pre-calculate common values
+    y_max = data[metric].quantile(0.95) if scale_max else data[metric].max()
+    y_min = data[metric].min()
+
+    # Ensure control is a list
+    if control and not isinstance(control, list):
+        control = [control]
+
+    # Use control argument to get control_data
+    if control:
+        control_data = data[data[kdims].isin(control)]
+        if debug:
+            print(f"Control data size: {len(control_data)}")  # Debug print
+    else:
+        control_data = None
+
+    hline_values = None  # Initialize hline_values
+    if control and hline:  # Changed hline_values to hline
+        hline_values = compute_hline_values(
+            control_data,
+            metric,
+            hline,
+        )
+
+    tooltips = [
+        ("Fly", "@fly"),
+        (metric.capitalize(), f"@{metric}"),
+    ]
+    if metadata is not None:
+        tooltips.extend([(var.capitalize(), f"@{var}") for var in metadata])
+
+    hover = HoverTool(tooltips=tooltips)
+
+    y_max = data[metric].quantile(0.95) if scale_max else data[metric].max()
+    y_min = data[metric].min()
+
+    boxplot, scatterplot = create_jitterboxplot(
+        data=data,
+        metric=metric,
+        kdims=kdims,
+        plot_options=plot_options,
+        colorby=colorby,
+        y_min=y_min,
+        y_max=y_max,
+        hover=hover,
+        metadata=metadata,
+        scatter_color=kdims,
+    )
+
+    if hline_values is not None:
+        hv_hline = hv.HSpan(hline_values[0], hline_values[1]).opts(
+            fill_alpha=0.2, color="red"
+        )
+
+        jitter_boxplot = (boxplot * scatterplot * hv_hline).opts(
+            ylabel=f"{metric}", **plot_options["plot"]
+        )
+    else:
+        jitter_boxplot = (boxplot * scatterplot).opts(
+            ylabel=f"{metric}", **plot_options["plot"]
+        )
+
+    return jitter_boxplot
+
+
 def create_groupby_jitterboxplots(
     data,
     kdims,
@@ -577,7 +662,7 @@ def jitter_boxplot(
     data,
     metric,
     kdims,
-    sort_by,
+    sort_by="median",
     control=None,
     hline=None,
     metadata=None,
@@ -585,7 +670,7 @@ def jitter_boxplot(
     plot_options=None,
     groupby=None,
     colorby=None,
-    render="pooled",
+    render="single",
 ):
 
     if plot_options is None:
@@ -637,6 +722,20 @@ def jitter_boxplot(
             plot_options,
             colorby=colorby,
             layout=True,
+        )
+    elif render == "single":
+        return create_single_jitterboxplot(
+            data,
+            kdims,
+            metric,
+            groupby,
+            control,
+            sort_by,
+            scale_max,
+            metadata,
+            hline,
+            plot_options,
+            colorby,
         )
     else:
         raise ValueError(

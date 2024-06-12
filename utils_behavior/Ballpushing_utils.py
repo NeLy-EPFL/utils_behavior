@@ -517,6 +517,8 @@ class Fly:
 
         self.flyball_positions = None
 
+        print(f"Importing {self.name}...")
+
         # Get the brain regions table
         brain_regions = pd.read_csv(brain_regions_path, index_col=0)
 
@@ -577,7 +579,7 @@ class Fly:
         if not (self.directory / "coordinates.npy").exists():
             # Run the detect_boundaries function on the Fly associated experiment to generate the coordinates.npy file for all flies in the experiment
             print(
-                f"No boundaries found. Generating coordinates.npy file for {self.experiment.directory}..."
+                f"No boundaries found. Generating coordinates.npy file for {self.name}..."
             )
             self.detect_boundaries()
 
@@ -715,55 +717,65 @@ class Fly:
         for var, data in self.arena_metadata.items():
             print(f"{var}: {data}")
 
-    def detect_boundaries(self, threshold=100):
+    def detect_boundaries(self, threshold1=30, threshold2=100):
         """Detects the start and end of the corridor in the video. This is later used to compute the relative distance of the fly from the start of the corridor.
 
         Args:
-            threshold (int, optional): the pixel value threshold to used for the thresholding operation. Defaults to 100. Change value if boundaries are not correctly detected.
+            threshold1 (int, optional): the first threshold for the hysteresis procedure in Canny edge detection. Defaults to 30.
+            threshold2 (int, optional): the second threshold for the hysteresis procedure in Canny edge detection. Defaults to 100.
 
         Returns:
-            frame (np.array): the first frame of the video.
-            min_row (int): the index of the minimum value in the thresholded summed pixel values.
+            frame (np.array): the last frame of the video.
+            start (int): the start of the corridor.
+            end (int): the end of the corridor.
         """
 
         video_file = self.video
 
         if not video_file.exists():
             print(f"Error: Video file {video_file} does not exist")
-            return None, None
+            return None, None, None
 
-        # open the first frame of the video
+        # open the video
         cap = cv2.VideoCapture(str(video_file))
+
+        # get the total number of frames
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        # set the current position to the last frame
+        cap.set(cv2.CAP_PROP_POS_FRAMES, total_frames - 1)
+
+        # read the last frame
         ret, frame = cap.read()
         cap.release()
 
         if not ret:
             print(f"Error: Could not read frame from video {video_file}")
-            return None, None
+            return None, None, None
         elif frame is None:
             print(f"Error: Frame is None for video {video_file}")
-            return None, None
+            return None, None, None
 
         # Convert to grayscale
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # Apply a median filter to smooth out noise and small variations
-        frame = median_filter(frame, size=3)
+        # Apply a Gaussian blur
+        frame = cv2.GaussianBlur(frame, (5, 5), 0)
 
-        # Apply a Gaussian filter to smooth out noise and small variations
-        frame = gaussian_filter(frame, sigma=1)
+        # Use the Canny edge detection method
+        edges = cv2.Canny(frame, threshold1=threshold1, threshold2=threshold2)
 
-        # Compute the summed pixel values and apply a threshold
-        summed_pixel_values = frame.sum(axis=1)
-        summed_pixel_values[summed_pixel_values < threshold] = 0
+        # Get the top and bottom edges of the corridor in y-direction
+        top_edge = np.min(np.where(edges > 0)[0])
+        bottom_edge = np.max(np.where(edges > 0)[0])
 
-        # Find the index of the minimum value in the thresholded summed pixel values
-        min_row = np.argmin(summed_pixel_values)
+        start = bottom_edge - 110
+        end = top_edge + 110
 
         # Save a .npy file with the start and end coordinates in the video folder
-        np.save(video_file.parent / "coordinates.npy", [min_row - 30, min_row - 320])
+        np.save(video_file.parent / "coordinates.npy", [start, end])
 
-        return frame, min_row
+        return frame, start, end
 
     def get_coordinates(self, ball=True, fly=True, xvals=True):
         """Extracts the coordinates from the ball and fly h5 sleap data.
@@ -1534,6 +1546,10 @@ class Experiment:
         self.fps = self.load_fps()
         self.flies = self.load_flies()
 
+        # Check if the experiment directory contains a grid image and if not, generate it
+        if not (self.directory / "grid.png").exists():
+            self.generate_grid()
+
     def __str__(self):
         # Generate a list of unique genotypes from the flies in the experiment
         tested_genotypes = list(set([fly.Genotype for fly in self.flies]))
@@ -1661,14 +1677,14 @@ class Experiment:
             print(f"Generating grid image for {self.directory.name}")
 
             frames = []
-            min_rows = []
+            starts = []
             paths = []
 
             for fly in self.flies:
-                frame, min_row = fly.detect_boundaries()
-                if frame is not None and min_row is not None:
+                frame, start, end = fly.detect_boundaries()
+                if frame is not None and start is not None:
                     frames.append(frame)
-                    min_rows.append(min_row)
+                    starts.append(start)
                     paths.append(fly.video)
 
             # Set the number of rows and columns for the grid
@@ -1680,7 +1696,7 @@ class Experiment:
             fig, axs = plt.subplots(nrows, ncols, figsize=(20, 20))
 
             # Loop over the frames, minimum row indices, and video paths
-            for i, (frame, min_row, flypath) in enumerate(zip(frames, min_rows, paths)):
+            for i, (frame, start, flypath) in enumerate(zip(frames, starts, paths)):
                 # Get the row and column index for this subplot
                 row = i // ncols
                 col = i % ncols
@@ -1694,8 +1710,8 @@ class Experiment:
                     continue
 
                 # Plot the horizontal lines on this subplot
-                axs[row, col].axhline(min_row - 30, color="red")
-                axs[row, col].axhline(min_row - 320, color="blue")
+                axs[row, col].axhline(start, color="red")
+                axs[row, col].axhline(start - 290, color="blue")
 
             # Remove the axis of each subplot and draw them closer together
             for ax in axs.flat:
@@ -1816,7 +1832,9 @@ class Dataset:
         elif isinstance(self.source, Fly):
             return f"Dataset({self.flies[0].directory})"
 
-    def generate_dataset(self, metrics="coordinates", success_cutoff=True):
+    def generate_dataset(
+        self, metrics="coordinates", success_cutoff=True, time_range=None
+    ):
         """Generates a pandas DataFrame from a list of Experiment objects. The dataframe contains the smoothed fly and ball positions for each experiment.
 
         Args:
@@ -1833,7 +1851,7 @@ class Dataset:
             if metrics == "coordinates":
                 dataset_list = [
                     self._prepare_dataset_coordinates(
-                        fly, success_cutoff=success_cutoff
+                        fly, success_cutoff=success_cutoff, time_range=time_range
                     )
                     for fly in self.flies
                 ]
@@ -1847,7 +1865,7 @@ class Dataset:
                     for fly in self.flies
                     if (
                         df := self._prepare_dataset_summary_metrics(
-                            fly, success_cutoff=success_cutoff
+                            fly, success_cutoff=success_cutoff, time_range=time_range
                         )
                     )
                     is not None
@@ -1883,7 +1901,9 @@ class Dataset:
 
         return self.data
 
-    def _prepare_dataset_coordinates(self, fly, interactions=True, success_cutoff=True):
+    def _prepare_dataset_coordinates(
+        self, fly, interactions=True, success_cutoff=True, time_range=None
+    ):
         """
         Helper function to prepare individual fly dataset with fly and ball coordinates. It also adds the fly name, experiment name and arena metadata as categorical data.
 
@@ -1900,12 +1920,28 @@ class Dataset:
                 fly.annotate_events()
 
             dataset = fly.flyball_positions
+
         # If the fly doesn't have tracking data, don't include it in the dataset
         except AttributeError as e:
             print(
                 f"Error occurred while preparing dataset for fly {fly.name}: {str(e)}"
             )
             return
+
+        if time_range is not None:
+            # If one value is provided, set the end of the range to the end of the video and the start to the provided value
+            if len(time_range) == 1:
+                dataset = dataset[dataset["time"] >= time_range[0]]
+            # If two values are provided, set the start and end of the range to the provided values
+            elif len(time_range) == 2:
+                dataset = dataset[
+                    (dataset["time"] >= time_range[0])
+                    & (dataset["time"] <= time_range[1])
+                ]
+            else:
+                print(
+                    "Invalid time range. Please provide one or two values for the time range."
+                )
 
         if success_cutoff:
             cutoff_index = (
@@ -1939,6 +1975,7 @@ class Dataset:
             "SignificantRatio",
         ],
         success_cutoff=True,
+        time_range=None,
     ):
         """
         Prepares a dataset with summary metrics for a given fly. The metrics are computed for all events, but only the ones specified in the 'metrics' argument are included in the returned DataFrame.
@@ -1983,6 +2020,21 @@ class Dataset:
             ).idxmax()
             if cutoff_index != 0:  # idxmax returns 0 if no True value is found
                 positions = fly.flyball_positions[:cutoff_index]
+
+        if time_range is not None:
+            # If one value is provided, set the end of the range to the end of the video and the start to the provided value
+            if len(time_range) == 1:
+                positions = positions[positions["time"] >= time_range[0]]
+            # If two values are provided, set the start and end of the range to the provided values
+            elif len(time_range) == 2:
+                positions = positions[
+                    (positions["time"] >= time_range[0])
+                    & (positions["time"] <= time_range[1])
+                ]
+            else:
+                print(
+                    "Invalid time range. Please provide one or two values for the time range."
+                )
 
         final_event = fly.get_final_event(subset=positions)
         significant_events = fly.get_significant_events(subset=positions)

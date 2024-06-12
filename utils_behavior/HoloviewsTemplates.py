@@ -465,8 +465,9 @@ def create_groupby_jitterboxplots(
         plots[group] = plot
 
     # Create a Layout or a HoloMap with the jitter boxplots for each group
+
     if layout:
-        jitter_boxplot = hv.Layout(plots).cols(2)
+        jitter_boxplot = hv.Layout(plots.values()).cols(2).opts(shared_axes=False)
     else:
         jitter_boxplot = hv.HoloMap(plots, kdims=[groupby])
 

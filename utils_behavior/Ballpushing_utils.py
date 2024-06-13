@@ -1954,6 +1954,7 @@ class Dataset:
 
         return dataset
 
+    # TODO : Events should be reannotated if the dataset is subsetted
     def _prepare_dataset_summary_metrics(
         self,
         fly,

@@ -1,5 +1,6 @@
 from bokeh.models import HoverTool
 
+import numpy as np
 import holoviews as hv
 from . import Utils
 from . import Processing
@@ -38,6 +39,15 @@ hv_main = {
         "show_grid": True,
         "fontscale": 1.5,
         "title": "",
+    },
+    "hist": {
+        "cmap": "Category10",
+        "fill_alpha": 0.5,
+        "frame_height": 500,
+        "frame_width": 750,
+        "line_alpha": 0,
+        "show_grid": True,
+        "title": "HoloViews",
     },
 }
 
@@ -747,6 +757,47 @@ def jitter_boxplot(
 # TODO: handle the case where colorby is passed to the groupby jitterboxplot function
 # TODO: add saving , showing and outpath options to the jitterboxplot functions
 # TODO: better variable names.
+
+
+def histograms(data, metric, categories, bins=None, plot_options=hv_main):
+    # Get the color map from the plot options
+    unique_values = data[categories].unique()
+    color_map = plot_options["hist"]["cmap"]
+
+    cmap = all_palettes[color_map][10]
+
+    # Get the color palette from the color map
+    color_palette = {
+        value: cmap[i % len(cmap)] for i, value in enumerate(unique_values)
+    }
+
+    def hist(data, bins=bins):
+        """Compute bins and edges for histogram using Freedman-Diaconis rule"""
+        h = 2 * (np.percentile(data, 75) - np.percentile(data, 25)) / np.cbrt(len(data))
+
+        if bins is None:
+            bins = int(np.ceil((data.max() - data.min()) / h))
+        else:
+            bins = bins
+
+        return np.histogram(data, bins=bins)
+
+    hists = [
+        hv.Histogram(
+            hist(group[metric]), kdims=metric, vdims="count", label=label
+        ).opts(
+            color=color_palette[label],
+            fill_alpha=0.5,
+            frame_height=500,
+            frame_width=750,
+            line_alpha=0,
+            show_grid=True,
+            title="HoloViews",
+        )
+        for label, group in data.groupby(categories, sort=False)
+    ]
+
+    return hv.Layout(hists).cols(1)
 
 
 def jitter_boxplot_old(

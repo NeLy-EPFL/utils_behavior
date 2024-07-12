@@ -145,10 +145,8 @@ def get_data_path(setup="mazerecorder"):
 
     """
 
-    labserver = get_labserver()
-
     if setup == "mazerecorder":
-        datapath = labserver.joinpath("Experimental_data/MultiMazeRecorder/Videos")
+        datapath = Path("/mnt/upramdya_data/MD/MultiMazeRecorder/Videos")
 
     return datapath
 

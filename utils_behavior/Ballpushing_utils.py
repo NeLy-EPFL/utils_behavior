@@ -1729,7 +1729,7 @@ class Dataset:
     def __init__(
         self,
         source,
-        brain_regions_path="/mnt/labserver/DURRIEU_Matthias/Experimental_data/Region_map_240122.csv",
+        brain_regions_path="/mnt/upramdya_data/MD/Region_map_240312.csv",
     ):
         """
         A class to generate a Dataset from Experiments and Fly objects.
@@ -1932,12 +1932,25 @@ class Dataset:
             # If one value is provided, set the end of the range to the end of the video and the start to the provided value
             if len(time_range) == 1:
                 dataset = dataset[dataset["time"] >= time_range[0]]
+
+                # Reindex events if any
+                if interactions:
+                    unique_events = dataset["event"].dropna().unique()
+                    event_mapping = {
+                        event: i + 1 for i, event in enumerate(unique_events)
+                    }
+                    dataset["event"] = dataset["event"].map(event_mapping)
             # If two values are provided, set the start and end of the range to the provided values
             elif len(time_range) == 2:
                 dataset = dataset[
                     (dataset["time"] >= time_range[0])
                     & (dataset["time"] <= time_range[1])
                 ]
+
+                # Reindex events
+                unique_events = dataset["event"].dropna().unique()
+                event_mapping = {event: i + 1 for i, event in enumerate(unique_events)}
+                dataset["event"] = dataset["event"].map(event_mapping)
             else:
                 print(
                     "Invalid time range. Please provide one or two values for the time range."
@@ -1948,7 +1961,7 @@ class Dataset:
                 fly.flyball_positions["yball_smooth"] <= fly.end + 40
             ).idxmax()
             if cutoff_index != 0:  # idxmax returns 0 if no True value is found
-                positions = fly.flyball_positions[:cutoff_index]
+                dataset = dataset[:cutoff_index]
 
         dataset = self._add_metadata(dataset, fly)
 
@@ -2026,12 +2039,24 @@ class Dataset:
             # If one value is provided, set the end of the range to the end of the video and the start to the provided value
             if len(time_range) == 1:
                 positions = positions[positions["time"] >= time_range[0]]
+
+                # Reindex events
+                unique_events = positions["event"].dropna().unique()
+                event_mapping = {event: i + 1 for i, event in enumerate(unique_events)}
+                positions["event"] = positions["event"].map(event_mapping)
+
             # If two values are provided, set the start and end of the range to the provided values
             elif len(time_range) == 2:
                 positions = positions[
                     (positions["time"] >= time_range[0])
                     & (positions["time"] <= time_range[1])
                 ]
+
+                # Reindex events
+                unique_events = positions["event"].dropna().unique()
+                event_mapping = {event: i + 1 for i, event in enumerate(unique_events)}
+                positions["event"] = positions["event"].map(event_mapping)
+
             else:
                 print(
                     "Invalid time range. Please provide one or two values for the time range."

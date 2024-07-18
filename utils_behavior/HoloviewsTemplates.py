@@ -81,6 +81,16 @@ hv_slides = {
         "fontscale": 2.5,
         "title": "",
     },
+    "hist": {
+        "cmap": "Category10",
+        "fill_alpha": 0.5,
+        "height": 1000,
+        "width": 1500,
+        "fontscale": 2.5,
+        "line_alpha": 0,
+        "show_grid": True,
+        "title": "HoloViews",
+    },
 }
 
 hv_irene = {
@@ -759,7 +769,15 @@ def jitter_boxplot(
 # TODO: better variable names.
 
 
-def histograms(data, metric, categories, bins=None, plot_options=hv_main):
+def histograms(
+    data,
+    metric,
+    categories,
+    bins=None,
+    xlabel=None,
+    plot_options=hv_main,
+    orientation="vertical",
+):
     # Get the color map from the plot options
     unique_values = data[categories].unique()
     color_map = plot_options["hist"]["cmap"]
@@ -783,21 +801,20 @@ def histograms(data, metric, categories, bins=None, plot_options=hv_main):
         return np.histogram(data, bins=bins)
 
     hists = [
-        hv.Histogram(
-            hist(group[metric]), kdims=metric, vdims="count", label=label
-        ).opts(
+        hv.Histogram(hist(group[metric]), kdims=metric, vdims="count", label=label)
+        .opts(**plot_options["hist"])
+        .opts(
             color=color_palette[label],
-            fill_alpha=0.5,
-            frame_height=500,
-            frame_width=750,
-            line_alpha=0,
-            show_grid=True,
-            title="HoloViews",
+            title=label,
+            xlabel=metric if xlabel is None else xlabel,
         )
         for label, group in data.groupby(categories, sort=False)
     ]
 
-    return hv.Layout(hists).cols(1)
+    if orientation == "horizontal":
+        return hv.Layout(hists).cols(len(hists))
+    else:
+        return hv.Layout(hists).cols(1)
 
 
 def jitter_boxplot_old(

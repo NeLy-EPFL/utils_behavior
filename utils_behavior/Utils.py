@@ -132,9 +132,9 @@ def get_labserver():
     """
 
     if platform.system() == "Darwin":
-        return Path("/Volumes/Ramdya-Lab/DURRIEU_Matthias/")
+        return Path("/Volumes/upramdya_files")
     elif platform.system() == "Linux":
-        return Path("/mnt/labserver/DURRIEU_Matthias/")
+        return Path("/mnt/upramdya_files")
     else:
         raise ValueError("Unsupported platform")
 

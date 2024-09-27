@@ -327,7 +327,8 @@ def create_jitterboxplot(
             else []
         )
         + (metadata if metadata is not None else [])
-        + ["fly"],
+        # + ["fly"]
+        ,
         kdims=[kdims],
     ).opts(
         **plot_options["scatter"],
@@ -403,7 +404,7 @@ def create_single_jitterboxplot(
         )
 
     tooltips = [
-        ("Fly", "@fly"),
+        # ("Fly", "@fly"),
         (metric.capitalize(), f"@{metric}"),
     ]
     if metadata is not None:
@@ -502,7 +503,7 @@ def create_groupby_jitterboxplots(
             print(f"Processing group: {group}")  # Debug print
         # Use list comprehension for tooltips
         tooltips = [
-            ("Fly", "@fly"),
+            # ("Fly", "@fly"),
             (metric.capitalize(), f"@{metric}"),
         ]
         if metadata is not None:
@@ -623,7 +624,7 @@ def create_pooled_jitterboxplot(
 
     # Create the hover tool
     tooltips = [
-        ("Fly", "@fly"),
+        # ("Fly", "@fly"),
         (metric.capitalize(), f"@{metric}"),
     ]
 
@@ -647,7 +648,9 @@ def create_pooled_jitterboxplot(
 
         scatterplot = hv.Scatter(
             data=data,
-            vdims=[metric] + (metadata if metadata is not None else []) + ["fly"],
+            vdims=[metric] + (metadata if metadata is not None else [])
+            # + ["fly"]
+            ,
             kdims=[kdims],
         ).opts(**plot_options["scatter"], tools=[hover], ylim=(y_min, y_max))
 
@@ -658,7 +661,7 @@ def create_pooled_jitterboxplot(
 
         scatterplot = hv.Scatter(
             data=data,
-            vdims=[metric] + (metadata if metadata is not None else []) + ["fly"],
+            vdims=[metric] + (metadata if metadata is not None else []),  # + ["fly"]
             kdims=[kdims],
         ).opts(**plot_options["scatter"], tools=[hover], ylim=(y_min, y_max))
 
@@ -691,7 +694,25 @@ def jitter_boxplot(
     groupby=None,
     colorby=None,
     render="single",
+    sample_size=True,
 ):
+    if sample_size:
+        # Find how many flies are in each group of the kdims and create a "label" column with kdims and the size of the group to use instead of kdims
+
+        # Group by kdims and calculate the size of each group
+        sample_size = data.groupby(kdims).size().reset_index(name="size")
+
+        # Ensure kdims is a string
+        data["kdims_str"] = data[kdims].astype(str)
+
+        # Merge sample_size back to the original data to align indices
+        data = data.merge(sample_size, on=kdims, how="left")
+
+        # Create the label column
+        data["label"] = data["kdims_str"] + " (n=" + data["size"].astype(str) + ")"
+
+        # Update kdims to use the new label column
+        kdims = "label"
 
     if plot_options is None:
         if render == "pooled":
@@ -846,7 +867,7 @@ def jitter_boxplot_old(
 
     # Get the metadata for the tooltips
     tooltips = [
-        ("Fly", "@fly"),
+        # ("Fly", "@fly"),
         (vdim.capitalize(), f"@{vdim}"),
     ]
 
@@ -902,7 +923,7 @@ def jitter_boxplot_old(
 
         scatterplot = hv.Scatter(
             data=region_data,
-            vdims=[vdim] + metadata + ["fly"],
+            vdims=[vdim] + metadata,  # + ["fly"]
             kdims=[kdims],
         ).opts(
             **plot_options["scatter"], color=kdims, tools=[hover], ylim=(y_min, y_max)
@@ -917,7 +938,7 @@ def jitter_boxplot_old(
 
             control_scatterplot = hv.Scatter(
                 data=control_data,
-                vdims=[vdim] + metadata + ["fly"],
+                vdims=[vdim] + metadata,  # + ["fly"]
                 kdims=[kdims],
             ).opts(
                 alpha=0.5,

@@ -3,6 +3,7 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 import h5py
+import warnings
 
 # Compute low-pass filtered data
 
@@ -140,22 +141,23 @@ def replace_nans_with_previous_value(arr):
     Replace NaN values with the previous value in a numpy array. If the first value is NaN, it is replaced with the
     next non-NaN value.
 
-    Args:
-        arr (np.ndarray): The array to be processed.
+    Parameters:
+    arr (numpy.ndarray): The input array with potential NaN values.
 
     Returns:
-        None. The function modifies the array in-place.
+    None. The function modifies the array in-place.
     """
+    # Ensure arr is a numpy array
+    arr = np.asarray(arr)
 
     # Check if the first value is NaN
     if np.isnan(arr[0]):
         # Find the next non-NaN value
-        next_val = arr[next((i for i, x in enumerate(arr) if not np.isnan(x)), None)]
-        arr[0] = next_val
+        next_val_index = next((i for i, x in enumerate(arr) if not np.isnan(x)), None)
+        if next_val_index is not None:
+            arr[0] = arr[next_val_index]
 
-    # Find the indices of the NaN values
-    nan_indices = np.where(np.isnan(arr))
-
-    # Replace the NaN values with the previous value
-    for i in nan_indices[0]:
-        arr[i] = arr[i - 1]
+    # Replace NaNs with the previous value
+    for i in range(1, len(arr)):
+        if np.isnan(arr[i]):
+            arr[i] = arr[i - 1]

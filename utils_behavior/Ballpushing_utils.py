@@ -35,6 +35,8 @@ from moviepy.editor import VideoFileClip
 from moviepy.video.fx import all as vfx
 import pygame
 
+import warnings
+
 from .Utils import *
 from .Processing import *
 
@@ -44,7 +46,7 @@ sys.modules["Ballpushing_utils"] = sys.modules[
     __name__
 ]  # This line creates an alias for utils_behavior.Ballpushing_utils to utils_behavior.__init__ so that the previously made pkl files can be loaded.
 
-brain_regions_path = get_labserver() / "Experimental_data/Region_map_240122.csv"
+brain_regions_path = "/mnt/upramdya_data/MD/Region_map_240122.csv"
 
 
 def save_object(obj, filename):
@@ -517,7 +519,7 @@ class Fly:
 
         self.flyball_positions = None
 
-        print(f"Importing {self.name}...")
+        # print(f"Importing {self.name}...")
 
         # Get the brain regions table
         brain_regions = pd.read_csv(brain_regions_path, index_col=0)
@@ -589,7 +591,8 @@ class Fly:
 
         if self.flytrack is not None and self.balltrack is not None:
             self.flyball_positions = self.get_coordinates(self.balltrack, self.flytrack)
-            self.interaction_events = self.find_interaction_events()
+            if self.flyball_positions is not None:
+                self.interaction_events = self.find_interaction_events()
         else:
             self.flyball_positions = None
 
@@ -794,11 +797,17 @@ class Fly:
         if ball:
             xball, yball = extract_coordinates(self.balltrack.as_posix())
 
-            # Replace NaNs in yball
-            replace_nans_with_previous_value(yball)
+            try:
+                # Replace NaNs in yball
+                replace_nans_with_previous_value(yball)
 
-            # Replace NaNs in xball
-            replace_nans_with_previous_value(xball)
+                # Replace NaNs in xball
+                replace_nans_with_previous_value(xball)
+            except ValueError as e:
+                warnings.warn(
+                    f"Skipping ball coordinates for {self.name} due to error: {e}"
+                )
+                return None
 
             data.append(yball)
             columns.append("yball")
@@ -810,11 +819,17 @@ class Fly:
         if fly:
             xfly, yfly = extract_coordinates(self.flytrack.as_posix())
 
-            # Replace NaNs in yfly
-            replace_nans_with_previous_value(yfly)
+            try:
+                # Replace NaNs in yfly
+                replace_nans_with_previous_value(yfly)
 
-            # Replace NaNs in xfly
-            replace_nans_with_previous_value(xfly)
+                # Replace NaNs in xfly
+                replace_nans_with_previous_value(xfly)
+            except ValueError as e:
+                warnings.warn(
+                    f"Skipping fly coordinates for {self.name} due to error: {e}"
+                )
+                return None
 
             data.append(yfly)
             columns.append("yfly")
@@ -1058,7 +1073,7 @@ class Fly:
 
         return final_event, final_event_index
 
-    def check_yball_variation(self, event, threshold=10, subset=None):
+    def check_yball_variation(self, event, threshold=5, subset=None):
         """
         Check if the variation in the 'yball_smooth' value during an event exceeds a given threshold.
 
@@ -1082,7 +1097,7 @@ class Fly:
 
         return (variation > threshold, variation)
 
-    def get_significant_events(self, distance=10, subset=None):
+    def get_significant_events(self, distance=2, subset=None):
         """
         Get the events where the ball was displaced by more that a given distance.
 
@@ -1108,6 +1123,8 @@ class Fly:
         ]
 
         return significant_events
+
+    # TODO: Find out why my detected significant events doesn't change at all when I change the distance value
 
     def find_breaks(self, subset=None):
         """
@@ -1640,6 +1657,7 @@ class Experiment:
         for mp4_file in mp4_files:
             # print(type(mp4_file.parent))
             # print(type(self))
+            print(f"Loading fly from {mp4_file.parent}")
             try:
                 fly = Fly(mp4_file.parent, experiment=self)
                 flies.append(fly)

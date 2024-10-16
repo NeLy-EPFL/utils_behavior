@@ -36,8 +36,8 @@ def extract_frame(video_path, frame_index, output_path):
     cap.release()
 
 
-vidpath = Path('/mnt/labserver/DURRIEU_Matthias/Experimental_data/MultiMazeRecorder/Videos/230721_Feedingstate_4_PM_Videos_Tracked/arena5/corridor3/corridor3.mp4')
-outpath = Path('/mnt/labserver/DURRIEU_Matthias/Pictures/ImageGrab.png')
+vidpath = Path('/mnt/upramdya_data/MD/F1_Tracks/Videos/240925_F1_3mm_ends_Videos_Checked/arena6/Left/arena6_left.mp4')
+outpath = Path('/mnt/upramdya_files/DURRIEU_Matthias/Pictures/F1Arena_FrameGrab.png')
 
 extract_frame(vidpath.as_posix(), 4000, outpath.as_posix())
 

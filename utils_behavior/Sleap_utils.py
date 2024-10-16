@@ -51,14 +51,16 @@ class Sleap_Tracks:
 
             return node_property
 
-    def __init__(self, filename):
+    def __init__(self, filename, object_type="object"):
         """Initialize the Sleap_Track object with the given SLEAP tracking file.
 
         Args:
             filename (Path): Path to the SLEAP tracking file.
+            object_type (str): Type of the object (e.g., "ball", "fly"). Defaults to "object".
         """
 
         self.path = filename
+        self.object_type = object_type
 
         # Open the SLEAP tracking file
         self.h5file = h5py.File(filename, "r")
@@ -70,29 +72,34 @@ class Sleap_Tracks:
         self.edges_idx = self.h5file["edge_inds"]
 
         self.tracks = self.h5file["tracks"][:]
-        
-        self.dataset = self.generate_tracks_data()
 
         self.video = Path(self.h5file["video_path"][()].decode("utf-8"))
 
-        # Try to load the video file to check its accessibility
+        # Try to load the video file to check its accessibility and get fps
         try:
             cap = cv2.VideoCapture(str(self.video))
+            if not cap.isOpened():
+                raise ValueError(f"Could not open video file: {self.video}")
+            
+            self.fps = cap.get(cv2.CAP_PROP_FPS)
+            self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             cap.release()
-        except:
-            print(
-                f"Video file not available: {self.video}. Check path and server access."
-            )
+        except Exception as e:
+            print(f"Video file not available: {self.video}. Check path and server access. Error: {e}")
+            self.fps = None  # Set fps to None if video is not accessible
+            
+        self.dataset = self.generate_tracks_data()
 
         # Create object properties
         self.objects = []
         for i in range(len(self.tracks)):
-            object_data = self.dataset[self.dataset["object"] == f"object_{i+1}"]
+            object_data = self.dataset[self.dataset["object"] == f"{self.object_type}_{i+1}"]
             self.objects.append(self.Object(object_data, self.node_names))
 
         print(f"Loaded SLEAP tracking file: {filename}")
         print(f"N° of objects: {len(self.objects)}")
         print(f"Nodes: {self.node_names}")
+        print(f"Video FPS: {self.fps}")
 
     def generate_tracks_data(self):
         """Generates a pandas DataFrame with the tracking data, with the following columns:
@@ -109,23 +116,21 @@ class Sleap_Tracks:
 
         df_list = []
 
-        for i, object in enumerate(self.tracks):
+        for i, obj in enumerate(self.tracks):
             
-            print(f"Processing object {i+1}/{len(self.tracks)}")
+            print(f"Processing {self.object_type} {i+1}/{len(self.tracks)}")
 
-            object = self.tracks[i]
+            x_coords = obj[0]
+            y_coords = obj[1]
 
-            x_coords = object[0]
-
-            y_coords = object[1]
-
-            frames = range(1, len(object[0][0]) + 1)
+            frames = range(1, len(obj[0][0]) + 1)
 
             tracking_df = pd.DataFrame(frames, columns=["frame"])
+            
+            tracking_df["time"] = tracking_df["frame"] / self.fps
 
             # Give each object some number
-
-            tracking_df["object"] = f"object_{i+1}"
+            tracking_df["object"] = f"{self.object_type}_{i+1}"
 
             for k, n in enumerate(self.node_names):
                 tracking_df[f"x_{n}"] = x_coords[k]
@@ -137,7 +142,7 @@ class Sleap_Tracks:
 
         return df
 
-    def generate_annotated_frame(self, frame, nodes=None, labels=False, edges=True):
+    def generate_annotated_frame(self, frame, nodes=None, labels=False, edges=True, colorby=None):
         """Generates an annotated frame image for a specific frame."""
         frame_data = self.dataset[self.dataset["frame"] == frame]
 
@@ -153,13 +158,19 @@ class Sleap_Tracks:
         elif isinstance(nodes, str):
             nodes = [nodes]
 
+        # Define colors
+        if colorby == 'Nodes':
+            color_map = {node: (int(np.random.randint(0, 255)), int(np.random.randint(0, 255)), int(np.random.randint(0, 255))) for node in self.node_names}
+        else:
+            color_map = {node: (0, 255, 255) for node in self.node_names}
+
         for _, row in frame_data.iterrows():
             for node in nodes:
                 x = row[f"x_{node}"]
                 y = row[f"y_{node}"]
                 if not np.isnan(x) and not np.isnan(y):
                     x, y = int(x), int(y)
-                    cv2.circle(img, (x, y), 2, (0, 255, 255), -1)
+                    cv2.circle(img, (x, y), 2, color_map[node], -1)
                     if labels:
                         cv2.putText(
                             img,
@@ -184,7 +195,7 @@ class Sleap_Tracks:
                         np.isnan(x1) or np.isnan(y1) or np.isnan(x2) or np.isnan(y2)
                     ):
                         x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-                        cv2.line(img, (x1, y1), (x2, y2), (0, 255, 255), 1)
+                        cv2.line(img, (x1, y1), (x2, y2), color_map[node2], 1)
 
         cap.release()
         return img
@@ -198,6 +209,7 @@ class Sleap_Tracks:
         nodes=None,
         labels=False,
         edges=True,
+        colorby=None,
     ):
         cap = cv2.VideoCapture(str(self.video))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -218,7 +230,7 @@ class Sleap_Tracks:
 
         def process_frame(frame):
             return self.generate_annotated_frame(
-                frame, nodes=nodes, labels=labels, edges=edges
+                frame, nodes=nodes, labels=labels, edges=edges, colorby=colorby
             )
 
         with ThreadPoolExecutor() as executor:
@@ -253,6 +265,7 @@ class Sleap_Tracks:
         nodes=None,
         labels=False,
         edges=True,
+        colorby=None,
     ):
         """Generates a video with GPU-accelerated annotated frames."""
 
@@ -272,6 +285,12 @@ class Sleap_Tracks:
             fps = cap.get(cv2.CAP_PROP_FPS)
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             out = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+
+        # Define colors
+        if colorby == 'Nodes':
+            color_map = {node: (int(np.random.randint(0, 255)), int(np.random.randint(0, 255)), int(np.random.randint(0, 255))) for node in self.node_names}
+        else:
+            color_map = {node: (0, 255, 255) for node in self.node_names}
 
         while cap.isOpened():
             ret, img = cap.read()
@@ -296,7 +315,7 @@ class Sleap_Tracks:
                     if not np.isnan(x) and not np.isnan(y):
                         x, y = int(x), int(y)
                         img = gpu_img.download()  # Download to CPU for annotations
-                        cv2.circle(img, (x, y), 2, (0, 255, 255), -1)
+                        cv2.circle(img, (x, y), 2, color_map[node], -1)
                         if labels:
                             cv2.putText(
                                 img,
@@ -324,7 +343,7 @@ class Sleap_Tracks:
                         ):
                             img = gpu_img.download()  # CPU operations for drawing
                             x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-                            cv2.line(img, (x1, y1), (x2, y2), (0, 255, 255), 1)
+                            cv2.line(img, (x1, y1), (x2, y2), color_map[node2], 1)
                             gpu_img.upload(img)  # Back to GPU
 
             if save:
@@ -347,7 +366,8 @@ class Sleap_Tracks:
             end=None,
             nodes=None,
             labels=False,
-            edges=True):
+            edges=True,
+            colorby=None):
         """Generates an annotated video with tracked nodes and edges.
 
         Args:
@@ -358,6 +378,7 @@ class Sleap_Tracks:
             nodes (list, optional): List of nodes to annotate. Defaults to None.
             labels (bool, optional): Whether to include labels. Defaults to False.
             edges (bool, optional): Whether to include edges. Defaults to True.
+            colorby (str, optional): Attribute to color by. Defaults to None.
 
         Returns:
             None
@@ -366,14 +387,14 @@ class Sleap_Tracks:
         try:
             if cv2.cuda.getCudaEnabledDeviceCount() > 0:
                 print("CUDA is enabled, using GPU for video processing.")
-                self.gpu_generate_annotated_video(save=save, output_path=output_path, start=start, end=end, nodes=nodes, labels=labels, edges=edges)
+                self.gpu_generate_annotated_video(save=save, output_path=output_path, start=start, end=end, nodes=nodes, labels=labels, edges=edges, colorby=colorby)
             else:
                 print("No CUDA devices found, falling back to CPU processing.")
-                self.cpu_generate_annotated_video(save=save, output_path=output_path, start=start, end=end, nodes=nodes, labels=labels, edges=edges)
+                self.cpu_generate_annotated_video(save=save, output_path=output_path, start=start, end=end, nodes=nodes, labels=labels, edges=edges, colorby=colorby)
         except cv2.error as e:
             print(f"Error while checking for CUDA support: {e}")
             print("Falling back to CPU processing.")
-            self.cpu_generate_annotated_video(save=save, output_path=output_path, start=start, end=end, nodes=nodes, labels=labels, edges=edges)
+            self.cpu_generate_annotated_video(save=save, output_path=output_path, start=start, end=end, nodes=nodes, labels=labels, edges=edges, colorby=colorby)
             
 class CombinedSleapTracks:
     """Class for handling and combining multiple SLEAP Tracks for the same video."""

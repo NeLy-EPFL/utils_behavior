@@ -23,12 +23,12 @@ import subprocess
 class Sleap_Tracks:
     """Class for handling SLEAP tracking data. It is a wrapper around the SLEAP H5 file format."""
 
-    class Animal:
-        """Nested class to represent an animal with node properties."""
+    class Object:
+        """Nested class to represent an object with node properties."""
 
-        def __init__(self, animal_data, node_names):
+        def __init__(self, object_data, node_names):
             self.node_names = node_names
-            self.animal_data = animal_data
+            self.object_data = object_data
 
             for node in node_names:
                 setattr(self, node, self._create_node_property(node))
@@ -45,8 +45,8 @@ class Sleap_Tracks:
 
             @property
             def node_property(self):
-                x_values = self.animal_data[f"x_{node}"].values
-                y_values = self.animal_data[f"y_{node}"].values
+                x_values = self.object_data[f"x_{node}"].values
+                y_values = self.object_data[f"y_{node}"].values
                 return list(zip(x_values, y_values))
 
             return node_property
@@ -84,14 +84,14 @@ class Sleap_Tracks:
                 f"Video file not available: {self.video}. Check path and server access."
             )
 
-        # Create animal properties
-        self.animals = []
+        # Create object properties
+        self.objects = []
         for i in range(len(self.tracks)):
-            animal_data = self.dataset[self.dataset["animal"] == f"animal_{i+1}"]
-            self.animals.append(self.Animal(animal_data, self.node_names))
+            object_data = self.dataset[self.dataset["object"] == f"object_{i+1}"]
+            self.objects.append(self.Object(object_data, self.node_names))
 
         print(f"Loaded SLEAP tracking file: {filename}")
-        print(f"N° of animals: {len(self.animals)}")
+        print(f"N° of objects: {len(self.objects)}")
         print(f"Nodes: {self.node_names}")
 
     def generate_tracks_data(self):
@@ -109,23 +109,23 @@ class Sleap_Tracks:
 
         df_list = []
 
-        for i, animal in enumerate(self.tracks):
+        for i, object in enumerate(self.tracks):
             
-            print(f"Processing animal {i+1}/{len(self.tracks)}")
+            print(f"Processing object {i+1}/{len(self.tracks)}")
 
-            animal = self.tracks[i]
+            object = self.tracks[i]
 
-            x_coords = animal[0]
+            x_coords = object[0]
 
-            y_coords = animal[1]
+            y_coords = object[1]
 
-            frames = range(1, len(animal[0][0]) + 1)
+            frames = range(1, len(object[0][0]) + 1)
 
             tracking_df = pd.DataFrame(frames, columns=["frame"])
 
-            # Give each animal some number
+            # Give each object some number
 
-            tracking_df["animal"] = f"animal_{i+1}"
+            tracking_df["object"] = f"object_{i+1}"
 
             for k, n in enumerate(self.node_names):
                 tracking_df[f"x_{n}"] = x_coords[k]
@@ -387,6 +387,7 @@ class CombinedSleapTracks:
         """
         self.video_path = video_path
         self.sleap_tracks_list = sleap_tracks_list
+        self.dataset = self.generate_dataset()
         self.colors = self._assign_colors()
 
     def _assign_colors(self):
@@ -401,10 +402,14 @@ class CombinedSleapTracks:
             )
             colors[tracks] = color
         return colors
+    
+    def generate_dataset(self):
+        """Generates a combined dataset from multiple Sleap_Tracks objects."""
+        combined_dataset = pd.concat([tracks.dataset for tracks in self.sleap_tracks_list], ignore_index=True)
+        return combined_dataset
 
     def cpu_generate_combined_annotated_video(
-        video_path, 
-        sleap_tracks_list, 
+        self, 
         save=False, 
         output_path=None, 
         start=None, 
@@ -427,6 +432,9 @@ class CombinedSleapTracks:
         Returns:
             None
         """
+        
+        video_path = self.video_path
+        sleap_tracks_list = self.sleap_tracks_list
         
         cap = cv2.VideoCapture(str(video_path))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -501,8 +509,7 @@ class CombinedSleapTracks:
             cv2.destroyAllWindows()
             
     def gpu_generate_combined_annotated_video(
-        video_path, 
-        sleap_tracks_list, 
+        self,
         save=False, 
         output_path=None, 
         start=None, 
@@ -525,6 +532,9 @@ class CombinedSleapTracks:
         Returns:
             None
         """
+        
+        video_path = self.video_path
+        sleap_tracks_list = self.sleap_tracks_list
         
         cap = cv2.VideoCapture(str(video_path))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))

@@ -92,7 +92,7 @@ def generate_conda(project_dir, env_name):
     # Use the `requirements.txt` file to create a new conda environment.
     try:
         subprocess.check_call(
-            f"conda create --name {env_name} --file requirements.txt", shell=True
+            f"mamba create --name {env_name} --file requirements.txt", shell=True
         )
         print("Installing pip packages in the new conda environment...")
         # Initialize conda for bash shell before activating the environment

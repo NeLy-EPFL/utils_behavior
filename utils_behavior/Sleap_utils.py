@@ -4,6 +4,8 @@ import pandas as pd
 
 import cv2
 
+from .Processing import *
+
 # import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
@@ -51,7 +53,7 @@ class Sleap_Tracks:
 
             return node_property
 
-    def __init__(self, filename, object_type="object"):
+    def __init__(self, filename, object_type="object", smoothed_tracks=True):
         """Initialize the Sleap_Track object with the given SLEAP tracking file.
 
         Args:
@@ -59,8 +61,9 @@ class Sleap_Tracks:
             object_type (str): Type of the object (e.g., "ball", "fly"). Defaults to "object".
         """
 
-        self.path = filename
+        self.path = Path(filename)
         self.object_type = object_type
+        self.smoothed_tracks = smoothed_tracks
 
         # Open the SLEAP tracking file
         self.h5file = h5py.File(filename, "r")
@@ -74,6 +77,8 @@ class Sleap_Tracks:
         self.tracks = self.h5file["tracks"][:]
 
         self.video = Path(self.h5file["video_path"][()].decode("utf-8"))
+        
+        self.video = self._handle_video_path(self.video)
 
         # Try to load the video file to check its accessibility and get fps
         try:
@@ -100,6 +105,27 @@ class Sleap_Tracks:
         print(f"N° of objects: {len(self.objects)}")
         print(f"Nodes: {self.node_names}")
         print(f"Video FPS: {self.fps}")
+        
+    def _handle_video_path(self, video_path):
+        """Handle the video path to check for outdated paths and replace them with the new path.
+
+        Args:
+            video_path (Path): The original video path from the .h5 file.
+
+        Returns:
+            Path: The corrected video path.
+        """
+        
+        # Check if the path contains "labserver" and replace it with the new path
+        if "labserver" in str(video_path):
+            video_path = Path(str(video_path).replace("/mnt/labserver/DURRIEU_Matthias/Experimental_data/", "/mnt/upramdya_data/MD/"))
+
+        # Check if the video file exists at the given path
+        if not video_path.exists():
+            # Look for the video in the same folder as the .h5 file
+            video_path = self.path.parent / video_path.name
+
+        return video_path
 
     def generate_tracks_data(self):
         """Generates a pandas DataFrame with the tracking data, with the following columns:
@@ -133,8 +159,15 @@ class Sleap_Tracks:
             tracking_df["object"] = f"{self.object_type}_{i+1}"
 
             for k, n in enumerate(self.node_names):
+                
+                if self.smoothed_tracks:
+                    print("smoothing tracks")
+                    x_coords[k] = savgol_lowpass_filter(x_coords[k], 221, 1)
+                    y_coords[k] = savgol_lowpass_filter(y_coords[k], 221, 1)
+                
                 tracking_df[f"x_{n}"] = x_coords[k]
                 tracking_df[f"y_{n}"] = y_coords[k]
+                
 
             df_list.append(tracking_df)
 

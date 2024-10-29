@@ -39,6 +39,7 @@ import warnings
 
 from .Utils import *
 from .Processing import *
+from .Sleap_utils import *
 
 from .HoloviewsTemplates import hv_main
 
@@ -82,283 +83,6 @@ def load_object(filename):
     return obj
 
 
-# def generate_dataset(Folders, fly=True, ball=True, xvals=False, fps=30, Events=None):
-#     """Generates a dataset from a list of folders containing videos, tracking files and metadata files
-
-
-#     Args:
-#         Folders (list): A list of folders containing videos, tracking files and metadata files
-#         fly (bool, optional): Whether to extract the fly coordinates. Defaults to True.
-#         ball (bool, optional): Whether to extract the ball coordinates. Defaults to True.
-#         xvals (bool, optional): Whether to extract the x coordinates. Defaults to False.
-#         fps (int, optional): The frame rate of the videos. Defaults to 30.
-
-#     Returns:
-#         Dataset (pandas dataframe): A dataframe containing the data from all the videos in the list of folders
-#     """
-
-#     Flycount = 0
-#     Dataset_list = []
-
-#     for folder in Folders:
-#         print(f"Processing {folder}...")
-#         # Read the metadata.json file
-#         with open(folder / "Metadata.json", "r") as f:
-#             metadata = json.load(f)
-#             variables = metadata["Variable"]
-#             metadata_dict = {}
-#             for var in variables:
-#                 metadata_dict[var] = {}
-#                 for arena in range(1, 10):
-#                     arena_key = f"Arena{arena}"
-#                     var_index = variables.index(var)
-#                     metadata_dict[var][arena_key] = metadata[arena_key][var_index]
-
-#             # In the metadata_dict, make all they Arena subkeys lower case
-
-#             for var in variables:
-#                 metadata_dict[var] = {
-#                     k.lower(): v for k, v in metadata_dict[var].items()
-#                 }
-#             # print(metadata_dict)
-
-#             files = list(folder.glob("**/*.mp4"))
-
-#         for file in files:
-#             # print(file.name)
-#             # Get the arena and corridor numbers from the parent (corridor) and grandparent (arena) folder names
-#             arena = file.parent.parent.name
-#             # print(arena)
-#             corridor = file.parent.name
-
-#             start, end = np.load(file.parent / "coordinates.npy")
-
-#             dir = file.parent
-
-#             # Define flypath as the *tracked_fly*.analysis.h5 file in the same folder as the video
-#             try:
-#                 flypath = list(dir.glob("*tracked_fly*.analysis.h5"))[0]
-#                 # print(flypath.name)
-#             except IndexError:
-#                 # print(f"No fly tracking file found for {file.name}, skipping...")
-
-#                 continue
-
-#             # Define ballpath as the *tracked*.analysis.h5 file in the same folder as the video
-#             try:
-#                 ballpath = list(dir.glob("*tracked*.analysis.h5"))[0]
-#                 # print(ballpath.name)
-#             except IndexError:
-#                 print(f"No ball tracking file found for {file.name}, skipping...")
-
-#                 continue
-
-#             try:
-#                 # Extract interaction events and mark them in the DataFrame
-
-#                 data = get_coordinates(
-#                     ballpath, flypath, ball=ball, fly=fly, xvals=xvals
-#                 )
-
-#                 # print(data.head())
-#                 # Apply savgol_lowpass_filter to each column that is not Frame or time
-#                 # for col in data.columns:
-#                 #     if col not in ["Frame", "time"]:
-#                 #         data[f"{col}_smooth"] = savgol_lowpass_filter(data[col], 221, 1)
-
-#                 data["start"] = start
-#                 data["end"] = end
-#                 data["arena"] = arena
-#                 data["corridor"] = corridor
-#                 Flycount += 1
-#                 data["Fly"] = f"Fly {Flycount}"
-
-#                 if "Flipped" in folder.name:
-#                     # print(
-#                     #     f"Flipped video, flipping ball and fly y coordinates, flipping start and end."
-#                     # )
-#                     data["yball_smooth"] = -data["yball_smooth"]
-#                     data["yfly_smooth"] = -data["yfly_smooth"]
-#                     # start = -start
-
-#                 # Compute yball_relative relative to start
-#                 data["yball_relative"] = abs(data["yball_smooth"] - data["start"])
-
-#                 # Fill missing values using linear interpolation
-#                 data["yball_relative"] = data["yball_relative"].interpolate(
-#                     method="linear"
-#                 )
-
-#                 # Add all the metadata categories to the DataFrame
-#                 for var in variables:
-#                     data[var] = metadata_dict[var][arena]
-
-#                 # Append the data to the all_data DataFrame
-#                 if Events == "interactions":
-#                     # Compute interaction events for all data
-#                     interaction_events = find_interaction_events(data)
-
-#                     # Assign an event number to each event
-#                     for i, (start_time, end_time) in enumerate(
-#                         interaction_events, start=1
-#                     ):
-#                         data.loc[
-#                             (data.Frame >= start_time) & (data.Frame <= end_time),
-#                             "Event",
-#                         ] = i
-
-#                 Dataset_list.append(data)
-
-#             except Exception as e:
-#                 error_message = str(e)
-#                 traceback_message = traceback.format_exc()
-#                 # print(f"Error processing video {vidname}: {error_message}")
-#                 print(traceback_message)
-
-#     # Concatenate all dataframes in the list into a single dataframe
-#     Dataset = pd.concat(Dataset_list, ignore_index=True).reset_index()
-
-#     return Dataset
-
-
-# def get_coordinates(ballpath=None, flypath=None, ball=True, fly=True, xvals=True):
-#     """Extracts the coordinates from the ball and fly paths.
-
-#     Parameters:
-#         ballpath (str): The path to the ball path file.
-#         flypath (str): The path to the fly path file.
-#         ball (bool): Whether to extract the ball coordinates.
-#         fly (bool): Whether to extract the fly coordinates.
-
-#     Returns:
-#         data (pd.DataFrame): The coordinates of the ball and fly.
-#     """
-#     data = []
-#     columns = []
-
-#     if ball:
-#         xball, yball = extract_coordinates(ballpath.as_posix())
-
-#         # Replace NaNs in yball
-#         replace_nans_with_previous_value(yball)
-
-#         # Replace NaNs in xball
-#         replace_nans_with_previous_value(xball)
-
-#         data.append(yball)
-#         columns.append("yball")
-
-#         if xvals:
-#             data.append(xball)
-#             columns.append("xball")
-
-#     if fly:
-#         xfly, yfly = extract_coordinates(flypath.as_posix())
-
-#         # Replace NaNs in yfly
-#         replace_nans_with_previous_value(yfly)
-
-#         # Replace NaNs in xfly
-#         replace_nans_with_previous_value(xfly)
-
-#         data.append(yfly)
-#         columns.append("yfly")
-
-#         if xvals:
-#             data.append(xfly)
-#             columns.append("xfly")
-
-#     # Combine the x and y arrays into a single 2D array
-#     data = np.stack(data, axis=1)
-
-#     # Convert the 2D array into a DataFrame
-#     data = pd.DataFrame(data, columns=columns)
-
-#     data = data.assign(Frame=data.index + 1)
-
-#     data["Frame"] = data["Frame"].astype(int)
-
-#     data["time"] = data["Frame"] / 30
-
-#     if ball:
-#         data["yball_smooth"] = savgol_lowpass_filter(data["yball"], 221, 1)
-#         if xvals:
-#             data["xball_smooth"] = savgol_lowpass_filter(data["xball"], 221, 1)
-#     if fly:
-#         data["yfly_smooth"] = savgol_lowpass_filter(data["yfly"], 221, 1)
-#         if xvals:
-#             data["xfly_smooth"] = savgol_lowpass_filter(data["xfly"], 221, 1)
-
-#     return data
-
-
-# def extract_interaction_events(source, Thresh=80, min_time=60, as_df=False):
-#     if isinstance(source, Path):
-#         print(f"Path: {source}")
-#         flypath = next(source.glob("*tracked_fly*.analysis.h5"))
-#         ballpath = next(source.glob("*tracked*.analysis.h5"))
-#         df = get_coordinates(flypath=flypath, ballpath=ballpath)
-
-#     elif isinstance(source, pd.DataFrame):
-#         print(f"DataFrame: {source.shape}")
-#         df = source
-
-#     else:
-#         raise TypeError(
-#             "Invalid source format: source must be a pathlib Path, string or a pandas DataFrame"
-#         )
-
-#     # Create a new column 'Event' and initialize it with None
-#     df.loc[:, "Event"] = None
-
-#     # Compute interaction events for all data
-#     interaction_events = find_interaction_events(df, Thresh, min_time)
-
-#     # Assign an event number to each event
-#     for i, (start_time, end_time) in enumerate(interaction_events, start=1):
-#         df.loc[(df.index >= start_time) & (df.index <= end_time), "Event"] = i
-
-#     if "Fly" in df.columns:
-#         # Compute the maximum event number for each fly
-#         max_event_per_fly = (
-#             df.groupby("Fly")["Event"].max().shift(fill_value=0).cumsum()
-#         )
-
-#         # Adjust event numbers for each fly
-#         df["Event"] -= df["Fly"].map(max_event_per_fly)
-
-#     else:
-#         # Compute interaction events for all data
-#         interaction_events = find_interaction_events(df, Thresh, min_time)
-
-#         # Assign an event number to each event
-#         for i, (start_time, end_time) in enumerate(interaction_events, start=1):
-#             df.loc[(df.index >= start_time) & (df.index <= end_time), "Event"] = i
-
-#     if as_df:
-#         return df
-#     else:
-#         return interaction_events
-
-
-# def find_interaction_events(df, Thresh=80, min_time=60):
-#     df.loc[:, "dist"] = df.loc[:, "yfly_smooth"] - df.loc[:, "yball_smooth"]
-#     df.loc[:, "close"] = df.loc[:, "dist"] < Thresh
-#     df.loc[:, "block"] = (df.loc[:, "close"].shift(1) != df.loc[:, "close"]).cumsum()
-#     events = (
-#         df[df["close"]]
-#         .groupby("block")
-#         .agg(start=("Frame", "min"), end=("Frame", "max"))
-#     )
-#     interaction_events = [
-#         (start, end) for start, end in events[["start", "end"]].itertuples(index=False)
-#     ]
-#     interaction_events = [
-#         event for event in interaction_events if event[1] - event[0] >= min_time
-#     ]
-#     return interaction_events
-
-
 def extract_pauses(source, min_time=200, threshold_y=0.05, threshold_x=0.05):
     """
     Extracts the pause events from the fly path.
@@ -370,7 +94,7 @@ def extract_pauses(source, min_time=200, threshold_y=0.05, threshold_x=0.05):
     min_time : int
         The minimum duration of a pause event.
     threshold : float
-        The threshold for the absolute difference in yfly_smooth values.
+        The threshold for the absolute difference in yfly values.
 
     Returns
     -------
@@ -394,9 +118,9 @@ def extract_pauses(source, min_time=200, threshold_y=0.05, threshold_x=0.05):
             "Invalid source format: source must be a pathlib Path, string or a pandas DataFrame"
         )
 
-    # Compute the absolute difference in yfly_smooth values
-    df["yfly_diff"] = df["yfly_smooth"].diff().abs()
-    df["xfly_diff"] = df["xfly_smooth"].diff().abs()
+    # Compute the absolute difference in yfly values
+    df["yfly_diff"] = df["yfly"].diff().abs()
+    df["xfly_diff"] = df["xfly"].diff().abs()
 
     # Identify periods where the difference is less than threshold for at least min_time frames
     df["Pausing"] = (
@@ -564,6 +288,7 @@ class Fly:
 
         try:
             self.flytrack = list(directory.glob("*tracked_fly*.analysis.h5"))[0]
+            self.flytrack = Sleap_Tracks(self.flytrack, object_type="fly")
             # print(flypath.name)
         except IndexError:
             self.flytrack = None
@@ -571,6 +296,7 @@ class Fly:
 
         try:
             self.balltrack = list(directory.glob("*tracked_ball*.analysis.h5"))[0]
+            self.balltrack = Sleap_Tracks(self.balltrack, object_type="ball")
             # print(ballpath.name)
         except IndexError:
             self.balltrack = None
@@ -672,14 +398,14 @@ class Fly:
         # Check if any of the smoothed fly x and y coordinates are more than 30 pixels away from their initial position
         if np.any(
             abs(
-                self.flyball_positions["yfly_smooth"]
-                - self.flyball_positions["yfly_smooth"][0]
+                self.flyball_positions["yfly"]
+                - self.flyball_positions["yfly"][0]
             )
             > 30
         ) or np.any(
             abs(
-                self.flyball_positions["xfly_smooth"]
-                - self.flyball_positions["xfly_smooth"][0]
+                self.flyball_positions["xfly"]
+                - self.flyball_positions["xfly"][0]
             )
             > 30
         ):
@@ -795,7 +521,22 @@ class Fly:
         columns = []
 
         if ball:
-            xball, yball = extract_coordinates(self.balltrack.as_posix())
+            
+            # Check how many tracks are in the file
+            
+            if len(self.balltrack.objects) > 1:
+                warnings.warn(f"Multiple tracks found in {self.balltrack.name}. Using the first track.")
+                
+            # Get the first track
+            
+            ball1_data = self.balltrack.dataset[self.balltrack.dataset["object"] == "ball_1"]
+            
+            
+            xball = ball1_data["x_centre"]
+            
+            yball = ball1_data["y_centre"]
+            
+            #xball, yball = extract_coordinates(self.balltrack.as_posix())
 
             try:
                 # Replace NaNs in yball
@@ -817,7 +558,12 @@ class Fly:
                 columns.append("xball")
 
         if fly:
-            xfly, yfly = extract_coordinates(self.flytrack.as_posix())
+            
+            flydata = self.flytrack.dataset[self.flytrack.dataset["object"] == "fly_1"]
+            #xfly, yfly = extract_coordinates(self.flytrack.as_posix())
+            
+            xfly = flydata["x_thorax"]
+            yfly = flydata["y_thorax"]
 
             try:
                 # Replace NaNs in yfly
@@ -850,22 +596,13 @@ class Fly:
 
         data["time"] = data["Frame"] / self.experiment.fps
 
-        if ball:
-            data["yball_smooth"] = savgol_lowpass_filter(data["yball"], 221, 1)
-            if xvals:
-                data["xball_smooth"] = savgol_lowpass_filter(data["xball"], 221, 1)
-        if fly:
-            data["yfly_smooth"] = savgol_lowpass_filter(data["yfly"], 221, 1)
-            if xvals:
-                data["xfly_smooth"] = savgol_lowpass_filter(data["xfly"], 221, 1)
-
         if self.start:
-            data["yfly_relative"] = abs(data["yfly_smooth"] - self.start)
+            data["yfly_relative"] = abs(data["yfly"] - self.start)
 
             # Fill missing values using linear interpolation
             data["yfly_relative"] = data["yfly_relative"].interpolate(method="linear")
 
-            data["yball_relative"] = abs(data["yball_smooth"] - self.start)
+            data["yball_relative"] = abs(data["yball"] - self.start)
 
             data["yball_relative"] = data["yball_relative"].interpolate(method="linear")
 
@@ -904,8 +641,8 @@ class Fly:
         event_min_length = event_min_length * self.experiment.fps
 
         distance = (
-            flyball_positions.loc[:, "yfly_smooth"]
-            - flyball_positions.loc[:, "yball_smooth"]
+            flyball_positions.loc[:, "yfly"]
+            - flyball_positions.loc[:, "yball"]
         ).values
 
         # Initialize the list of events
@@ -1075,9 +812,9 @@ class Fly:
 
     def check_yball_variation(self, event, threshold=5, subset=None):
         """
-        Check if the variation in the 'yball_smooth' value during an event exceeds a given threshold.
+        Check if the variation in the 'yball' value during an event exceeds a given threshold.
 
-        This method extracts the 'yball_smooth' values for the duration of the event from the 'flyball_positions' DataFrame. It then calculates the variation as the difference between the maximum and minimum 'yball_smooth' values. If this variation exceeds the threshold, the method returns True; otherwise, it returns False.
+        This method extracts the 'yball' values for the duration of the event from the 'flyball_positions' DataFrame. It then calculates the variation as the difference between the maximum and minimum 'yball' values. If this variation exceeds the threshold, the method returns True; otherwise, it returns False.
 
         Args:
             event (list): A list containing the start and end indices of the event in the 'flyball_positions' DataFrame.
@@ -1085,13 +822,13 @@ class Fly:
             subset (DataFrame, optional): A subset of the flyball_positions to compute on. Defaults to None.
 
         Returns:
-            bool: True if the variation in 'yball_smooth' during the event exceeds the threshold, False otherwise.
+            bool: True if the variation in 'yball' during the event exceeds the threshold, False otherwise.
         """
         # Use the provided subset if it exists, otherwise use the full flyball_positions
         flyball_positions = subset if subset is not None else self.flyball_positions
 
-        # Get the yball_smooth segment corresponding to an event
-        yball_event = flyball_positions.loc[event[0] : event[1], "yball_smooth"]
+        # Get the yball segment corresponding to an event
+        yball_event = flyball_positions.loc[event[0] : event[1], "yball"]
 
         variation = yball_event.max() - yball_event.min()
 
@@ -1226,7 +963,7 @@ class Fly:
         """
         Generate a video clip for a given event.
 
-        This method creates a video clip from the original video for the duration of the event. It also adds text to each frame indicating the event number and start time. If the 'yball_smooth' value varies more than a certain threshold during the event, a red dot is added to the frame.
+        This method creates a video clip from the original video for the duration of the event. It also adds text to each frame indicating the event number and start time. If the 'yball' value varies more than a certain threshold during the event, a red dot is added to the frame.
 
         Args:
             event (list or int): : A list containing the start and end indices of the event in the 'flyball_positions' DataFrame. Alternatively, an integer can be provided to indicate the index of the event in the 'interaction_events' list.
@@ -1976,7 +1713,7 @@ class Dataset:
 
         if success_cutoff:
             cutoff_index = (
-                fly.flyball_positions["yball_smooth"] <= fly.end + 40
+                fly.flyball_positions["yball"] <= fly.end + 40
             ).idxmax()
             if cutoff_index != 0:  # idxmax returns 0 if no True value is found
                 dataset = dataset[:cutoff_index]
@@ -2048,7 +1785,7 @@ class Dataset:
 
         if success_cutoff:
             cutoff_index = (
-                fly.flyball_positions["yball_smooth"] <= fly.end + 40
+                fly.flyball_positions["yball"] <= fly.end + 40
             ).idxmax()
             if cutoff_index != 0:  # idxmax returns 0 if no True value is found
                 positions = fly.flyball_positions[:cutoff_index]

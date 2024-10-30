@@ -206,6 +206,7 @@ class Fly:
         self,
         directory,
         experiment=None,
+        as_individual=False,
     ):
         """
         Initialize a Fly object.
@@ -228,13 +229,17 @@ class Fly:
         """
 
         self.directory = Path(directory)
-        self.experiment = (
-            experiment
-            if experiment is not None
-            else Experiment(self.directory.parent.parent)
-        )
+        
+        if experiment is not None:
+            self.experiment = experiment
+        elif as_individual:
+            self.experiment = Experiment(self.directory.parent.parent, metadata_only=True)
+        else:
+            self.experiment = Experiment(self.directory.parent.parent)                
+        
         self.arena = self.directory.parent.name
         self.corridor = self.directory.name
+        
         self.name = f"{self.experiment.directory.name}_{self.arena}_{self.corridor}"
         self.arena_metadata = self.get_arena_metadata()
         # For each value in the arena metadata, add it as an attribute of the fly
@@ -242,6 +247,7 @@ class Fly:
             setattr(self, var, data)
 
         self.flyball_positions = None
+        self.fly_skeleton = None
 
         # print(f"Importing {self.name}...")
 
@@ -301,6 +307,12 @@ class Fly:
         except IndexError:
             self.balltrack = None
             # print(f"No ball tracking file found for {self.name}, skipping...")
+            
+        try:
+            self.skeletontrack = list(directory.glob("*full_body*.h5"))[0]
+        except IndexError:
+            self.skeletontrack = None
+            # print(f"No skeleton tracking file found for {self.name}, skipping...")
 
         # Check if the coordinates.npy file exists in the fly directory
 
@@ -321,6 +333,9 @@ class Fly:
                 self.interaction_events = self.find_interaction_events()
         else:
             self.flyball_positions = None
+            
+        # Compute the skeleton tracking data
+        self.fly_skeleton = self.get_skeleton()
 
         # Check if the corridor is empty or the fly is in bad shape and set the dead_or_empty attribute accordingly
 
@@ -605,6 +620,58 @@ class Fly:
             data["yball_relative"] = abs(data["yball"] - self.start)
 
             data["yball_relative"] = data["yball_relative"].interpolate(method="linear")
+
+        return data
+    
+    def get_skeleton(self):
+        """
+        Extracts the coordinates of the fly's skeleton from the full body tracking data.
+
+        Returns:
+            DataFrame: A DataFrame containing the coordinates of the fly's skeleton.
+        """
+
+        if self.skeletontrack is None:
+            warnings.warn(f"No skeleton tracking file found for {self.name}.")
+            return None
+
+        # Get the full body tracking data
+        full_body_data = Sleap_Tracks(self.skeletontrack, object_type="fly")
+
+        # Get the first track
+        data = full_body_data.dataset[full_body_data.dataset["object"] == "fly_1"]
+        
+        # For each node, replace NaNs with the previous value
+        # Get the columns containing the x and y coordinates
+        x_columns = [col for col in data.columns if "x_" in col]
+        y_columns = [col for col in data.columns if "y_" in col]
+        
+        for x_col, y_col in zip(x_columns, y_columns):
+            
+            x = data[x_col]
+            y = data[y_col]
+            
+            if x.empty or y.empty:
+                warnings.warn(f"Skipping skeleton coordinates for {self.name} and node: {x_col} and {y_col} due to empty data.")
+                return None
+            
+            try:
+                replace_nans_with_previous_value(x)
+                replace_nans_with_previous_value(y)
+            except ValueError as e:
+                warnings.warn(
+                    f"Skipping skeleton coordinates for {self.name} and node: {x_col} and {y_col} due to error: {e}"
+                )
+                return None
+            
+            data[x_col] = x
+            data[y_col] = y
+
+        data = data.assign(Frame=data.index + 1)
+
+        data["Frame"] = data["Frame"].astype(int)
+
+        data["time"] = data["Frame"] / self.experiment.fps
 
         return data
 
@@ -1279,7 +1346,7 @@ class Experiment:
     A class for an experiment. This represents a folder containing multiple flies, each of which is represented by a Fly object.
     """
 
-    def __init__(self, directory):
+    def __init__(self, directory, metadata_only=False):
         """
         Parameters
         ----------
@@ -1298,7 +1365,10 @@ class Experiment:
         self.directory = directory
         self.metadata = self.load_metadata()
         self.fps = self.load_fps()
-        self.flies = self.load_flies()
+        
+        # If metadata_only is True, don't load the flies
+        if not metadata_only:
+            self.flies = self.load_flies()
 
         # Check if the experiment directory contains a grid image and if not, generate it
         if not (self.directory / "grid.png").exists():

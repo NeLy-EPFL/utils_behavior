@@ -404,23 +404,25 @@ class Fly:
     def check_dead(self):
         """Check if the fly is dead or in poor condition.
 
-        This method loads the smoothed fly tracking data and checks if the fly moved more that 30 pixels in the y or x direction. If it did, it means the fly is alive and in good condition.
+        This method loads the smoothed fly tracking data and checks if the fly moved more than 30 pixels in the y or x direction. If it did, it means the fly is alive and in good condition.
 
         Returns:
             bool: True if the fly is dead or in poor condition, False otherwise.
         """
+        # Use the first dataset from flyball_positions
+        flyball_positions = self.flyball_positions[0]
 
         # Check if any of the smoothed fly x and y coordinates are more than 30 pixels away from their initial position
         if np.any(
             abs(
-                self.flyball_positions["yfly"]
-                - self.flyball_positions["yfly"][0]
+                flyball_positions["yfly"]
+                - flyball_positions["yfly"][0]
             )
             > 30
         ) or np.any(
             abs(
-                self.flyball_positions["xfly"]
-                - self.flyball_positions["xfly"][0]
+                flyball_positions["xfly"]
+                - flyball_positions["xfly"][0]
             )
             > 30
         ):
@@ -530,98 +532,99 @@ class Fly:
             xvals (bool): Whether to extract the x coordinates.
 
         Returns:
-            data (pd.DataFrame): The coordinates of the ball and fly.
+            list: A list of DataFrames, each containing the coordinates of the ball and fly.
         """
-        data = []
-        columns = []
+        data_list = []
 
         if ball:
-            
-            # Check how many tracks are in the file
-            
-            if len(self.balltrack.objects) > 1:
-                warnings.warn(f"Multiple tracks found in {self.balltrack.name}. Using the first track.")
+            # Iterate over all ball tracks
+            for ball_idx in range(1, len(self.balltrack.objects) + 1):
+                data = []
+                columns = []
+
+                ball_data = self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"]
+
+                xball = ball_data["x_centre"]
+                yball = ball_data["y_centre"]
+
+                try:
+                    # Replace NaNs in yball
+                    replace_nans_with_previous_value(yball)
+
+                    # Replace NaNs in xball
+                    replace_nans_with_previous_value(xball)
+                except ValueError as e:
+                    warnings.warn(
+                        f"Skipping ball coordinates for {self.name} due to error: {e}"
+                    )
+                    continue
+
+                data.append(yball)
+                columns.append(f"yball")
+
+                if xvals:
+                    data.append(xball)
+                    columns.append(f"xball")
+
+                if fly:
+                    flydata = self.flytrack.dataset[self.flytrack.dataset["object"] == "fly_1"]
+
+                    xfly = flydata["x_thorax"]
+                    yfly = flydata["y_thorax"]
+
+                    try:
+                        # Replace NaNs in yfly
+                        replace_nans_with_previous_value(yfly)
+
+                        # Replace NaNs in xfly
+                        replace_nans_with_previous_value(xfly)
+                    except ValueError as e:
+                        warnings.warn(
+                            f"Skipping fly coordinates for {self.name} due to error: {e}"
+                        )
+                        continue
+
+                    data.append(yfly)
+                    columns.append("yfly")
+
+                    if xvals:
+                        data.append(xfly)
+                        columns.append("xfly")
+
+                # Combine the x and y arrays into a single 2D array
+                data = np.stack(data, axis=1)
+
+                # Convert the 2D array into a DataFrame
+                data = pd.DataFrame(data, columns=columns)
+
+                data = data.assign(Frame=data.index + 1)
+
+                data["Frame"] = data["Frame"].astype(int)
+
+                data["time"] = data["Frame"] / self.experiment.fps
                 
-            # Get the first track
-            
-            ball1_data = self.balltrack.dataset[self.balltrack.dataset["object"] == "ball_1"]
-            
-            
-            xball = ball1_data["x_centre"]
-            
-            yball = ball1_data["y_centre"]
-            
-            #xball, yball = extract_coordinates(self.balltrack.as_posix())
+                data["ball_idx"] = ball_idx
 
-            try:
-                # Replace NaNs in yball
-                replace_nans_with_previous_value(yball)
+                if self.start:
+                    data[f"yfly_relative"] = abs(data["yfly"] - self.start)
 
-                # Replace NaNs in xball
-                replace_nans_with_previous_value(xball)
-            except ValueError as e:
-                warnings.warn(
-                    f"Skipping ball coordinates for {self.name} due to error: {e}"
-                )
-                return None
+                    # Fill missing values using linear interpolation
+                    data[f"yfly_relative"] = data[f"yfly_relative"].interpolate(method="linear")
 
-            data.append(yball)
-            columns.append("yball")
+                    data[f"yball_relative"] = abs(data[f"yball"] - self.start)
 
-            if xvals:
-                data.append(xball)
-                columns.append("xball")
+                    data[f"yball_relative"] = data[f"yball_relative"].interpolate(method="linear")
+                    
+                # Determine if the ball is a training ball or a generalisation ball
+                if xvals:
+                    if (data["xball"] - data["xfly"]).abs().max() <= 100:
+                        data["ball_type"] = "training"
+                    else:
+                        data["ball_type"] = "generalisation"
 
-        if fly:
-            
-            flydata = self.flytrack.dataset[self.flytrack.dataset["object"] == "fly_1"]
-            #xfly, yfly = extract_coordinates(self.flytrack.as_posix())
-            
-            xfly = flydata["x_thorax"]
-            yfly = flydata["y_thorax"]
+                data_list.append(data)
 
-            try:
-                # Replace NaNs in yfly
-                replace_nans_with_previous_value(yfly)
-
-                # Replace NaNs in xfly
-                replace_nans_with_previous_value(xfly)
-            except ValueError as e:
-                warnings.warn(
-                    f"Skipping fly coordinates for {self.name} due to error: {e}"
-                )
-                return None
-
-            data.append(yfly)
-            columns.append("yfly")
-
-            if xvals:
-                data.append(xfly)
-                columns.append("xfly")
-
-        # Combine the x and y arrays into a single 2D array
-        data = np.stack(data, axis=1)
-
-        # Convert the 2D array into a DataFrame
-        data = pd.DataFrame(data, columns=columns)
-
-        data = data.assign(Frame=data.index + 1)
-
-        data["Frame"] = data["Frame"].astype(int)
-
-        data["time"] = data["Frame"] / self.experiment.fps
-
-        if self.start:
-            data["yfly_relative"] = abs(data["yfly"] - self.start)
-
-            # Fill missing values using linear interpolation
-            data["yfly_relative"] = data["yfly_relative"].interpolate(method="linear")
-
-            data["yball_relative"] = abs(data["yball"] - self.start)
-
-            data["yball_relative"] = data["yball_relative"].interpolate(method="linear")
-
-        return data
+        return data_list
     
     def get_skeleton(self):
         """
@@ -684,6 +687,7 @@ class Fly:
         plot_signals=False,
         signal_name="",
         subset=None,
+        use_2d=False
     ):
         """
         This function finds events in a signal derived from the flyball_positions attribute based on certain criteria.
@@ -695,119 +699,138 @@ class Fly:
         omit_events (list, optional): A range of events to omit. Defaults to None.
         plot_signals (bool, optional): Whether to plot the signals or not. Defaults to False.
         signal_name (str, optional): The name of the signal. Defaults to "".
+        subset (DataFrame, optional): A subset of the flyball_positions DataFrame to use. Defaults to None.
+        use_2d (bool, optional): Whether to use 2D distance calculations. Defaults to False.
 
         Returns:
-        list: A list of events found in the signal. Each event is a list containing the start frame, end frame and duration of the event.
+        dict: A dictionary where keys are ball types and values are lists of events found in the signal for each ball.
         """
 
         # Use the provided subset if it exists, otherwise use the full flyball_positions
-        flyball_positions = subset if subset is not None else self.flyball_positions
+        flyball_positions_list = subset if subset is not None else self.flyball_positions
 
         # Convert the gap between events and the minimum event length from seconds to frames
         gap_between_events = gap_between_events * self.experiment.fps
         event_min_length = event_min_length * self.experiment.fps
 
-        distance = (
-            flyball_positions.loc[:, "yfly"]
-            - flyball_positions.loc[:, "yball"]
-        ).values
+        # Initialize the dictionary to store events for each ball type
+        events_dict = {}
 
-        # Initialize the list of events
-        events = []
+        # Iterate over all ball tracks
+        for flyball_positions in flyball_positions_list:
+            ball_type = flyball_positions["ball_type"].iloc[0]
 
-        # Find all frames where the signal is within the limit values
-        all_frames_above_lim = np.where(
-            (np.array(distance) > thresh[0]) & (np.array(distance) < thresh[1])
-        )[0]
+            if use_2d:
+                # Compute the 2D distance between the fly and the ball
+                distance = np.sqrt(
+                    (flyball_positions.loc[:, "xfly"] - flyball_positions.loc[:, "xball"])**2 +
+                    (flyball_positions.loc[:, "yfly"] - flyball_positions.loc[:, "yball"])**2
+                ).values
+            else:
+                # Compute the 1D distance using the y coordinates
+                distance = (
+                    flyball_positions.loc[:, "yfly"] - flyball_positions.loc[:, "yball"]
+                ).values
 
-        # If no frames are found within the limit values, return an empty list
-        if len(all_frames_above_lim) == 0:
-            if plot_signals:
-                print(f"Any point is between {thresh[0]} and {thresh[1]}")
-                plt.plot(signal, label=f"{signal_name}-filtered")
-                plt.legend()
-                plt.show()
-            return events
+            # Initialize the list of events for the current ball type
+            events = []
 
-        # Find the distance between consecutive frames
-        distance_betw_frames = np.diff(all_frames_above_lim)
+            # Find all frames where the signal is within the limit values
+            all_frames_above_lim = np.where(
+                (np.array(distance) > thresh[0]) & (np.array(distance) < thresh[1])
+            )[0]
 
-        # Find the points where the distance between frames is greater than the gap between events
-        split_points = np.where(distance_betw_frames > gap_between_events)[0]
-
-        # Add the first and last points to the split points
-        split_points = np.insert(split_points, 0, -1)
-        split_points = np.append(split_points, len(all_frames_above_lim) - 1)
-
-        # Plot the signal if required
-        if plot_signals:
-            limit_value = thresh[0] if thresh[1] == np.inf else thresh[1]
-            print(all_frames_above_lim[split_points])
-            plt.plot(signal, label=f"{signal_name}-filtered")
-
-        # Iterate over the split points to find events
-        for f in range(0, len(split_points) - 1):
-            # If the gap between two split points is less than 2, skip to the next iteration
-            if split_points[f + 1] - split_points[f] < 2:
+            # If no frames are found within the limit values, continue to the next ball
+            if len(all_frames_above_lim) == 0:
+                if plot_signals:
+                    print(f"Any point is between {thresh[0]} and {thresh[1]} for {ball_type}")
+                    plt.plot(distance, label=f"{signal_name}-filtered")
+                    plt.legend()
+                    plt.show()
                 continue
 
-            # Define the start and end of the region of interest (ROI)
-            start_roi = all_frames_above_lim[split_points[f] + 1]
-            end_roi = all_frames_above_lim[split_points[f + 1]]
+            # Find the distance between consecutive frames
+            distance_betw_frames = np.diff(all_frames_above_lim)
 
-            # If there are events to omit and the start of the ROI is within these events, adjust the start of the ROI
-            if omit_events:
-                if (
-                    start_roi >= omit_events[0]
-                    and start_roi < omit_events[1]
-                    and end_roi < omit_events[1]
-                ):
+            # Find the points where the distance between frames is greater than the gap between events
+            split_points = np.where(distance_betw_frames > gap_between_events)[0]
+
+            # Add the first and last points to the split points
+            split_points = np.insert(split_points, 0, -1)
+            split_points = np.append(split_points, len(all_frames_above_lim) - 1)
+
+            # Plot the signal if required
+            if plot_signals:
+                limit_value = thresh[0] if thresh[1] == np.inf else thresh[1]
+                print(all_frames_above_lim[split_points])
+                plt.plot(distance, label=f"{signal_name}-filtered")
+
+            # Iterate over the split points to find events
+            for f in range(0, len(split_points) - 1):
+                # If the gap between two split points is less than 2, skip to the next iteration
+                if split_points[f + 1] - split_points[f] < 2:
                     continue
-                elif (
-                    start_roi >= omit_events[0]
-                    and start_roi < omit_events[1]
-                    and end_roi > omit_events[1]
-                ):
-                    start_roi = int(omit_events[1])
 
-            # Calculate the duration of the event
-            duration = end_roi - start_roi
+                # Define the start and end of the region of interest (ROI)
+                start_roi = all_frames_above_lim[split_points[f] + 1]
+                end_roi = all_frames_above_lim[split_points[f + 1]]
 
-            # Calculate the mean and median of the signal within the ROI
-            mean_signal = np.mean(np.array(distance[start_roi:end_roi]))
-            median_signal = np.median(np.array(distance[start_roi:end_roi]))
+                # If there are events to omit and the start of the ROI is within these events, adjust the start of the ROI
+                if omit_events:
+                    if (
+                        start_roi >= omit_events[0]
+                        and start_roi < omit_events[1]
+                        and end_roi < omit_events[1]
+                    ):
+                        continue
+                    elif (
+                        start_roi >= omit_events[0]
+                        and start_roi < omit_events[1]
+                        and end_roi > omit_events[1]
+                    ):
+                        start_roi = int(omit_events[1])
 
-            # Calculate the proportion of the signal within the ROI that is within the limit values
-            signal_within_limits = len(
-                np.where(
-                    (np.array(distance[start_roi:end_roi]) > thresh[0])
-                    & (np.array(distance[start_roi:end_roi]) < thresh[1])
-                )[0]
-            ) / len(np.array(distance[start_roi:end_roi]))
+                # Calculate the duration of the event
+                duration = end_roi - start_roi
 
-            # If the duration of the event is greater than the minimum length and more than 75% of the signal is within the limit values, add the event to the list
-            if duration > event_min_length and signal_within_limits > 0.75:
-                events.append([start_roi, end_roi, duration])
-                if plot_signals:
-                    print(
-                        start_roi,
-                        end_roi,
-                        duration,
-                        mean_signal,
-                        median_signal,
-                        signal_within_limits,
-                    )
-                    plt.plot(start_roi, limit_value, "go")
-                    plt.plot(end_roi, limit_value, "rx")
+                # Calculate the mean and median of the signal within the ROI
+                mean_signal = np.mean(np.array(distance[start_roi:end_roi]))
+                median_signal = np.median(np.array(distance[start_roi:end_roi]))
 
-        # Plot the limit value if required
-        if plot_signals:
-            plt.plot([0, len(distance)], [limit_value, limit_value], "c-")
-            plt.legend()
-            plt.show()
+                # Calculate the proportion of the signal within the ROI that is within the limit values
+                signal_within_limits = len(
+                    np.where(
+                        (np.array(distance[start_roi:end_roi]) > thresh[0])
+                        & (np.array(distance[start_roi:end_roi]) < thresh[1])
+                    )[0]
+                ) / len(np.array(distance[start_roi:end_roi]))
 
-        # Return the list of events
-        return events
+                # If the duration of the event is greater than the minimum length and more than 75% of the signal is within the limit values, add the event to the list
+                if duration > event_min_length and signal_within_limits > 0.75:
+                    events.append([start_roi, end_roi, duration])
+                    if plot_signals:
+                        print(
+                            start_roi,
+                            end_roi,
+                            duration,
+                            mean_signal,
+                            median_signal,
+                            signal_within_limits,
+                        )
+                        plt.plot(start_roi, limit_value, "go")
+                        plt.plot(end_roi, limit_value, "rx")
+
+            # Plot the limit value if required
+            if plot_signals:
+                plt.plot([0, len(distance)], [limit_value, limit_value], "c-")
+                plt.legend()
+                plt.show()
+
+            # Store the events for the current ball type in the dictionary
+            events_dict[ball_type] = events
+
+        # Return the dictionary of events
+        return events_dict
 
     def annotate_events(self):
         """

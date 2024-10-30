@@ -290,10 +290,15 @@ class Fly:
                     )
                 )[0]
             except IndexError:
-                raise FileNotFoundError(f"No video found for {self.name}.")
+                try:
+                    # Look for a video file in the corridor directory
+                    self.video = list(self.directory.glob("*.mp4"))[0]
+                    
+                except IndexError:
+                    raise FileNotFoundError(f"No video found for {self.name}.")
 
         try:
-            self.flytrack = list(directory.glob("*tracked_fly*.analysis.h5"))[0]
+            self.flytrack = list(self.directory.glob("*tracked_fly*.analysis.h5"))[0]
             self.flytrack = Sleap_Tracks(self.flytrack, object_type="fly")
             # print(flypath.name)
         except IndexError:
@@ -301,7 +306,7 @@ class Fly:
             # print(f"No fly tracking file found for {self.name}, skipping...")
 
         try:
-            self.balltrack = list(directory.glob("*tracked_ball*.analysis.h5"))[0]
+            self.balltrack = list(self.directory.glob("*tracked_ball*.analysis.h5"))[0]
             self.balltrack = Sleap_Tracks(self.balltrack, object_type="ball")
             # print(ballpath.name)
         except IndexError:
@@ -309,21 +314,26 @@ class Fly:
             # print(f"No ball tracking file found for {self.name}, skipping...")
             
         try:
-            self.skeletontrack = list(directory.glob("*full_body*.h5"))[0]
+            self.skeletontrack = list(self.directory.glob("*full_body*.h5"))[0]
         except IndexError:
             self.skeletontrack = None
             # print(f"No skeleton tracking file found for {self.name}, skipping...")
 
-        # Check if the coordinates.npy file exists in the fly directory
+        # Check if the experiment is a corridor experiment
+        if "corridor" in self.directory.name:
+            # Check if the coordinates.npy file exists in the fly directory
+            if not (self.directory / "coordinates.npy").exists():
+                # Run the detect_boundaries function on the Fly associated experiment to generate the coordinates.npy file for all flies in the experiment
+                print(
+                    f"No boundaries found. Generating coordinates.npy file for {self.name}..."
+                )
+                self.detect_boundaries()
 
-        if not (self.directory / "coordinates.npy").exists():
-            # Run the detect_boundaries function on the Fly associated experiment to generate the coordinates.npy file for all flies in the experiment
-            print(
-                f"No boundaries found. Generating coordinates.npy file for {self.name}..."
-            )
-            self.detect_boundaries()
-
-        self.start, self.end = np.load(self.directory / "coordinates.npy")
+            self.start_y, self.end = np.load(self.directory / "coordinates.npy")
+        else:
+            # Use the initial position of the fly as self.start
+            self.start_x, self.start_y = self.get_initial_position()
+            self.end = None  # Set self.end to None as it's not used in non-corridor experiments
 
         # Compute distance between fly and ball, and interactions
 
@@ -341,6 +351,8 @@ class Fly:
 
         if self.flyball_positions is not None:
             self.dead_or_empty = self.check_empty() or self.check_dead()
+            
+        self.exit_time = self.get_exit_time()
 
     def __str__(self):
         # Get the genotype from the metadata
@@ -350,6 +362,45 @@ class Fly:
 
     def __repr__(self):
         return f"Fly({self.directory})"
+    
+    def get_initial_position(self):
+        """
+        Get the initial x and y positions of the fly. First, try to use the fly tracking data.
+        If not available, use the skeleton data.
+
+        Returns:
+            tuple: The initial x and y positions of the fly.
+        """
+        # Check if fly tracking data is available
+        if hasattr(self, 'flytrack') and self.flytrack is not None:
+            fly_data = self.flytrack.dataset[self.flytrack.dataset["object"] == "fly_1"]
+            if 'y_thorax' in fly_data.columns and 'x_thorax' in fly_data.columns:
+                return fly_data['x_thorax'].iloc[0], fly_data['y_thorax'].iloc[0]
+            elif 'y_Thorax' in fly_data.columns and 'x_Thorax' in fly_data.columns:
+                return fly_data['x_Thorax'].iloc[0], fly_data['y_Thorax'].iloc[0]
+
+        # Fallback to skeleton data if fly tracking data is not available
+        if self.fly_skeleton is not None:
+            if 'y_thorax' in self.fly_skeleton.columns and 'x_thorax' in self.fly_skeleton.columns:
+                return self.fly_skeleton['x_thorax'].iloc[0], self.fly_skeleton['y_thorax'].iloc[0]
+            elif 'y_Thorax' in self.fly_skeleton.columns and 'x_Thorax' in self.fly_skeleton.columns:
+                return self.fly_skeleton['x_Thorax'].iloc[0], self.fly_skeleton['y_Thorax'].iloc[0]
+
+        raise ValueError(f"No valid position data found for {self.name}.")
+    
+    def get_exit_time(self):
+        """
+        Get the exit time, which is the first time at which the fly x position has been 100 px away from the initial fly x position.
+
+        Returns:
+            float: The exit time.
+        """
+        for flyball_positions in self.flyball_positions:
+            if 'xfly' in flyball_positions.columns:
+                exit_time_data = flyball_positions[abs(flyball_positions['xfly'] - self.start_x) > 100]
+                if not exit_time_data.empty:
+                    return exit_time_data.iloc[0]['time']
+        return np.nan
 
     def check_empty(self):
         """
@@ -370,12 +421,14 @@ class Fly:
         Vid = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         # Load the coordinates.npy file
-        start, end = np.load(self.video.parent / "coordinates.npy")
+        #start, end = np.load(self.video.parent / "coordinates.npy")
 
         arena = self.video.parent.parent.name
 
+        # print self.start_y value and type
+        print(f"start_y: {self.start_y}, type: {type(self.start_y)}")
         # Crop the frames to the chamber location, which is any y value above the start position
-        crop = Vid[start + 40 :, :]
+        crop = Vid[round(self.start_y) - 20 :, :]
 
         # Detect the edges of the arena and crop the image to the edges
         edges = cv2.Canny(crop, 100, 200)
@@ -605,19 +658,20 @@ class Fly:
                 
                 data["ball_idx"] = ball_idx
 
-                if self.start:
-                    data[f"yfly_relative"] = abs(data["yfly"] - self.start)
+                if self.start_y:
+                    data[f"yfly_relative"] = abs(data["yfly"] - self.start_y)
 
                     # Fill missing values using linear interpolation
                     data[f"yfly_relative"] = data[f"yfly_relative"].interpolate(method="linear")
 
-                    data[f"yball_relative"] = abs(data[f"yball"] - self.start)
+                    data[f"yball_relative"] = abs(data[f"yball"] - self.start_y)
 
                     data[f"yball_relative"] = data[f"yball_relative"].interpolate(method="linear")
                     
                 # Determine if the ball is a training ball or a generalisation ball
                 if xvals:
-                    if (data["xball"] - data["xfly"]).abs().max() <= 100:
+                    initial_separation = abs(data["xball"].iloc[0] - data["xfly"].iloc[0])
+                    if initial_separation <= 100:
                         data["ball_type"] = "training"
                     else:
                         data["ball_type"] = "generalisation"
@@ -677,6 +731,8 @@ class Fly:
         data["time"] = data["Frame"] / self.experiment.fps
 
         return data
+    
+    ################################ Interaction events and associated metrics #################################
 
     def find_interaction_events(
         self,
@@ -687,7 +743,7 @@ class Fly:
         plot_signals=False,
         signal_name="",
         subset=None,
-        use_2d=False
+        use_2d=True
     ):
         """
         This function finds events in a signal derived from the flyball_positions attribute based on certain criteria.
@@ -834,15 +890,15 @@ class Fly:
 
     def annotate_events(self):
         """
-        Creates a new column in the flyball_positions DataFrame containing the event number for each frame. If no event is found for a frame, the value in the column is set to None.
+        Creates a new column in each flyball_positions DataFrame containing the event number for each frame. If no event is found for a frame, the value in the column is set to None.
         """
+        for flyball_positions in self.flyball_positions:
+            flyball_positions["event"] = None
 
-        self.flyball_positions["event"] = None
+            for i, event in enumerate(self.interaction_events, start=1):
+                start, end = event[0], event[1]
 
-        for i, event in enumerate(self.interaction_events, start=1):
-            start, end = event[0], event[1]
-
-            self.flyball_positions.loc[start:end, "event"] = i
+                flyball_positions.loc[start:end, "event"] = i
 
         return self.flyball_positions
 
@@ -856,7 +912,6 @@ class Fly:
         Returns:
             int: The number of events.
         """
-
         # Use the provided subset if it exists, otherwise use the full interaction_events
         interaction_events = (
             self.find_interaction_events(subset=subset)
@@ -876,30 +931,33 @@ class Fly:
             subset (DataFrame, optional): A subset of the flyball_positions to compute on. Defaults to None.
 
         Returns:
-            tuple: A tuple containing the final event (start frame, end frame and duration) and its index in the list of events.
+            dict: A dictionary where keys are ball types and values are tuples containing the final event (start frame, end frame and duration) and its index in the list of events.
         """
+        final_event_dict = {}
 
-        # Use the provided subset if it exists, otherwise use the full flyball_positions
-        flyball_positions = subset if subset is not None else self.flyball_positions
+        for flyball_positions in self.flyball_positions:
+            ball_type = flyball_positions["ball_type"].iloc[0]
+            # Use the provided subset if it exists, otherwise use the full flyball_positions
+            flyball_positions = subset if subset is not None else flyball_positions
 
-        # Get the maximum relative distance of the ball from the start of the corridor
-        max_yball_relative = flyball_positions["yball_relative"].max()
+            # Get the maximum relative distance of the ball from the start of the corridor
+            max_yball_relative = flyball_positions["yball_relative"].max()
 
-        # Get the event where the maximum relative distance was recorded
-        try:
-            final_event, final_event_index = next(
-                (event, i)
-                for i, event in enumerate(self.interaction_events)
-                if flyball_positions.loc[event[0] : event[1], "yball_relative"].max()
-                >= max_yball_relative - threshold
-            )
-        except StopIteration:
-            # print(f"No final event found for {self.name}")
-            # Return None or NaN when no final event is found
-            final_event, final_event_index = None, None
+            # Get the event where the maximum relative distance was recorded
+            try:
+                final_event, final_event_index = next(
+                    (event, i)
+                    for i, event in enumerate(self.interaction_events[ball_type])
+                    if flyball_positions.loc[event[0] : event[1], "yball_relative"].max()
+                    >= max_yball_relative - threshold
+                )
+            except StopIteration:
+                final_event, final_event_index = None, None
 
-        return final_event, final_event_index
+            final_event_dict[ball_type] = (final_event, final_event_index)
 
+        return final_event_dict
+    
     def check_yball_variation(self, event, threshold=5, subset=None):
         """
         Check if the variation in the 'yball' value during an event exceeds a given threshold.
@@ -912,17 +970,23 @@ class Fly:
             subset (DataFrame, optional): A subset of the flyball_positions to compute on. Defaults to None.
 
         Returns:
-            bool: True if the variation in 'yball' during the event exceeds the threshold, False otherwise.
+            dict: A dictionary where keys are ball types and values are tuples containing a boolean indicating if the variation exceeds the threshold and the variation value.
         """
-        # Use the provided subset if it exists, otherwise use the full flyball_positions
-        flyball_positions = subset if subset is not None else self.flyball_positions
+        variation_dict = {}
 
-        # Get the yball segment corresponding to an event
-        yball_event = flyball_positions.loc[event[0] : event[1], "yball"]
+        for flyball_positions in self.flyball_positions:
+            ball_type = flyball_positions["ball_type"].iloc[0]
+            # Use the provided subset if it exists, otherwise use the full flyball_positions
+            flyball_positions = subset if subset is not None else flyball_positions
 
-        variation = yball_event.max() - yball_event.min()
+            # Get the yball segment corresponding to an event
+            yball_event = flyball_positions.loc[event[0] : event[1], "yball"]
 
-        return (variation > threshold, variation)
+            variation = yball_event.max() - yball_event.min()
+
+            variation_dict[ball_type] = (variation > threshold, variation)
+
+        return variation_dict
 
     def get_significant_events(self, distance=2, subset=None):
         """
@@ -933,7 +997,7 @@ class Fly:
             subset (list, optional): A subset of the interaction_events to compute on. Defaults to None.
 
         Returns:
-            list: A list of events where the ball was displaced by more than the given distance.
+            dict: A dictionary where keys are ball types and values are lists of significant events.
         """
         # Use the provided subset if it exists, otherwise use the full interaction_events
         interaction_events = (
@@ -942,14 +1006,20 @@ class Fly:
             else self.interaction_events
         )
 
-        # Filter the events based on the check_yball_variation method
-        significant_events = [
-            event
-            for event in interaction_events
-            if self.check_yball_variation(event, threshold=distance)[0]
-        ]
+        significant_events_dict = {}
 
-        return significant_events
+        for flyball_positions in self.flyball_positions:
+            ball_type = flyball_positions["ball_type"].iloc[0]
+            # Filter the events based on the check_yball_variation method
+            significant_events = [
+                event
+                for event in interaction_events[ball_type]
+                if self.check_yball_variation(event, threshold=distance)[ball_type][0]
+            ]
+
+            significant_events_dict[ball_type] = significant_events
+
+        return significant_events_dict
 
     # TODO: Find out why my detected significant events doesn't change at all when I change the distance value
 
@@ -961,7 +1031,7 @@ class Fly:
             subset (list, optional): A subset of the interaction_events to compute on. Defaults to None.
 
         Returns:
-            list: A list of breaks, where each break is a tuple containing the start and end indices of the break in the 'flyball_positions' DataFrame, and the duration of the break.
+            dict: A dictionary where keys are ball types and values are lists of breaks, where each break is a tuple containing the start and end indices of the break in the 'flyball_positions' DataFrame, and the duration of the break.
         """
         # Use the provided subset if it exists, otherwise use the full interaction_events
         interaction_events = (
@@ -970,35 +1040,43 @@ class Fly:
             else self.interaction_events
         )
 
-        # Initialize the list of breaks
-        breaks = []
+        breaks_dict = {}
 
-        # If there are no interaction events, the entire video is a break
-        if not interaction_events:
-            return [(0, len(self.flyball_positions), len(self.flyball_positions))]
+        for flyball_positions in self.flyball_positions:
+            ball_type = flyball_positions["ball_type"].iloc[0]
+            # Initialize the list of breaks
+            breaks = []
 
-        # find the break if any between the start of the video and the first event
-        if interaction_events[0][0] > 0:
-            breaks.append((0, interaction_events[0][0], interaction_events[0][0]))
+            # If there are no interaction events, the entire video is a break
+            if not interaction_events[ball_type]:
+                breaks.append((0, len(flyball_positions), len(flyball_positions)))
+                breaks_dict[ball_type] = breaks
+                continue
 
-        # find the breaks between events
-        for i, event in enumerate(interaction_events[:-1]):
-            start = event[1]
-            end = interaction_events[i + 1][0]
-            duration = end - start
-            breaks.append((start, end, duration))
+            # find the break if any between the start of the video and the first event
+            if interaction_events[ball_type][0][0] > 0:
+                breaks.append((0, interaction_events[ball_type][0][0], interaction_events[ball_type][0][0]))
 
-        # find the break if any between the last event and the end of the video
-        if interaction_events[-1][1] < len(self.flyball_positions):
-            breaks.append(
-                (
-                    interaction_events[-1][1],
-                    len(self.flyball_positions),
-                    len(self.flyball_positions) - interaction_events[-1][1],
+            # find the breaks between events
+            for i, event in enumerate(interaction_events[ball_type][:-1]):
+                start = event[1]
+                end = interaction_events[ball_type][i + 1][0]
+                duration = end - start
+                breaks.append((start, end, duration))
+
+            # find the break if any between the last event and the end of the video
+            if interaction_events[ball_type][-1][1] < len(flyball_positions):
+                breaks.append(
+                    (
+                        interaction_events[ball_type][-1][1],
+                        len(flyball_positions),
+                        len(flyball_positions) - interaction_events[ball_type][-1][1],
+                    )
                 )
-            )
 
-        return breaks
+            breaks_dict[ball_type] = breaks
+
+        return breaks_dict
 
     def get_cumulated_breaks_duration(self, subset=None):
         """
@@ -1008,11 +1086,16 @@ class Fly:
             subset (list, optional): A subset of the interaction_events to compute on. Defaults to None.
 
         Returns:
-            int: The total duration of the breaks between events.
+            dict: A dictionary where keys are ball types and values are the total duration of the breaks between events.
         """
-        breaks = self.find_breaks(subset=subset)
+        breaks_dict = self.find_breaks(subset=subset)
 
-        return sum([break_[2] for break_ in breaks])
+        cumulated_breaks_duration_dict = {
+            ball_type: sum([break_[2] for break_ in breaks])
+            for ball_type, breaks in breaks_dict.items()
+        }
+
+        return cumulated_breaks_duration_dict
 
     def find_events_direction(self, subset=None):
         """
@@ -1022,30 +1105,74 @@ class Fly:
             subset (list, optional): A subset of the interaction_events to compute on. Defaults to None.
 
         Returns:
-            tuple: A tuple containing lists of pushing events and pulling events.
+            dict: A dictionary where keys are ball types and values are tuples containing lists of pushing events and pulling events.
         """
         # Get significant events
-        significant_events = self.get_significant_events(subset=subset)
+        significant_events_dict = self.get_significant_events(subset=subset)
 
-        if significant_events:
-            pushing_events = [
-                event
-                for event in significant_events
-                if self.flyball_positions.loc[event[1], "yball_relative"]
-                > self.flyball_positions.loc[event[0], "yball_relative"]
-            ]
+        events_direction_dict = {}
 
-            pulling_events = [
-                event
-                for event in significant_events
-                if self.flyball_positions.loc[event[1], "yball_relative"]
-                < self.flyball_positions.loc[event[0], "yball_relative"]
-            ]
+        for flyball_positions in self.flyball_positions:
+            ball_type = flyball_positions["ball_type"].iloc[0]
+            significant_events = significant_events_dict[ball_type]
 
-        else:
-            pushing_events, pulling_events = [], []
+            pushing_events = []
+            pulling_events = []
 
-        return pushing_events, pulling_events
+            for event in significant_events:
+                start_roi = event[0]
+                end_roi = event[1]
+
+                # Compute the relative position of the ball to the fly at the start and end of the event
+                start_relative_position = flyball_positions.loc[start_roi, "yball_relative"] - flyball_positions.loc[start_roi, "yfly"]
+                end_relative_position = flyball_positions.loc[end_roi, "yball_relative"] - flyball_positions.loc[end_roi, "yfly"]
+
+                if end_relative_position > start_relative_position:
+                    pushing_events.append(event)
+                else:
+                    pulling_events.append(event)
+
+            events_direction_dict[ball_type] = (pushing_events, pulling_events)
+
+        return events_direction_dict
+    
+    ################################ F1 experiment related functions ################################
+    
+    def find_adjusted_time(self, distances):
+        """
+        Find the time when the ball has moved by each distance from the initial position.
+
+        Parameters:
+            distances (list): A list of distances to check.
+
+        Returns:
+            dict: A dictionary where keys are ball types and values are tuples containing ball movement times and adjusted ball movement times.
+        """
+        results = {}
+
+        for flyball_positions in self.flyball_positions:
+            ball_type = flyball_positions["ball_type"].iloc[0]
+            initial_y_centre = flyball_positions["yball"].iloc[0]
+
+            ball_movement_times = {}
+            adjusted_ball_movement_times = {}
+
+            for distance in distances:
+                filtered_ball_data = flyball_positions[abs(flyball_positions["yball"] - initial_y_centre) > distance]
+                if not filtered_ball_data.empty:
+                    ball_movement_time = filtered_ball_data.iloc[0]["time"]
+                    ball_movement_times[distance] = ball_movement_time
+                    if ball_type == "generalisation" and pd.notna(self.exit_time):
+                        adjusted_ball_movement_times[distance] = ball_movement_time - self.exit_time
+                    else:
+                        adjusted_ball_movement_times[distance] = np.nan
+                else:
+                    ball_movement_times[distance] = np.nan
+                    adjusted_ball_movement_times[distance] = np.nan
+
+            results[ball_type] = (ball_movement_times, adjusted_ball_movement_times)
+
+        return results
 
     def generate_clip(
         self, event, outpath=None, fps=None, width=None, height=None, tracks=False
@@ -1393,8 +1520,8 @@ class Experiment:
         if not metadata_only:
             self.flies = self.load_flies()
 
-        # Check if the experiment directory contains a grid image and if not, generate it
-        if not (self.directory / "grid.png").exists():
+        # Check if the experiment directory contains a grid image and if there is "corridor" in sub subfolder names. if no grid, generate it
+        if not (self.directory / "grid.png").exists() and any("corridor" in str(subdir) for subdir in self.directory.rglob('*')):
             self.generate_grid()
 
     def __str__(self):

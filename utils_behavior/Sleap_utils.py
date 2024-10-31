@@ -21,6 +21,17 @@ import yaml
 
 import subprocess
 
+def get_shades(color, num_shades):
+    """Generate shades of a given color."""
+    shades = []
+    for i in range(num_shades):
+        if color == 'red':
+            shades.append((255, int(255 * (i / num_shades)), int(255 * (i / num_shades))))
+        elif color == 'blue':
+            shades.append((int(255 * (i / num_shades)), int(255 * (i / num_shades)), 255))
+        elif color == 'green':
+            shades.append((int(255 * (i / num_shades)), 255, int(255 * (i / num_shades))))
+    return shades
 
 class Sleap_Tracks:
     """Class for handling SLEAP tracking data. It is a wrapper around the SLEAP H5 file format."""
@@ -321,7 +332,21 @@ class Sleap_Tracks:
 
         # Define colors
         if colorby == 'Nodes':
-            color_map = {node: (int(np.random.randint(0, 255)), int(np.random.randint(0, 255)), int(np.random.randint(0, 255))) for node in self.node_names}
+            right_nodes = [node for node in self.node_names if node.startswith('R')]
+            left_nodes = [node for node in self.node_names if node.startswith('L')]
+            central_nodes = [node for node in self.node_names if not node.startswith('R') and not node.startswith('L')]
+
+            right_shades = get_shades('red', len(right_nodes))
+            left_shades = get_shades('blue', len(left_nodes))
+            central_shades = get_shades('green', len(central_nodes))
+
+            color_map = {}
+            for i, node in enumerate(right_nodes):
+                color_map[node] = right_shades[i]
+            for i, node in enumerate(left_nodes):
+                color_map[node] = left_shades[i]
+            for i, node in enumerate(central_nodes):
+                color_map[node] = central_shades[i]
         else:
             color_map = {node: (0, 255, 255) for node in self.node_names}
 

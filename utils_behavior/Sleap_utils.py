@@ -64,13 +64,15 @@ class Sleap_Tracks:
 
             return node_property
 
-    def __init__(self, filename, object_type="object", smoothed_tracks=True):
+    def __init__(self, filename, object_type="object", smoothed_tracks=True, debug = False):
         """Initialize the Sleap_Track object with the given SLEAP tracking file.
 
         Args:
             filename (Path): Path to the SLEAP tracking file.
             object_type (str): Type of the object (e.g., "ball", "fly"). Defaults to "object".
         """
+        
+        self.debug=debug
 
         self.path = Path(filename)
         self.object_type = object_type
@@ -112,10 +114,11 @@ class Sleap_Tracks:
             object_data = self.dataset[self.dataset["object"] == f"{self.object_type}_{i+1}"]
             self.objects.append(self.Object(object_data, self.node_names))
 
-        print(f"Loaded SLEAP tracking file: {filename}")
-        print(f"N° of objects: {len(self.objects)}")
-        print(f"Nodes: {self.node_names}")
-        print(f"Video FPS: {self.fps}")
+        if debug:
+            print(f"Loaded SLEAP tracking file: {filename}")
+            print(f"N° of objects: {len(self.objects)}")
+            print(f"Nodes: {self.node_names}")
+            print(f"Video FPS: {self.fps}")
         
     def _handle_video_path(self, video_path):
         """Handle the video path to check for outdated paths and replace them with the new path.
@@ -154,8 +157,8 @@ class Sleap_Tracks:
         df_list = []
 
         for i, obj in enumerate(self.tracks):
-            
-            print(f"Processing {self.object_type} {i+1}/{len(self.tracks)}")
+            if self.debug:
+                print(f"Processing {self.object_type} {i+1}/{len(self.tracks)}")
 
             x_coords = obj[0]
             y_coords = obj[1]
@@ -172,7 +175,8 @@ class Sleap_Tracks:
             for k, n in enumerate(self.node_names):
                 
                 if self.smoothed_tracks:
-                    print("smoothing tracks")
+                    if self.debug:
+                        print("smoothing tracks")
                     x_coords[k] = savgol_lowpass_filter(x_coords[k], 221, 1)
                     y_coords[k] = savgol_lowpass_filter(y_coords[k], 221, 1)
                 

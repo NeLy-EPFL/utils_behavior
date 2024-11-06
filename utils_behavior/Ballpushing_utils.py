@@ -83,74 +83,83 @@ def load_object(filename):
     return obj
 
 
-def extract_pauses(source, min_time=200, threshold_y=0.05, threshold_x=0.05):
+def find_interaction_events(
+        protagonist1,
+        protagonist2,
+        nodes1=["Lfront", "Rfront"],
+        nodes2=["x_centre", "y_centre"],
+        threshold=[0,11],
+        gap_between_events=4,
+        event_min_length=2,
+        fps=29
+    ):
     """
-    Extracts the pause events from the fly path.
+    This function finds interaction events where the specified nodes of two protagonists are within a certain distance for a minimum amount of time.
 
-    Parameters
-    ----------
-    source : pathlib Path, str or pandas DataFrame
-        The path to the fly path file or a DataFrame containing the fly positions
-    min_time : int
-        The minimum duration of a pause event.
-    threshold : float
-        The threshold for the absolute difference in yfly values.
+    Parameters:
+    protagonist1 (DataFrame): DataFrame containing the first protagonist's tracking data.
+    protagonist2 (DataFrame): DataFrame containing the second protagonist's tracking data.
+    nodes1 (list): List of nodes for the first protagonist to check the distance with the second protagonist (e.g., ["Lfront", "Rfront"]).
+    nodes2 (list): List of nodes for the second protagonist to check the distance with the first protagonist (e.g., ["Centre",]).
+    threshold (int): The distance threshold (in pixels) for the nodes to be considered in interaction.
+    gap_between_events (int): The minimum gap required between two events, expressed in seconds.
+    event_min_length (int): The minimum length of an event, expressed in seconds.
+    fps (int): Frames per second of the video.
 
-    Returns
-    -------
-    pause_events : list
-        A list of DataFrames containing the pause events.
+    Returns:
+    list: A list of interaction events, where each event is represented as [start_frame, end_frame, duration].
     """
 
-    if isinstance(source, Path):
-        print(f"Path: {source}")
-        df = get_coordinates(flypath=source, ball=False, xvals=True)
+    # Convert the gap between events and the minimum event length from seconds to frames
+    gap_between_events = gap_between_events * fps
+    event_min_length = event_min_length * fps
 
-    elif isinstance(source, str):
-        print(f"String: {source}")
-        df = get_coordinates(flypath=source, ball=False, xvals=True)
+    # Initialize a list to store distances for all specified nodes
+    distances = []
 
-    elif isinstance(source, pd.DataFrame):
-        print(f"DataFrame: {source.shape}")
-        df = source
-    else:
-        raise TypeError(
-            "Invalid source format: source must be a pathlib Path, string or a pandas DataFrame"
-        )
+    # Compute the Euclidean distance for each specified node
+    for node1 in nodes1:
+        for node2 in nodes2:
+            distances_node = np.sqrt((protagonist1[f"x_{node1}"] - protagonist2[f"x_{node2}"])**2 + (protagonist1[f"y_{node1}"] - protagonist2[f"y_{node2}"])**2)
+            distances.append(distances_node)
 
-    # Compute the absolute difference in yfly values
-    df["yfly_diff"] = df["yfly"].diff().abs()
-    df["xfly_diff"] = df["xfly"].diff().abs()
+    # Combine distances to find frames where any node is within the threshold distance
+    combined_distances = np.min(distances, axis=0)
+    interaction_frames = np.where(
+                (np.array(combined_distances) > threshold[0]) & (np.array(combined_distances) < threshold[1])
+            )[0]
 
-    # Identify periods where the difference is less than threshold for at least min_time frames
-    df["Pausing"] = (
-        (df["yfly_diff"] < threshold_y)  # & df['xfly_diff'] < threshold_x
-    ).rolling(min_time).sum() == min_time
+    # If no interaction frames are found, return an empty list
+    if len(interaction_frames) == 0:
+        return []
 
-    # Replace NaN values with False
-    df["Pausing"].fillna(False, inplace=True)
+    # Find the distance between consecutive interaction frames
+    distance_betw_frames = np.diff(interaction_frames)
 
-    # Create a new column 'PauseGroup' where change in 'Pausing' is detected
-    df["PauseGroup"] = (df["Pausing"] != df["Pausing"].shift()).cumsum()
+    # Find the points where the distance between frames is greater than the gap between events
+    split_points = np.where(distance_betw_frames > gap_between_events)[0]
 
-    # Filter rows where 'Pausing' is True
-    pauses = df[df["Pausing"] == True]
+    # Add the first and last points to the split points
+    split_points = np.insert(split_points, 0, -1)
+    split_points = np.append(split_points, len(interaction_frames) - 1)
 
-    # Store the pause events as separate DataFrames
-    pause_events = [group for _, group in pauses.groupby("PauseGroup")]
+    # Initialize the list of interaction events
+    interaction_events = []
 
-    # Group by 'PauseGroup' and get the first and last frame of each pause event
-    pause_groups = pauses.groupby("PauseGroup")["time"].agg(["first", "last"])
+    # Iterate over the split points to find events
+    for f in range(0, len(split_points) - 1):
+        # Define the start and end of the region of interest (ROI)
+        start_roi = interaction_frames[split_points[f] + 1]
+        end_roi = interaction_frames[split_points[f + 1]]
 
-    # Convert 'first' and 'last' columns to datetime format
-    pause_groups["first"] = pd.to_datetime(pause_groups["first"], unit="s").dt.time
-    pause_groups["last"] = pd.to_datetime(pause_groups["last"], unit="s").dt.time
+        # Calculate the duration of the event
+        duration = end_roi - start_roi
 
-    # Print the pause events
-    print(pause_groups)
+        # If the duration of the event is greater than the minimum length, add the event to the list
+        if duration > event_min_length:
+            interaction_events.append([start_roi, end_roi, duration])
 
-    return pause_events
-
+    return interaction_events
 
 def filter_experiments(source, **criteria):
     """Generates a list of Experiment objects based on criteria.
@@ -196,7 +205,7 @@ def filter_experiments(source, **criteria):
 # Pixel size: 30 mm = 500 pixels, 4 mm = 70 pixels, 1.5 mm = 25 pixels
 
 
-# TODO : Test the dead_or_empty function in conditions where I know the fly is dead or the arena is empty or not to check success
+# TODO : Test the valid_data function in conditions where I know the fly is dead or the arena is empty or not to check success
 class Fly:
     """
     A class for a single fly. This represents a folder containing a video, associated tracking files, and metadata files. It is usually contained in an Experiment object, and inherits the Experiment object's metadata.
@@ -249,8 +258,6 @@ class Fly:
         self.flyball_positions = None
         self.fly_skeleton = None
 
-        # print(f"Importing {self.name}...")
-
         # Get the brain regions table
         brain_regions = pd.read_csv(brain_regions_path, index_col=0)
 
@@ -262,7 +269,7 @@ class Fly:
                 # If the genotype is None, skip the fly
                 if genotype.lower() == "none":
                     print(f"Genotype is None: {self.name} is empty.")
-                    self.dead_or_empty = True
+                    self.valid_data = True
                     return
 
                 # Convert to lowercase for comparison
@@ -280,80 +287,34 @@ class Fly:
                 self.nickname = "PR"
                 self.brain_region = "Control"
 
-        try:
-            self.video = list(self.directory.glob(f"{self.corridor}.mp4"))[0]
-        except IndexError:
-            try:
-                self.video = list(
-                    self.directory.glob(
-                        f"{self.directory.parent.name}_corridor_{self.corridor[-1]}.mp4"
-                    )
-                )[0]
-            except IndexError:
-                try:
-                    # Look for a video file in the corridor directory
-                    self.video = list(self.directory.glob("*.mp4"))[0]
-                    
-                except IndexError:
-                    raise FileNotFoundError(f"No video found for {self.name}.")
+        # Load the video file
+        self.video = self.load_video()
 
-        try:
-            self.flytrack = list(self.directory.glob("*tracked_fly*.analysis.h5"))[0]
-            self.flytrack = Sleap_Tracks(self.flytrack, object_type="fly")
-            # print(flypath.name)
-        except IndexError:
-            self.flytrack = None
-            # print(f"No fly tracking file found for {self.name}, skipping...")
+        # Load the tracking files
+        self.flytrack = self.load_tracking_file("*tracked_fly*.analysis.h5", "fly")
+        self.balltrack = self.load_tracking_file("*tracked_ball*.analysis.h5", "ball")
+        self.skeletontrack = self.load_tracking_file("*full_body*.h5", "fly")
+        
+        self.interaction_events = self.find_flyball_interactions()
 
-        try:
-            self.balltrack = list(self.directory.glob("*tracked_ball*.analysis.h5"))[0]
-            self.balltrack = Sleap_Tracks(self.balltrack, object_type="ball")
-            # print(ballpath.name)
-        except IndexError:
-            self.balltrack = None
-            # print(f"No ball tracking file found for {self.name}, skipping...")
-            
-        try:
-            self.skeletontrack = list(self.directory.glob("*full_body*.h5"))[0]
-        except IndexError:
-            self.skeletontrack = None
-            # print(f"No skeleton tracking file found for {self.name}, skipping...")
+        # Check if the fly is alive or dead and if it interacts with the ball
+        self.valid_data = self.check_data_quality()
+        
+        if not self.valid_data:
+            print(f"Invalid data for: {self.name}. Skipping.")
+            return
 
-        # Check if the experiment is a corridor experiment
-        if "corridor" in self.directory.name:
-            # Check if the coordinates.npy file exists in the fly directory
-            if not (self.directory / "coordinates.npy").exists():
-                # Run the detect_boundaries function on the Fly associated experiment to generate the coordinates.npy file for all flies in the experiment
-                print(
-                    f"No boundaries found. Generating coordinates.npy file for {self.name}..."
-                )
-                self.detect_boundaries()
+        self.start_x, self.start_y = self.get_initial_position()
+        
+        self.metrics = {}
+        
+        self.compute_metrics()
 
-            self.start_y, self.end = np.load(self.directory / "coordinates.npy")
-        else:
-            # Use the initial position of the fly as self.start
-            self.start_x, self.start_y = self.get_initial_position()
-            self.end = None  # Set self.end to None as it's not used in non-corridor experiments
-
-        # Compute distance between fly and ball, and interactions
-
-        if self.flytrack is not None and self.balltrack is not None:
-            self.flyball_positions = self.get_coordinates(self.balltrack, self.flytrack)
-            if self.flyball_positions is not None:
-                self.interaction_events = self.find_interaction_events()
-        else:
-            self.flyball_positions = None
-            
         # Compute the skeleton tracking data
         self.fly_skeleton = self.get_skeleton()
-
-        # Check if the corridor is empty or the fly is in bad shape and set the dead_or_empty attribute accordingly
-
-        if self.flyball_positions is not None:
-            self.dead_or_empty = self.check_empty() or self.check_dead()
-            
+        
         self.exit_time = self.get_exit_time()
-
+        
     def __str__(self):
         # Get the genotype from the metadata
         genotype = self.arena_metadata["Genotype"]
@@ -362,6 +323,32 @@ class Fly:
 
     def __repr__(self):
         return f"Fly({self.directory})"
+
+    def load_video(self):
+        """Load the video file for the fly."""
+        try:
+            return list(self.directory.glob(f"{self.corridor}.mp4"))[0]
+        except IndexError:
+            try:
+                return list(
+                    self.directory.glob(
+                        f"{self.directory.parent.name}_corridor_{self.corridor[-1]}.mp4"
+                    )
+                )[0]
+            except IndexError:
+                try:
+                    # Look for a video file in the corridor directory
+                    return list(self.directory.glob("*.mp4"))[0]
+                except IndexError:
+                    raise FileNotFoundError(f"No video found for {self.name}.")
+
+    def load_tracking_file(self, pattern, object_type):
+        """Load a tracking file for the fly."""
+        try:
+            tracking_file = list(self.directory.glob(pattern))[0]
+            return Sleap_Tracks(tracking_file, object_type=object_type, debug=False)
+        except IndexError:
+            return None
     
     def get_initial_position(self):
         """
@@ -376,15 +363,15 @@ class Fly:
             fly_data = self.flytrack.dataset[self.flytrack.dataset["object"] == "fly_1"]
             if 'y_thorax' in fly_data.columns and 'x_thorax' in fly_data.columns:
                 return fly_data['x_thorax'].iloc[0], fly_data['y_thorax'].iloc[0]
-            elif 'y_Thorax' in fly_data.columns and 'x_Thorax' in fly_data.columns:
-                return fly_data['x_Thorax'].iloc[0], fly_data['y_Thorax'].iloc[0]
+            elif 'y_thorax' in fly_data.columns and 'x_thorax' in fly_data.columns:
+                return fly_data['x_thorax'].iloc[0], fly_data['y_thorax'].iloc[0]
 
         # Fallback to skeleton data if fly tracking data is not available
         if self.fly_skeleton is not None:
             if 'y_thorax' in self.fly_skeleton.columns and 'x_thorax' in self.fly_skeleton.columns:
                 return self.fly_skeleton['x_thorax'].iloc[0], self.fly_skeleton['y_thorax'].iloc[0]
-            elif 'y_Thorax' in self.fly_skeleton.columns and 'x_Thorax' in self.fly_skeleton.columns:
-                return self.fly_skeleton['x_Thorax'].iloc[0], self.fly_skeleton['y_Thorax'].iloc[0]
+            elif 'y_thorax' in self.fly_skeleton.columns and 'x_thorax' in self.fly_skeleton.columns:
+                return self.fly_skeleton['x_thorax'].iloc[0], self.fly_skeleton['y_thorax'].iloc[0]
 
         raise ValueError(f"No valid position data found for {self.name}.")
     
@@ -393,68 +380,32 @@ class Fly:
         Get the exit time, which is the first time at which the fly x position has been 100 px away from the initial fly x position.
 
         Returns:
-            float: The exit time.
+            float: The exit time, or None if the fly did not move 100 px away from the initial position.
         """
-        for flyball_positions in self.flyball_positions:
-            if 'xfly' in flyball_positions.columns:
-                exit_time_data = flyball_positions[abs(flyball_positions['xfly'] - self.start_x) > 100]
-                if not exit_time_data.empty:
-                    return exit_time_data.iloc[0]['time']
-        return np.nan
 
-    def check_empty(self):
-        """
-        Check if the arena is empty.
+        if self.flytrack is None:
+            return None
 
-        This method loads the first frame of the video, converts it to grayscale, and checks if there are any non-zero pixels in the image. If there are, it means the arena is not empty.
+        fly_data = self.flytrack.dataset[self.flytrack.dataset["object"] == "fly_1"]
 
-        Returns:
-            bool: True if the arena is empty, False otherwise.
-        """
-        # Load the first frame of video
-        Vid = cv2.VideoCapture(str(self.video))
-        Vid.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        ret, frame = Vid.read()
-        Vid.release()
+        # Get the initial x position of the fly
+        initial_x = self.start_x
 
-        # Convert to grayscale
-        Vid = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # Get the x position of the fly
+        x = fly_data["x_thorax"]
 
-        # Load the coordinates.npy file
-        #start, end = np.load(self.video.parent / "coordinates.npy")
+        # Find the first time at which the fly x position has been 100 px away from the initial fly x position
+        exit_condition = x > initial_x + 100
+        if not exit_condition.any():
+            return None
 
-        arena = self.video.parent.parent.name
+        exit_time = x[exit_condition].index[0] / self.experiment.fps
 
-        # print self.start_y value and type
-        print(f"start_y: {self.start_y}, type: {type(self.start_y)}")
-        # Crop the frames to the chamber location, which is any y value above the start position
-        crop = Vid[round(self.start_y) - 20 :, :]
+        return exit_time
 
-        # Detect the edges of the arena and crop the image to the edges
-        edges = cv2.Canny(crop, 100, 200)
-        # Find the non zero pixels
-        nz = np.nonzero(edges)
-        # Crop the image to the edges
-        crop = crop[np.min(nz[0]) : np.max(nz[0]), np.min(nz[1]) : np.max(nz[1])]
 
-        # Binarise the images with a threshold of 60
-        crop_bin = crop < 60
-
-        # Create a kernel
-        kernel = np.ones((3, 3), np.uint8)
-
-        # Apply an opening operation
-        crop_bin = cv2.morphologyEx(crop_bin.astype(np.uint8), cv2.MORPH_OPEN, kernel)
-
-        # If there's a peak, the arena is not empty
-        if np.any(crop_bin > 0):
-            # print(f"{arena}/{self.video.name} is not empty")
-            return False
-        else:
-            print(f"{self.name} is empty")
-            return True
-
-    def check_dead(self):
+    # TODO : Also find flies that die during the recording
+    def check_data_quality(self):
         """Check if the fly is dead or in poor condition.
 
         This method loads the smoothed fly tracking data and checks if the fly moved more than 30 pixels in the y or x direction. If it did, it means the fly is alive and in good condition.
@@ -462,28 +413,41 @@ class Fly:
         Returns:
             bool: True if the fly is dead or in poor condition, False otherwise.
         """
-        # Use the first dataset from flyball_positions
-        flyball_positions = self.flyball_positions[0]
+        # Ensure that flytrack is not None
+        if self.flytrack is None:
+            print(f"{self.name} has no tracking data.")
+            return False
+
+        # Use the flytrack dataset
+        fly_data = self.flytrack.dataset[self.flytrack.dataset["object"] == "fly_1"]
 
         # Check if any of the smoothed fly x and y coordinates are more than 30 pixels away from their initial position
-        if np.any(
+        moved_y = np.any(
             abs(
-                flyball_positions["yfly"]
-                - flyball_positions["yfly"][0]
+                fly_data["y_thorax"]
+                - fly_data["y_thorax"].iloc[0]
             )
             > 30
-        ) or np.any(
+        )
+        moved_x = np.any(
             abs(
-                flyball_positions["xfly"]
-                - flyball_positions["xfly"][0]
+                fly_data["x_thorax"]
+                - fly_data["x_thorax"].iloc[0]
             )
             > 30
-        ):
-            # print(f"{self.name} is alive")
+        )
+
+        if not moved_y and not moved_x:
+            print(f"{self.name} did not move significantly.")
             return False
-        else:
-            print(f"{self.name} is dead or in poor condition")
-            return True
+
+        # Check if the interaction events dictionary is empty
+        if not self.interaction_events or not any(self.interaction_events.values()):
+            print(f"{self.name} did not interact with the ball.")
+            return False
+
+        print(f"{self.name} is alive and interacted with the ball.")
+        return True
 
     def get_arena_metadata(self):
         """
@@ -587,11 +551,12 @@ class Fly:
         Returns:
             list: A list of DataFrames, each containing the coordinates of the ball and fly.
         """
-        data_list = []
+        data_dict = {}
 
         if ball:
             # Iterate over all ball tracks
             for ball_idx in range(1, len(self.balltrack.objects) + 1):
+                #print(f"Processing ball index: {ball_idx}")
                 data = []
                 columns = []
 
@@ -670,15 +635,32 @@ class Fly:
                     
                 # Determine if the ball is a training ball or a generalisation ball
                 if xvals:
-                    initial_separation = abs(data["xball"].iloc[0] - data["xfly"].iloc[0])
-                    if initial_separation <= 100:
-                        data["ball_type"] = "training"
+                    # Drop NaN values and check if there are any valid entries
+                    xfly_non_nan = data["xfly"].dropna()
+                    xball_non_nan = data["xball"].dropna()
+                    
+                    #print(f"Non-NaN xfly count: {len(xfly_non_nan)}, Non-NaN xball count: {len(xball_non_nan)}")
+                    
+                    if not xfly_non_nan.empty and not xball_non_nan.empty:
+                        # Pick the first x fly and ball values that aren't NaN
+                        x0_fly = xfly_non_nan.iloc[0]
+                        x0_ball = xball_non_nan.iloc[0]
+                        
+                        initial_separation = abs(x0_ball - x0_fly)
+                        #print(f"Initial separation: {initial_separation}")
+                        
+                        if initial_separation <= 100:
+                            ball_type = "training"
+                        else:
+                            ball_type = f"generalisation"
+                        
+                        data["ball_type"] = ball_type
+                        data_dict[ball_type] = data
                     else:
-                        data["ball_type"] = "generalisation"
+                        print(f"No valid tracking data for xfly or xball for {ball_idx}")
 
-                data_list.append(data)
-
-        return data_list
+        #print(f"Final data_dict keys: {list(data_dict.keys())}")
+        return data_dict
     
     def get_skeleton(self):
         """
@@ -734,407 +716,203 @@ class Fly:
     
     ################################ Interaction events and associated metrics #################################
 
-    def find_interaction_events(
-        self,
-        gap_between_events=4,
-        event_min_length=2,
-        thresh=[0, 70],
-        omit_events=None,
-        plot_signals=False,
-        signal_name="",
-        subset=None,
-        use_2d=True
-    ):
-        """
-        This function finds events in a signal derived from the flyball_positions attribute based on certain criteria.
-
-        Parameters:
-        gap_between_events (int): The minimum gap required between two events, expressed in seconds.
-        event_min_length (int): The minimum length of an event, expressed in seconds.
-        thresh (list): The lower and upper limit values (in pixels) for the signal to be considered an event.
-        omit_events (list, optional): A range of events to omit. Defaults to None.
-        plot_signals (bool, optional): Whether to plot the signals or not. Defaults to False.
-        signal_name (str, optional): The name of the signal. Defaults to "".
-        subset (DataFrame, optional): A subset of the flyball_positions DataFrame to use. Defaults to None.
-        use_2d (bool, optional): Whether to use 2D distance calculations. Defaults to False.
-
-        Returns:
-        dict: A dictionary where keys are ball types and values are lists of events found in the signal for each ball.
-        """
-
-        # Use the provided subset if it exists, otherwise use the full flyball_positions
-        flyball_positions_list = subset if subset is not None else self.flyball_positions
-
-        # Convert the gap between events and the minimum event length from seconds to frames
-        gap_between_events = gap_between_events * self.experiment.fps
-        event_min_length = event_min_length * self.experiment.fps
-
-        # Initialize the dictionary to store events for each ball type
-        events_dict = {}
-
-        # Iterate over all ball tracks
-        for flyball_positions in flyball_positions_list:
-            ball_type = flyball_positions["ball_type"].iloc[0]
-
-            if use_2d:
-                # Compute the 2D distance between the fly and the ball
-                distance = np.sqrt(
-                    (flyball_positions.loc[:, "xfly"] - flyball_positions.loc[:, "xball"])**2 +
-                    (flyball_positions.loc[:, "yfly"] - flyball_positions.loc[:, "yball"])**2
-                ).values
-            else:
-                # Compute the 1D distance using the y coordinates
-                distance = (
-                    flyball_positions.loc[:, "yfly"] - flyball_positions.loc[:, "yball"]
-                ).values
-
-            # Initialize the list of events for the current ball type
-            events = []
-
-            # Find all frames where the signal is within the limit values
-            all_frames_above_lim = np.where(
-                (np.array(distance) > thresh[0]) & (np.array(distance) < thresh[1])
-            )[0]
-
-            # If no frames are found within the limit values, continue to the next ball
-            if len(all_frames_above_lim) == 0:
-                if plot_signals:
-                    print(f"Any point is between {thresh[0]} and {thresh[1]} for {ball_type}")
-                    plt.plot(distance, label=f"{signal_name}-filtered")
-                    plt.legend()
-                    plt.show()
-                continue
-
-            # Find the distance between consecutive frames
-            distance_betw_frames = np.diff(all_frames_above_lim)
-
-            # Find the points where the distance between frames is greater than the gap between events
-            split_points = np.where(distance_betw_frames > gap_between_events)[0]
-
-            # Add the first and last points to the split points
-            split_points = np.insert(split_points, 0, -1)
-            split_points = np.append(split_points, len(all_frames_above_lim) - 1)
-
-            # Plot the signal if required
-            if plot_signals:
-                limit_value = thresh[0] if thresh[1] == np.inf else thresh[1]
-                print(all_frames_above_lim[split_points])
-                plt.plot(distance, label=f"{signal_name}-filtered")
-
-            # Iterate over the split points to find events
-            for f in range(0, len(split_points) - 1):
-                # If the gap between two split points is less than 2, skip to the next iteration
-                if split_points[f + 1] - split_points[f] < 2:
-                    continue
-
-                # Define the start and end of the region of interest (ROI)
-                start_roi = all_frames_above_lim[split_points[f] + 1]
-                end_roi = all_frames_above_lim[split_points[f + 1]]
-
-                # If there are events to omit and the start of the ROI is within these events, adjust the start of the ROI
-                if omit_events:
-                    if (
-                        start_roi >= omit_events[0]
-                        and start_roi < omit_events[1]
-                        and end_roi < omit_events[1]
-                    ):
-                        continue
-                    elif (
-                        start_roi >= omit_events[0]
-                        and start_roi < omit_events[1]
-                        and end_roi > omit_events[1]
-                    ):
-                        start_roi = int(omit_events[1])
-
-                # Calculate the duration of the event
-                duration = end_roi - start_roi
-
-                # Calculate the mean and median of the signal within the ROI
-                mean_signal = np.mean(np.array(distance[start_roi:end_roi]))
-                median_signal = np.median(np.array(distance[start_roi:end_roi]))
-
-                # Calculate the proportion of the signal within the ROI that is within the limit values
-                signal_within_limits = len(
-                    np.where(
-                        (np.array(distance[start_roi:end_roi]) > thresh[0])
-                        & (np.array(distance[start_roi:end_roi]) < thresh[1])
-                    )[0]
-                ) / len(np.array(distance[start_roi:end_roi]))
-
-                # If the duration of the event is greater than the minimum length and more than 75% of the signal is within the limit values, add the event to the list
-                if duration > event_min_length and signal_within_limits > 0.75:
-                    events.append([start_roi, end_roi, duration])
-                    if plot_signals:
-                        print(
-                            start_roi,
-                            end_roi,
-                            duration,
-                            mean_signal,
-                            median_signal,
-                            signal_within_limits,
-                        )
-                        plt.plot(start_roi, limit_value, "go")
-                        plt.plot(end_roi, limit_value, "rx")
-
-            # Plot the limit value if required
-            if plot_signals:
-                plt.plot([0, len(distance)], [limit_value, limit_value], "c-")
-                plt.legend()
-                plt.show()
-
-            # Store the events for the current ball type in the dictionary
-            events_dict[ball_type] = events
-
-        # Return the dictionary of events
-        return events_dict
-
-    def annotate_events(self):
-        """
-        Creates a new column in each flyball_positions DataFrame containing the event number for each frame. If no event is found for a frame, the value in the column is set to None.
-        """
-        for flyball_positions in self.flyball_positions:
-            flyball_positions["event"] = None
-
-            for i, event in enumerate(self.interaction_events, start=1):
-                start, end = event[0], event[1]
-
-                flyball_positions.loc[start:end, "event"] = i
-
-        return self.flyball_positions
-
-    def get_events_number(self, subset=None):
-        """
-        Returns the number of events found in the flyball_positions DataFrame.
+    def find_flyball_interactions(self, gap_between_events=4, event_min_length=2, thresh=[0, 70]):
+        """This function applies find_interaction_events for each fly in the flytrack dataset and each ball in the balltrack dataset. It returns a dictionary where keys are the fly and ball indices and values are the interaction events.
 
         Args:
-            subset (list, optional): A subset of the interaction_events to compute on. Defaults to None.
+            gap_between_events (int, optional): The minimum gap required between two events, expressed in seconds. Defaults to 4.
+            event_min_length (int, optional): The minimum length of an event, expressed in seconds. Defaults to 2.
+            thresh (list, optional): The lower and upper limit values (in pixels) for the signal to be considered an event. Defaults to [0, 70].
 
         Returns:
-            int: The number of events.
+            dict: A nested dictionary where the outer keys are fly indices and the inner keys are ball indices, with interaction events as values.
         """
-        # Use the provided subset if it exists, otherwise use the full interaction_events
-        interaction_events = (
-            self.find_interaction_events(subset=subset)
-            if subset is not None
-            else self.interaction_events
-        )
+        
+        if self.flytrack is None or self.balltrack is None:
+            print(f"Skipping interaction events for {self.name} due to missing tracking data.")
+            return None
 
-        # Return the number of events
-        return len(interaction_events)
-
-    def get_final_event(self, threshold=10, subset=None):
-        """
-        Find the event at which the fly pushed the ball to its maximum relative distance from the start of the corridor. It is defined with a threshold so if the ball is very close to the maximum value recorded, it is still detected as the final event.
-
-        Args:
-            threshold (int, optional): The minimum distance (in pixels) required for the method to return True. Defaults to 10.
-            subset (DataFrame, optional): A subset of the flyball_positions to compute on. Defaults to None.
-
-        Returns:
-            dict: A dictionary where keys are ball types and values are tuples containing the final event (start frame, end frame and duration) and its index in the list of events.
-        """
-        final_event_dict = {}
-
-        for flyball_positions in self.flyball_positions:
-            ball_type = flyball_positions["ball_type"].iloc[0]
-            # Use the provided subset if it exists, otherwise use the full flyball_positions
-            flyball_positions = subset if subset is not None else flyball_positions
-
-            # Get the maximum relative distance of the ball from the start of the corridor
-            max_yball_relative = flyball_positions["yball_relative"].max()
-
-            # Get the event where the maximum relative distance was recorded
-            try:
-                final_event, final_event_index = next(
-                    (event, i)
-                    for i, event in enumerate(self.interaction_events[ball_type])
-                    if flyball_positions.loc[event[0] : event[1], "yball_relative"].max()
-                    >= max_yball_relative - threshold
+        fly_interactions = {}
+        
+        for fly_idx in range(1, len(self.flytrack.objects) + 1):
+            fly_data = self.flytrack.dataset[self.flytrack.dataset["object"] == f"fly_{fly_idx}"]
+            
+            for ball_idx in range(1, len(self.balltrack.objects) + 1):
+                ball_data = self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"]
+                
+                interaction_events = find_interaction_events(
+                    fly_data,
+                    ball_data,
+                    nodes1=["thorax"],
+                    nodes2=["centre"],
+                    threshold=thresh,
+                    gap_between_events=gap_between_events,
+                    event_min_length=event_min_length,
+                    fps=self.experiment.fps
                 )
-            except StopIteration:
-                final_event, final_event_index = None, None
+                
+                if fly_idx not in fly_interactions:
+                    fly_interactions[fly_idx] = {}
+                
+                fly_interactions[fly_idx][ball_idx] = interaction_events
+                    
+        return fly_interactions
 
-            final_event_dict[ball_type] = (final_event, final_event_index)
+    def get_events_number(self):
+        """
+        For each fly ball key in the interaction_events dictionary, this method returns the number of events.
 
-        return final_event_dict
+        Returns:
+            dict: A dictionary where keys are fly ball keys and values are the number of events.
+        """
+        
+        events_count = {}
+        
+        for key, events in self.interaction_events.items():
+            event_numbers = len(events)
+            print(f"Number of events for {key}: {event_numbers}")
+            events_count[key] = event_numbers
+
+        # Return the dictionary of events count
+        return events_count
+
+    def compute_metrics(self):
+        """
+        Compute and store various metrics for each pair of fly and ball.
+        """
+        for fly_idx, ball_dict in self.interaction_events.items():
+            for ball_idx, events in ball_dict.items():
+                key = f"fly_{fly_idx}_ball_{ball_idx}"
+                print(f"Computing metrics for {key}")
+                
+                self.metrics[key] = {
+                    "get_max_event": self.get_final_event(fly_idx, ball_idx),
+                    "significant_events": self.get_significant_events(fly_idx, ball_idx),
+                    "breaks": self.find_breaks(fly_idx, ball_idx),
+                    "cumulated_breaks_duration": self.get_cumulated_breaks_duration(fly_idx, ball_idx),
+                    "events_direction": self.find_events_direction(fly_idx, ball_idx)
+                }
+                
+                print(self.metrics[key])
+
+    def get_max_event(self, fly_idx, ball_idx, threshold=10):
+        """
+        Find the event at which the fly pushed the ball to its maximum relative distance using Euclidean distance.
+        """
+        
+        ball_data = self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"]
+
+        # Calculate the Euclidean distance for each frame
+        ball_data["euclidean_distance"] = np.sqrt(
+            (ball_data["x_centre"] - ball_data["x_centre"].iloc[0])**2 +
+            (ball_data["y_centre"] - ball_data["y_centre"].iloc[0])**2
+        )
+        
+        max_distance = ball_data["euclidean_distance"].max() - threshold
+
+        try:
+            max_event, max_event_index = next(
+                (event, i)
+                for i, event in enumerate(self.interaction_events[fly_idx][ball_idx])
+                # Check if max_distance is in this event
+                if ball_data.loc[event[0]:event[1], "euclidean_distance"].max() >= max_distance
+            )
+        except StopIteration:
+            max_event, max_event_index = None, None
+
+        return max_event, max_event_index
     
-    def check_yball_variation(self, event, threshold=5, subset=None):
+    def get_significant_events(self, fly_idx, ball_idx, distance=2):
+        """
+        Get the events where the ball was displaced by more than a given distance.
+        """
+        key = f"fly_{fly_idx}_ball_{ball_idx}"
+        fly_data = self.flytrack.dataset[self.flytrack.dataset["object"] == f"fly_{fly_idx}"]
+        ball_data = self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"]
+
+        significant_events = [
+            event
+            for event in self.interaction_events[fly_idx][ball_idx]
+            if self.check_yball_variation(event, ball_data, threshold=distance)
+        ]
+
+        return significant_events
+
+    def check_yball_variation(self, event, ball_data, threshold=5):
         """
         Check if the variation in the 'yball' value during an event exceeds a given threshold.
-
-        This method extracts the 'yball' values for the duration of the event from the 'flyball_positions' DataFrame. It then calculates the variation as the difference between the maximum and minimum 'yball' values. If this variation exceeds the threshold, the method returns True; otherwise, it returns False.
-
-        Args:
-            event (list): A list containing the start and end indices of the event in the 'flyball_positions' DataFrame.
-            threshold (int, optional): The minimum variation (in pixels) required for the method to return True. Defaults to 10.
-            subset (DataFrame, optional): A subset of the flyball_positions to compute on. Defaults to None.
-
-        Returns:
-            dict: A dictionary where keys are ball types and values are tuples containing a boolean indicating if the variation exceeds the threshold and the variation value.
         """
-        variation_dict = {}
+        yball_event = ball_data.loc[event[0]:event[1], "y_centre"]
+        variation = yball_event.max() - yball_event.min()
+        return variation > threshold
 
-        for flyball_positions in self.flyball_positions:
-            ball_type = flyball_positions["ball_type"].iloc[0]
-            # Use the provided subset if it exists, otherwise use the full flyball_positions
-            flyball_positions = subset if subset is not None else flyball_positions
-
-            # Get the yball segment corresponding to an event
-            yball_event = flyball_positions.loc[event[0] : event[1], "yball"]
-
-            variation = yball_event.max() - yball_event.min()
-
-            variation_dict[ball_type] = (variation > threshold, variation)
-
-        return variation_dict
-
-    def get_significant_events(self, distance=2, subset=None):
+    def find_breaks(self, fly_idx, ball_idx):
         """
-        Get the events where the ball was displaced by more that a given distance.
-
-        Args:
-            distance (int, optional): The minimum distance (in pixels) required for the method to return True. Defaults to 10.
-            subset (list, optional): A subset of the interaction_events to compute on. Defaults to None.
-
-        Returns:
-            dict: A dictionary where keys are ball types and values are lists of significant events.
+        Finds the periods where the fly is not interacting with the ball.
         """
-        # Use the provided subset if it exists, otherwise use the full interaction_events
-        interaction_events = (
-            self.find_interaction_events(subset=subset)
-            if subset is not None
-            else self.interaction_events
-        )
+        key = f"fly_{fly_idx}_ball_{ball_idx}"
+        fly_data = self.flytrack.dataset[self.flytrack.dataset["object"] == f"fly_{fly_idx}"]
+        ball_data = self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"]
 
-        significant_events_dict = {}
+        breaks = []
+        if not self.interaction_events[fly_idx][ball_idx]:
+            breaks.append((0, len(ball_data), len(ball_data)))
+            return breaks
 
-        for flyball_positions in self.flyball_positions:
-            ball_type = flyball_positions["ball_type"].iloc[0]
-            # Filter the events based on the check_yball_variation method
-            significant_events = [
-                event
-                for event in interaction_events[ball_type]
-                if self.check_yball_variation(event, threshold=distance)[ball_type][0]
-            ]
+        if self.interaction_events[fly_idx][ball_idx][0][0] > 0:
+            breaks.append((0, self.interaction_events[fly_idx][ball_idx][0][0], self.interaction_events[fly_idx][ball_idx][0][0]))
 
-            significant_events_dict[ball_type] = significant_events
+        for i, event in enumerate(self.interaction_events[fly_idx][ball_idx][:-1]):
+            start = event[1]
+            end = self.interaction_events[fly_idx][ball_idx][i + 1][0]
+            duration = end - start
+            breaks.append((start, end, duration))
 
-        return significant_events_dict
-
-    # TODO: Find out why my detected significant events doesn't change at all when I change the distance value
-
-    def find_breaks(self, subset=None):
-        """
-        Finds the periods where the fly is not interacting with the ball, which are defined as the periods between events.
-
-        Args:
-            subset (list, optional): A subset of the interaction_events to compute on. Defaults to None.
-
-        Returns:
-            dict: A dictionary where keys are ball types and values are lists of breaks, where each break is a tuple containing the start and end indices of the break in the 'flyball_positions' DataFrame, and the duration of the break.
-        """
-        # Use the provided subset if it exists, otherwise use the full interaction_events
-        interaction_events = (
-            self.find_interaction_events(subset=subset)
-            if subset is not None
-            else self.interaction_events
-        )
-
-        breaks_dict = {}
-
-        for flyball_positions in self.flyball_positions:
-            ball_type = flyball_positions["ball_type"].iloc[0]
-            # Initialize the list of breaks
-            breaks = []
-
-            # If there are no interaction events, the entire video is a break
-            if not interaction_events[ball_type]:
-                breaks.append((0, len(flyball_positions), len(flyball_positions)))
-                breaks_dict[ball_type] = breaks
-                continue
-
-            # find the break if any between the start of the video and the first event
-            if interaction_events[ball_type][0][0] > 0:
-                breaks.append((0, interaction_events[ball_type][0][0], interaction_events[ball_type][0][0]))
-
-            # find the breaks between events
-            for i, event in enumerate(interaction_events[ball_type][:-1]):
-                start = event[1]
-                end = interaction_events[ball_type][i + 1][0]
-                duration = end - start
-                breaks.append((start, end, duration))
-
-            # find the break if any between the last event and the end of the video
-            if interaction_events[ball_type][-1][1] < len(flyball_positions):
-                breaks.append(
-                    (
-                        interaction_events[ball_type][-1][1],
-                        len(flyball_positions),
-                        len(flyball_positions) - interaction_events[ball_type][-1][1],
-                    )
+        if self.interaction_events[fly_idx][ball_idx][-1][1] < len(ball_data):
+            breaks.append(
+                (
+                    self.interaction_events[fly_idx][ball_idx][-1][1],
+                    len(ball_data),
+                    len(ball_data) - self.interaction_events[fly_idx][ball_idx][-1][1],
                 )
+            )
 
-            breaks_dict[ball_type] = breaks
+        return breaks
 
-        return breaks_dict
-
-    def get_cumulated_breaks_duration(self, subset=None):
+    def get_cumulated_breaks_duration(self, fly_idx, ball_idx):
         """
         Compute the total duration of the breaks between events.
-
-        Args:
-            subset (list, optional): A subset of the interaction_events to compute on. Defaults to None.
-
-        Returns:
-            dict: A dictionary where keys are ball types and values are the total duration of the breaks between events.
         """
-        breaks_dict = self.find_breaks(subset=subset)
+        breaks = self.find_breaks(fly_idx, ball_idx)
+        cumulated_breaks_duration = sum([break_[2] for break_ in breaks])
+        return cumulated_breaks_duration
 
-        cumulated_breaks_duration_dict = {
-            ball_type: sum([break_[2] for break_ in breaks])
-            for ball_type, breaks in breaks_dict.items()
-        }
-
-        return cumulated_breaks_duration_dict
-
-    def find_events_direction(self, subset=None):
+    def find_events_direction(self, fly_idx, ball_idx):
         """
-        Find the events where the fly pushed or pulled the ball, which are defined as the events where the ball final position during these events is further away or closer to the start of the corridor than the initial position, respectively.
-
-        Args:
-            subset (list, optional): A subset of the interaction_events to compute on. Defaults to None.
-
-        Returns:
-            dict: A dictionary where keys are ball types and values are tuples containing lists of pushing events and pulling events.
+        Find the events where the fly pushed or pulled the ball.
         """
-        # Get significant events
-        significant_events_dict = self.get_significant_events(subset=subset)
+        key = f"fly_{fly_idx}_ball_{ball_idx}"
+        fly_data = self.flytrack.dataset[self.flytrack.dataset["object"] == f"fly_{fly_idx}"]
+        ball_data = self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"]
 
-        events_direction_dict = {}
+        significant_events = self.get_significant_events(fly_idx, ball_idx)
 
-        for flyball_positions in self.flyball_positions:
-            ball_type = flyball_positions["ball_type"].iloc[0]
-            significant_events = significant_events_dict[ball_type]
+        pushing_events = []
+        pulling_events = []
 
-            pushing_events = []
-            pulling_events = []
+        for event in significant_events:
+            start_roi = event[0]
+            end_roi = event[1]
 
-            for event in significant_events:
-                start_roi = event[0]
-                end_roi = event[1]
+            start_relative_position = ball_data.loc[start_roi, "y_centre"] - fly_data.loc[start_roi, "y_thorax"]
+            end_relative_position = ball_data.loc[end_roi, "y_centre"] - fly_data.loc[end_roi, "y_thorax"]
 
-                # Compute the relative position of the ball to the fly at the start and end of the event
-                start_relative_position = flyball_positions.loc[start_roi, "yball_relative"] - flyball_positions.loc[start_roi, "yfly"]
-                end_relative_position = flyball_positions.loc[end_roi, "yball_relative"] - flyball_positions.loc[end_roi, "yfly"]
+            if end_relative_position > start_relative_position:
+                pushing_events.append(event)
+            else:
+                pulling_events.append(event)
 
-                if end_relative_position > start_relative_position:
-                    pushing_events.append(event)
-                else:
-                    pulling_events.append(event)
-
-            events_direction_dict[ball_type] = (pushing_events, pulling_events)
-
-        return events_direction_dict
+        return pushing_events, pulling_events
     
     ################################ F1 experiment related functions ################################
     
@@ -1150,7 +928,7 @@ class Fly:
         """
         results = {}
 
-        for flyball_positions in self.flyball_positions:
+        for ball_type, flyball_positions in self.flyball_positions.items():
             ball_type = flyball_positions["ball_type"].iloc[0]
             initial_y_centre = flyball_positions["yball"].iloc[0]
 
@@ -1512,7 +1290,7 @@ class Experiment:
             fps : str
             The frame rate of the videos.
         """
-        self.directory = directory
+        self.directory = Path(directory)
         self.metadata = self.load_metadata()
         self.fps = self.load_fps()
         
@@ -1592,28 +1370,32 @@ class Experiment:
             dir for dir in self.directory.glob("**/*") if any(dir.glob("*.mp4"))
         ]
 
-        # print(mp4_directories)
-
         # Find all .mp4 files that are named the same as their parent directory
-        mp4_files = [
-            mp4_file
-            for dir in mp4_directories
-            if (
-                (mp4_file := dir / f"{dir.name}.mp4").exists()
-                or (
-                    mp4_file := dir / f"{dir.parent.name}_corridor_{dir.name[-1]}.mp4"
-                ).exists()
-            )
-        ]
+        mp4_files = []
+        for dir in mp4_directories:
+            if dir.is_dir():
+                try:
+                    # Look for a video file named the same as the directory
+                    mp4_file = list(dir.glob(f"{dir.name}.mp4"))[0]
+                except IndexError:
+                    try:
+                        # Look for a video file named with the parent directory and corridor
+                        mp4_file = list(dir.glob(f"{dir.parent.name}_corridor_{dir.name[-1]}.mp4"))[0]
+                    except IndexError:
+                        try:
+                            # Look for any .mp4 file in the directory
+                            mp4_file = list(dir.glob("*.mp4"))[0]
+                        except IndexError:
+                            print(f"No video found for {dir.name}. Moving to the next directory.")
+                            continue  # Move on to the next directory
+                print(f"Found video {mp4_file.name} for {dir.name}")
+                mp4_files.append(mp4_file)
 
-        # print(mp4_files)
+        print(mp4_files)
 
         # Create a Fly object for each .mp4 file
-
         flies = []
         for mp4_file in mp4_files:
-            # print(type(mp4_file.parent))
-            # print(type(self))
             print(f"Loading fly from {mp4_file.parent}")
             try:
                 fly = Fly(mp4_file.parent, experiment=self)
@@ -1761,7 +1543,7 @@ class Dataset:
             for fly in self.flies
             if hasattr(fly, "flyball_positions") and fly.flyball_positions is not None
         ]
-        self.flies = [fly for fly in self.flies if not fly.dead_or_empty]
+        self.flies = [fly for fly in self.flies if not fly.valid_data]
 
         self.brain_regions_path = brain_regions_path
         self.regions_map = pd.read_csv(self.brain_regions_path)
@@ -1819,89 +1601,68 @@ class Dataset:
             - 'summary': Summary metrics for each fly. These are single values for each fly (e.g. number of events, duration of the breaks between events, etc.). A list of available summary metrics can be found in _prepare_dataset_summary_metrics documentation.
 
         Returns:
-            pandas.DataFrame: A DataFrame containing selected metrics for each fly and associated metadata.
+            dict: A dictionary where keys are ball types and values are DataFrames containing selected metrics for each fly and associated metadata.
         """
 
         try:
+            dataset_dict = {}
+
             if metrics == "coordinates":
-                dataset_list = [
-                    self._prepare_dataset_coordinates(
-                        fly, success_cutoff=success_cutoff, time_range=time_range
-                    )
-                    for fly in self.flies
-                ]
-            elif metrics == "summary":
-                dataset_list = [
-                    (
-                        df
-                        if not df.empty
-                        else print(f"Empty DataFrame for fly {fly.directory}")
-                    )
-                    for fly in self.flies
-                    if (
-                        df := self._prepare_dataset_summary_metrics(
-                            fly, success_cutoff=success_cutoff, time_range=time_range
+                for fly in self.flies:
+                    for ball_type, flyball_positions in fly.flyball_positions.items():
+                        dataset = self._prepare_dataset_coordinates(
+                            fly, flyball_positions, success_cutoff=success_cutoff, time_range=time_range
                         )
-                    )
-                    is not None
-                ]
+                        if ball_type not in dataset_dict:
+                            dataset_dict[ball_type] = []
+                        dataset_dict[ball_type].append(dataset)
 
-                # Debugging step: print out each DataFrame in dataset_list
-                # for df in dataset_list:
-                #     print(df)
+            elif metrics == "summary":
+                for fly in self.flies:
+                    for ball_type, flyball_positions in fly.flyball_positions.items():
+                        df = self._prepare_dataset_summary_metrics(
+                            fly, flyball_positions, success_cutoff=success_cutoff, time_range=time_range
+                        )
+                        if df is not None:
+                            if ball_type not in dataset_dict:
+                                dataset_dict[ball_type] = []
+                            dataset_dict[ball_type].append(df)
+                        else:
+                            print(f"Empty DataFrame for fly {fly.directory}")
 
-            if dataset_list:  # Only concatenate if the list is not empty
-                self.data = pd.concat(dataset_list, ignore_index=True).reset_index(
-                    drop=True
-                )
-            else:
-                self.data = pd.DataFrame()
+            # Concatenate datasets for each ball type
+            for ball_type in dataset_dict:
+                if dataset_dict[ball_type]:  # Only concatenate if the list is not empty
+                    dataset_dict[ball_type] = pd.concat(dataset_dict[ball_type], ignore_index=True).reset_index(drop=True)
+                else:
+                    dataset_dict[ball_type] = pd.DataFrame()
 
-            self.data = self.compute_sample_size(self.data)
-
-            # Add a column "label" with combines Nickname and sample size
-            self.data["label"] = (
-                self.data["Nickname"]
-                + " (n = "
-                + self.data["SampleSize"].astype(str)
-                + ")"
-            )
-
-            # print(self.data.head())
+            self.data = dataset_dict
 
         except Exception as e:
             print(f"An error occurred: {e}")
             traceback.print_exc()
-            self.data = pd.DataFrame()
+            self.data = {}
 
         return self.data
 
     def _prepare_dataset_coordinates(
-        self, fly, interactions=True, success_cutoff=True, time_range=None
+        self, fly, flyball_positions, success_cutoff=True, time_range=None
     ):
         """
         Helper function to prepare individual fly dataset with fly and ball coordinates. It also adds the fly name, experiment name and arena metadata as categorical data.
 
         Args:
             fly (Fly): A Fly object.
-            interactions (bool): Whether to annotate the dataset with interaction events. Defaults to True.
+            flyball_positions (pd.DataFrame): DataFrame containing the fly and ball coordinates.
+            success_cutoff (bool): Whether to apply the success cutoff. Defaults to True.
+            time_range (list): A list containing the start and end times for the dataset. Defaults to None.
 
         Returns:
             pandas.DataFrame: A DataFrame containing the fly's coordinates and associated metadata.
         """
 
-        try:
-            if interactions:
-                fly.annotate_events()
-
-            dataset = fly.flyball_positions
-
-        # If the fly doesn't have tracking data, don't include it in the dataset
-        except AttributeError as e:
-            print(
-                f"Error occurred while preparing dataset for fly {fly.name}: {str(e)}"
-            )
-            return
+        dataset = flyball_positions
 
         if time_range is not None:
             # If one value is provided, set the end of the range to the end of the video and the start to the provided value
@@ -1909,12 +1670,11 @@ class Dataset:
                 dataset = dataset[dataset["time"] >= time_range[0]]
 
                 # Reindex events if any
-                if interactions:
-                    unique_events = dataset["event"].dropna().unique()
-                    event_mapping = {
-                        event: i + 1 for i, event in enumerate(unique_events)
-                    }
-                    dataset["event"] = dataset["event"].map(event_mapping)
+                unique_events = dataset["event"].dropna().unique()
+                event_mapping = {
+                    event: i + 1 for i, event in enumerate(unique_events)
+                }
+                dataset["event"] = dataset["event"].map(event_mapping)
             # If two values are provided, set the start and end of the range to the provided values
             elif len(time_range) == 2:
                 dataset = dataset[
@@ -1933,7 +1693,8 @@ class Dataset:
 
         if success_cutoff:
             cutoff_index = (
-                fly.flyball_positions["yball"] <= fly.end + 40
+                # Get the initial yball and subtract -180. Find the first index where yball is less than this value
+                (dataset["yball"] <= dataset["yball"].iloc[0] - 180)
             ).idxmax()
             if cutoff_index != 0:  # idxmax returns 0 if no True value is found
                 dataset = dataset[:cutoff_index]
@@ -2204,30 +1965,30 @@ class Dataset:
 
         return dataset
 
-    def compute_sample_size(self, data, group_by_columns=["Nickname", "Brain region"]):
-        """
-        Function used to compute the sample size of a dataset generated by the generate_dataset method. it compute the size of the dataset grouped by columns of interest.
+    # def compute_sample_size(self, data, group_by_columns=["Nickname", "Brain region"]):
+    #     """
+    #     Function used to compute the sample size of a dataset generated by the generate_dataset method. it compute the size of the dataset grouped by columns of interest.
 
-        Args:
-            data (pandas.DataFrame): A pandas DataFrame generated by the generate_dataset method.
+    #     Args:
+    #         data (pandas.DataFrame): A pandas DataFrame generated by the generate_dataset method.
 
-            group_by_columns (list): A list of columns to group the data by.
+    #         group_by_columns (list): A list of columns to group the data by.
 
-        Returns:
-            pandas.DataFrame: A DataFrame containing the sample size for each group.
-        """
-        # Group the data by the columns of interest and compute the sample size
-        sample_size = (
-            data.groupby(group_by_columns)
-            .nunique()["fly"]
-            .reset_index()
-            .rename(columns={"fly": "SampleSize"})
-        )
+    #     Returns:
+    #         pandas.DataFrame: A DataFrame containing the sample size for each group.
+    #     """
+    #     # Group the data by the columns of interest and compute the sample size
+    #     sample_size = (
+    #         data.groupby(group_by_columns)
+    #         .nunique()["fly"]
+    #         .reset_index()
+    #         .rename(columns={"fly": "SampleSize"})
+    #     )
 
-        # Merge the sample size with the original data
-        data = pd.merge(data, sample_size, on=group_by_columns)
+    #     # Merge the sample size with the original data
+    #     data = pd.merge(data, sample_size, on=group_by_columns)
 
-        return data
+    #     return data
 
     def get_event_numbers(self):
         # Check that events have been annotated

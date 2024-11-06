@@ -79,8 +79,12 @@ class Sleap_Tracks:
         self.smoothed_tracks = smoothed_tracks
 
         # Open the SLEAP tracking file
-        self.h5file = h5py.File(filename, "r")
-
+        try:
+            self.h5file = h5py.File(filename, "r")
+        except FileNotFoundError as e:
+            print(f"Error while opening SLEAP tracking file: {e}")
+            return
+        
         self.node_names = [x.decode("utf-8") for x in self.h5file["node_names"]]
         self.edge_names = [
             [y.decode("utf-8") for y in x] for x in self.h5file["edge_names"]
@@ -179,6 +183,10 @@ class Sleap_Tracks:
                         print("smoothing tracks")
                     x_coords[k] = savgol_lowpass_filter(x_coords[k], 221, 1)
                     y_coords[k] = savgol_lowpass_filter(y_coords[k], 221, 1)
+                    
+                # Replace NaNs with the previous value
+                replace_nans_with_previous_value(x_coords[k])
+                replace_nans_with_previous_value(y_coords[k])
                 
                 tracking_df[f"x_{n}"] = x_coords[k]
                 tracking_df[f"y_{n}"] = y_coords[k]

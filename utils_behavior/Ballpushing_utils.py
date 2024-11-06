@@ -120,7 +120,28 @@ def find_interaction_events(
     # Compute the Euclidean distance for each specified node
     for node1 in nodes1:
         for node2 in nodes2:
+            
+            # x1 = protagonist1[f"x_{node1}"]
+            # y1 = protagonist1[f"y_{node1}"]
+            # x2 = protagonist2[f"x_{node2}"]
+            y2 = protagonist2[f"y_{node2}"]
+
+            # # Check for NaN values
+            # if x1.isna().any() or y1.isna().any() or x2.isna().any() or y2.isna().any():
+            #     print(f"NaN values found in data for nodes {node1} and {node2}")
+            #     print(f"x1: {x1}")
+            #     print(f"y1: {y1}")
+            #     print(f"x2: {x2}")
+            #     print(f"y2: {y2}")
+
+            # # Print intermediate values
+            # print(f"x1: {x1}")
+            # print(f"y1: {y1}")
+            # print(f"x2: {x2}")
+            print(f"y2: {y2}")
+            
             distances_node = np.sqrt((protagonist1[f"x_{node1}"] - protagonist2[f"x_{node2}"])**2 + (protagonist1[f"y_{node1}"] - protagonist2[f"y_{node2}"])**2)
+            #print(f"Distances for {node1} and {node2}: {distances_node}")
             distances.append(distances_node)
 
     # Combine distances to find frames where any node is within the threshold distance
@@ -128,6 +149,10 @@ def find_interaction_events(
     interaction_frames = np.where(
                 (np.array(combined_distances) > threshold[0]) & (np.array(combined_distances) < threshold[1])
             )[0]
+    
+    # Debug: Print the combined distances and interaction frames
+    # print(f"Combined distances: {combined_distances}")
+    # print(f"Interaction frames: {interaction_frames}")
 
     # If no interaction frames are found, return an empty list
     if len(interaction_frames) == 0:
@@ -291,9 +316,25 @@ class Fly:
         self.video = self.load_video()
 
         # Load the tracking files
-        self.flytrack = self.load_tracking_file("*tracked_fly*.analysis.h5", "fly")
-        self.balltrack = self.load_tracking_file("*tracked_ball*.analysis.h5", "ball")
-        self.skeletontrack = self.load_tracking_file("*full_body*.h5", "fly")
+        try:
+            self.balltrack = self.load_tracking_file("*ball*.h5", "ball")
+            self.flytrack = self.load_tracking_file("*fly*.h5", "fly")
+            self.skeletontrack = self.load_tracking_file("*full_body*.h5", "fly")
+
+            # Check if the balltrack file exists and either flytrack or skeletontrack exists
+            if self.balltrack is None or (self.flytrack is None and self.skeletontrack is None):
+                print(f"Missing required tracking files for {self.name}.")
+                self.flytrack = None
+                self.balltrack = None
+                self.skeletontrack = None
+                return
+
+        except FileNotFoundError as e:
+            print(f"Error loading tracking files for {self.name}: {e}")
+            self.flytrack = None
+            self.balltrack = None
+            self.skeletontrack = None
+            return
         
         self.interaction_events = self.find_flyball_interactions()
 
@@ -738,7 +779,16 @@ class Fly:
             fly_data = self.flytrack.dataset[self.flytrack.dataset["object"] == f"fly_{fly_idx}"]
             
             for ball_idx in range(1, len(self.balltrack.objects) + 1):
+                # print(f"Fly data for fly_{fly_idx}:")
+                # print(fly_data)
+                # print(f"Fly data columns: {fly_data.columns}")
+                
+                
                 ball_data = self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"]
+                #print(self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"])
+                # print(f"Ball data for ball_{ball_idx}:")
+                # print(f"Ball data columns: {ball_data.columns}")
+                # print(ball_data)
                 
                 interaction_events = find_interaction_events(
                     fly_data,
@@ -750,6 +800,8 @@ class Fly:
                     event_min_length=event_min_length,
                     fps=self.experiment.fps
                 )
+                
+                print(f"Interaction events for fly {fly_idx} and ball {ball_idx}: {interaction_events}")
                 
                 if fly_idx not in fly_interactions:
                     fly_interactions[fly_idx] = {}
@@ -786,7 +838,8 @@ class Fly:
                 print(f"Computing metrics for {key}")
                 
                 self.metrics[key] = {
-                    "get_max_event": self.get_final_event(fly_idx, ball_idx),
+                    "max_event": self.get_final_event(fly_idx, ball_idx),
+                    "final_event": self.get_final_event(fly_idx, ball_idx),
                     "significant_events": self.get_significant_events(fly_idx, ball_idx),
                     "breaks": self.find_breaks(fly_idx, ball_idx),
                     "cumulated_breaks_duration": self.get_cumulated_breaks_duration(fly_idx, ball_idx),
@@ -794,10 +847,19 @@ class Fly:
                 }
                 
                 print(self.metrics[key])
-
-    def get_max_event(self, fly_idx, ball_idx, threshold=10):
+                
+    def find_event_by_distance(self, fly_idx, ball_idx, threshold, distance_type="max"):
         """
-        Find the event at which the fly pushed the ball to its maximum relative distance using Euclidean distance.
+        Find the event where the fly pushed the ball to a certain distance using Euclidean distance.
+
+        Args:
+            fly_idx (int): The index of the fly.
+            ball_idx (int): The index of the ball.
+            threshold (float): The distance threshold.
+            distance_type (str): The type of distance to check ("max" or "min").
+
+        Returns:
+            tuple: The event and its index if found, otherwise (None, None).
         """
         
         ball_data = self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"]
@@ -808,19 +870,36 @@ class Fly:
             (ball_data["y_centre"] - ball_data["y_centre"].iloc[0])**2
         )
         
-        max_distance = ball_data["euclidean_distance"].max() - threshold
+        if distance_type == "max":
+            max_distance = ball_data["euclidean_distance"].max() - threshold
+            distance_check = lambda event: ball_data.loc[event[0]:event[1], "euclidean_distance"].max() >= max_distance
+        elif distance_type == "threshold":
+            distance_check = lambda event: ball_data.loc[event[0]:event[1], "euclidean_distance"].max() >= threshold
+        else:
+            raise ValueError("Invalid distance_type. Use 'max' or 'threshold'.")
 
         try:
-            max_event, max_event_index = next(
+            event, event_index = next(
                 (event, i)
                 for i, event in enumerate(self.interaction_events[fly_idx][ball_idx])
-                # Check if max_distance is in this event
-                if ball_data.loc[event[0]:event[1], "euclidean_distance"].max() >= max_distance
+                if distance_check(event)
             )
         except StopIteration:
-            max_event, max_event_index = None, None
+            event, event_index = None, None
 
-        return max_event, max_event_index
+        return event, event_index
+
+    def get_max_event(self, fly_idx, ball_idx, threshold=10):
+        """
+        Find the event at which the fly pushed the ball to its maximum relative distance using Euclidean distance.
+        """
+        return self.find_event_by_distance(fly_idx, ball_idx, threshold, distance_type="max")
+
+    def get_final_event(self, fly_idx, ball_idx, threshold=170):
+        """
+        Find the event (if any) where the fly pushed the ball at least 170 px away from its initial position using Euclidean distance.
+        """
+        return self.find_event_by_distance(fly_idx, ball_idx, threshold, distance_type="threshold")
     
     def get_significant_events(self, fly_idx, ball_idx, distance=2):
         """
@@ -850,8 +929,7 @@ class Fly:
         """
         Finds the periods where the fly is not interacting with the ball.
         """
-        key = f"fly_{fly_idx}_ball_{ball_idx}"
-        fly_data = self.flytrack.dataset[self.flytrack.dataset["object"] == f"fly_{fly_idx}"]
+        
         ball_data = self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"]
 
         breaks = []
@@ -891,7 +969,7 @@ class Fly:
         """
         Find the events where the fly pushed or pulled the ball.
         """
-        key = f"fly_{fly_idx}_ball_{ball_idx}"
+        
         fly_data = self.flytrack.dataset[self.flytrack.dataset["object"] == f"fly_{fly_idx}"]
         ball_data = self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"]
 
@@ -904,12 +982,23 @@ class Fly:
             start_roi = event[0]
             end_roi = event[1]
 
-            start_relative_position = ball_data.loc[start_roi, "y_centre"] - fly_data.loc[start_roi, "y_thorax"]
-            end_relative_position = ball_data.loc[end_roi, "y_centre"] - fly_data.loc[end_roi, "y_thorax"]
+            # Compute the Euclidean distance between the ball and the fly at the start and end of the event
+            start_distance = np.sqrt(
+                (ball_data.loc[start_roi, "x_centre"] - fly_data.loc[start_roi, "x_thorax"])**2 +
+                (ball_data.loc[start_roi, "y_centre"] - fly_data.loc[start_roi, "y_thorax"])**2
+            )
+            end_distance = np.sqrt(
+                (ball_data.loc[end_roi, "x_centre"] - fly_data.loc[start_roi, "x_thorax"])**2 +
+                (ball_data.loc[end_roi, "y_centre"] - fly_data.loc[start_roi, "y_thorax"])**2
+            )
 
-            if end_relative_position > start_relative_position:
+            #print(f"Start distance: {start_distance}, End distance: {end_distance}")
+            
+            if end_distance > start_distance:
+                #print(f"Pushing event: {event}")
                 pushing_events.append(event)
             else:
+                #print(f"Pulling event: {event}")
                 pulling_events.append(event)
 
         return pushing_events, pulling_events

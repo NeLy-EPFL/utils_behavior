@@ -124,7 +124,7 @@ def find_interaction_events(
             # x1 = protagonist1[f"x_{node1}"]
             # y1 = protagonist1[f"y_{node1}"]
             # x2 = protagonist2[f"x_{node2}"]
-            y2 = protagonist2[f"y_{node2}"]
+            #y2 = protagonist2[f"y_{node2}"]
 
             # # Check for NaN values
             # if x1.isna().any() or y1.isna().any() or x2.isna().any() or y2.isna().any():
@@ -138,7 +138,7 @@ def find_interaction_events(
             # print(f"x1: {x1}")
             # print(f"y1: {y1}")
             # print(f"x2: {x2}")
-            print(f"y2: {y2}")
+            #print(f"y2: {y2}")
             
             distances_node = np.sqrt((protagonist1[f"x_{node1}"] - protagonist2[f"x_{node2}"])**2 + (protagonist1[f"y_{node1}"] - protagonist2[f"y_{node2}"])**2)
             #print(f"Distances for {node1} and {node2}: {distances_node}")
@@ -329,11 +329,12 @@ class Fly:
                 self.skeletontrack = None
                 return
 
-        except FileNotFoundError as e:
+        except (FileNotFoundError, OSError, IOError, Exception) as e:
             print(f"Error loading tracking files for {self.name}: {e}")
             self.flytrack = None
             self.balltrack = None
             self.skeletontrack = None
+            self.valid_data = False
             return
         
         self.interaction_events = self.find_flyball_interactions()
@@ -487,7 +488,7 @@ class Fly:
             print(f"{self.name} did not interact with the ball.")
             return False
 
-        print(f"{self.name} is alive and interacted with the ball.")
+        #print(f"{self.name} is alive and interacted with the ball.")
         return True
 
     def get_arena_metadata(self):
@@ -793,7 +794,7 @@ class Fly:
                     fps=self.experiment.fps
                 )
                 
-                print(f"Interaction events for fly {fly_idx} and ball {ball_idx}: {interaction_events}")
+                #print(f"Interaction events for fly {fly_idx} and ball {ball_idx}: {interaction_events}")
                 
                 if fly_idx not in fly_interactions:
                     fly_interactions[fly_idx] = {}
@@ -827,7 +828,7 @@ class Fly:
         for fly_idx, ball_dict in self.interaction_events.items():
             for ball_idx, events in ball_dict.items():
                 key = f"fly_{fly_idx}_ball_{ball_idx}"
-                print(f"Computing metrics for {key}")
+                #print(f"Computing metrics for {key}")
                 
                 self.metrics[key] = {
                     "max_event": self.get_final_event(fly_idx, ball_idx),
@@ -838,7 +839,7 @@ class Fly:
                     "events_direction": self.find_events_direction(fly_idx, ball_idx)
                 }
                 
-                print(self.metrics[key])
+                #print(self.metrics[key])
                 
     def find_event_by_distance(self, fly_idx, ball_idx, threshold, distance_type="max"):
         """
@@ -1468,10 +1469,10 @@ class Experiment:
                         except IndexError:
                             print(f"No video found for {dir.name}. Moving to the next directory.")
                             continue  # Move on to the next directory
-                print(f"Found video {mp4_file.name} for {dir.name}")
+                #print(f"Found video {mp4_file.name} for {dir.name}")
                 mp4_files.append(mp4_file)
 
-        print(mp4_files)
+        #print(mp4_files)
 
         # Create a Fly object for each .mp4 file
         flies = []
@@ -1479,7 +1480,8 @@ class Experiment:
             print(f"Loading fly from {mp4_file.parent}")
             try:
                 fly = Fly(mp4_file.parent, experiment=self)
-                flies.append(fly)
+                if fly.valid_data:
+                    flies.append(fly)
             except TypeError as e:
                 print(f"Error while loading fly from {mp4_file.parent}: {e}")
 

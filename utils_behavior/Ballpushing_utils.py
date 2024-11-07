@@ -401,7 +401,7 @@ class Fly:
         """
         # Check if fly tracking data is available
         if hasattr(self, 'flytrack') and self.flytrack is not None:
-            fly_data = self.flytrack.dataset[self.flytrack.dataset["object"] == "fly_1"]
+            fly_data = self.flytrack.objects[0].dataset
             if 'y_thorax' in fly_data.columns and 'x_thorax' in fly_data.columns:
                 return fly_data['x_thorax'].iloc[0], fly_data['y_thorax'].iloc[0]
             elif 'y_thorax' in fly_data.columns and 'x_thorax' in fly_data.columns:
@@ -427,7 +427,7 @@ class Fly:
         if self.flytrack is None:
             return None
 
-        fly_data = self.flytrack.dataset[self.flytrack.dataset["object"] == "fly_1"]
+        fly_data = self.flytrack.objects[0].dataset
 
         # Get the initial x position of the fly
         initial_x = self.start_x
@@ -460,7 +460,7 @@ class Fly:
             return False
 
         # Use the flytrack dataset
-        fly_data = self.flytrack.dataset[self.flytrack.dataset["object"] == "fly_1"]
+        fly_data = self.flytrack.objects[0].dataset
 
         # Check if any of the smoothed fly x and y coordinates are more than 30 pixels away from their initial position
         moved_y = np.any(
@@ -715,21 +715,19 @@ class Fly:
             warnings.warn(f"No skeleton tracking file found for {self.name}.")
             return None
 
-        # Get the full body tracking data
-        full_body_data = Sleap_Tracks(self.skeletontrack, object_type="fly")
 
         # Get the first track
-        data = full_body_data.dataset[full_body_data.dataset["object"] == "fly_1"]
+        full_body_data = self.skeletontrack.objects[0].dataset
         
         # For each node, replace NaNs with the previous value
         # Get the columns containing the x and y coordinates
-        x_columns = [col for col in data.columns if "x_" in col]
-        y_columns = [col for col in data.columns if "y_" in col]
+        x_columns = [col for col in full_body_data.columns if "x_" in col]
+        y_columns = [col for col in full_body_data.columns if "y_" in col]
         
         for x_col, y_col in zip(x_columns, y_columns):
             
-            x = data[x_col]
-            y = data[y_col]
+            x = full_body_data[x_col]
+            y = full_body_data[y_col]
             
             if x.empty or y.empty:
                 warnings.warn(f"Skipping skeleton coordinates for {self.name} and node: {x_col} and {y_col} due to empty data.")
@@ -744,16 +742,10 @@ class Fly:
                 )
                 return None
             
-            data[x_col] = x
-            data[y_col] = y
+            full_body_data[x_col] = x
+            full_body_data[y_col] = y
 
-        data = data.assign(Frame=data.index + 1)
-
-        data["Frame"] = data["Frame"].astype(int)
-
-        data["time"] = data["Frame"] / self.experiment.fps
-
-        return data
+        return full_body_data
     
     ################################ Interaction events and associated metrics #################################
 
@@ -775,16 +767,16 @@ class Fly:
 
         fly_interactions = {}
         
-        for fly_idx in range(1, len(self.flytrack.objects) + 1):
-            fly_data = self.flytrack.dataset[self.flytrack.dataset["object"] == f"fly_{fly_idx}"]
+        for fly_idx in range(0, len(self.flytrack.objects)):
+            fly_data = self.flytrack.objects[fly_idx].dataset
             
-            for ball_idx in range(1, len(self.balltrack.objects) + 1):
+            for ball_idx in range(0, len(self.balltrack.objects)):
                 # print(f"Fly data for fly_{fly_idx}:")
                 # print(fly_data)
                 # print(f"Fly data columns: {fly_data.columns}")
                 
                 
-                ball_data = self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"]
+                ball_data = self.balltrack.objects[ball_idx].dataset
                 #print(self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"])
                 # print(f"Ball data for ball_{ball_idx}:")
                 # print(f"Ball data columns: {ball_data.columns}")
@@ -862,7 +854,7 @@ class Fly:
             tuple: The event and its index if found, otherwise (None, None).
         """
         
-        ball_data = self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"]
+        ball_data = self.balltrack.objects[ball_idx].dataset
 
         # Calculate the Euclidean distance for each frame
         ball_data["euclidean_distance"] = np.sqrt(
@@ -905,9 +897,8 @@ class Fly:
         """
         Get the events where the ball was displaced by more than a given distance.
         """
-        key = f"fly_{fly_idx}_ball_{ball_idx}"
-        fly_data = self.flytrack.dataset[self.flytrack.dataset["object"] == f"fly_{fly_idx}"]
-        ball_data = self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"]
+
+        ball_data = self.balltrack.objects[ball_idx].dataset
 
         significant_events = [
             event
@@ -930,7 +921,7 @@ class Fly:
         Finds the periods where the fly is not interacting with the ball.
         """
         
-        ball_data = self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"]
+        ball_data = self.balltrack.objects[ball_idx].dataset
 
         breaks = []
         if not self.interaction_events[fly_idx][ball_idx]:
@@ -970,9 +961,9 @@ class Fly:
         Find the events where the fly pushed or pulled the ball.
         """
         
-        fly_data = self.flytrack.dataset[self.flytrack.dataset["object"] == f"fly_{fly_idx}"]
-        ball_data = self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"]
-
+        fly_data = self.flytrack.objects[fly_idx].dataset
+        ball_data = self.balltrack.objects[ball_idx].dataset
+        
         significant_events = self.get_significant_events(fly_idx, ball_idx)
 
         pushing_events = []

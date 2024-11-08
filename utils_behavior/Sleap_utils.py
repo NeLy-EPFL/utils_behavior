@@ -21,6 +21,330 @@ import yaml
 
 import subprocess
 
+def generate_annotated_frame(video, sleap_tracks_list, frame, nodes=None, labels=False, edges=True, colorby=None):
+    """Generates an annotated frame image for a specific frame."""
+
+    cap = cv2.VideoCapture(str(video))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame - 1)
+
+    ret, img = cap.read()
+    if not ret:
+        raise ValueError(f"Could not read frame {frame} from video {video}")
+
+    #print(sleap_tracks_list)
+    
+    for sleap_tracks in sleap_tracks_list:
+        
+        #print(f"Processing {sleap_tracks.object_type}")
+        
+        for obj in sleap_tracks.objects:
+            
+            #print(f"Processing {obj}")
+        
+            frame_data = obj.dataset[obj.dataset["frame"] == frame]
+    
+            # Set nodes for each Sleap_Tracks object individually
+            if nodes is None:
+                current_nodes = sleap_tracks.node_names
+            elif isinstance(nodes, str):
+                current_nodes = [nodes]
+            else:
+                # Filter nodes to include only those that exist in the current object
+                current_nodes = [node for node in nodes if node in sleap_tracks.node_names]
+
+            # Define colors
+            if colorby == 'Nodes':
+                right_nodes = [node for node in sleap_tracks.node_names if node.startswith('R')]
+                left_nodes = [node for node in sleap_tracks.node_names if node.startswith('L')]
+                central_nodes = [node for node in sleap_tracks.node_names if not node.startswith('R') and not node.startswith('L')]
+
+                right_shades = get_shades('red', len(right_nodes))
+                left_shades = get_shades('blue', len(left_nodes))
+                central_shades = get_shades('green', len(central_nodes))
+
+                color_map = {}
+                for i, node in enumerate(right_nodes):
+                    color_map[node] = right_shades[i]
+                for i, node in enumerate(left_nodes):
+                    color_map[node] = left_shades[i]
+                for i, node in enumerate(central_nodes):
+                    color_map[node] = central_shades[i]
+            else:
+                color_map = {node: (0, 255, 255) for node in sleap_tracks.node_names}
+
+            for _, row in frame_data.iterrows():
+                for node in current_nodes:
+                    x = row[f"x_{node}"]
+                    y = row[f"y_{node}"]
+                    if not np.isnan(x) and not np.isnan(y):
+                        x, y = int(x), int(y)
+                        cv2.circle(img, (x, y), 2, color_map[node], -1)
+                        if labels:
+                            cv2.putText(
+                                img,
+                                node,
+                                (x, y),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (255, 255, 255),
+                                1,
+                                cv2.LINE_AA,
+                            )
+                        # Add a circle to show the radius of the ball if the node is "Centre" or "centre"
+                        if node.lower() == "centre":
+                            cv2.circle(img, (x, y), 12, color_map[node], 2)
+                        
+
+            if edges:
+                for edge in sleap_tracks.edge_names:
+                    node1, node2 = edge
+                    if node1 in current_nodes and node2 in current_nodes:
+                        x1 = frame_data[f"x_{node1}"].values[0]
+                        y1 = frame_data[f"y_{node1}"].values[0]
+                        x2 = frame_data[f"x_{node2}"].values[0]
+                        y2 = frame_data[f"y_{node2}"].values[0]
+                        if not (
+                            np.isnan(x1) or np.isnan(y1) or np.isnan(x2) or np.isnan(y2)
+                        ):
+                            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                            cv2.line(img, (x1, y1), (x2, y2), color_map[node2], 1)
+
+    cap.release()
+    return img
+
+def cpu_generate_annotated_video(
+    video,
+    sleap_tracks_list,
+    save=False,
+    output_path=None,
+    start=None,
+    end=None,
+    nodes=None,
+    labels=False,
+    edges=True,
+    colorby=None,
+):
+    cap = cv2.VideoCapture(str(video))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    if start is None:
+        start = 1
+    if end is None:
+        end = total_frames
+
+    if save:
+        if output_path is None:
+            output_path = Path(video).with_suffix(".annotated.mp4")
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        out = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+
+    def process_frame(frame):
+        return generate_annotated_frame(
+            video, sleap_tracks_list, frame, nodes=nodes, labels=labels, edges=edges, colorby=colorby
+        )
+
+    with ThreadPoolExecutor() as executor:
+        annotated_frames = list(
+            tqdm(
+                executor.map(process_frame, range(start, end + 1)),
+                total=end - start + 1,
+                desc="Processing frames",
+            )
+        )
+
+    for annotated_frame in annotated_frames:
+        if save:
+            out.write(annotated_frame)
+        else:
+            cv2.imshow("Annotated Video", annotated_frame)
+            if cv2.waitKey(25) & 0xFF == ord("q"):
+                break
+
+    cap.release()
+    if save:
+        out.release()
+    else:
+        cv2.destroyAllWindows()
+        
+def gpu_generate_annotated_video(
+    video,
+    sleap_tracks_list,
+    save=False,
+    output_path=None,
+    start=None,
+    end=None,
+    nodes=None,
+    labels=False,
+    edges=True,
+    colorby=None,
+):
+    """Generates a video with GPU-accelerated annotated frames."""
+
+    cap = cv2.VideoCapture(str(video))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    if start is None:
+        start = 1
+    if end is None:
+        end = total_frames
+
+    if save:
+        if output_path is None:
+            output_path = Path(video).with_suffix(".annotated.mp4")
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        out = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+
+    while cap.isOpened():
+        ret, img = cap.read()
+        if not ret or cap.get(cv2.CAP_PROP_POS_FRAMES) > end:
+            break
+
+        # Upload frame to GPU
+        gpu_img = cv2.cuda_GpuMat()
+        gpu_img.upload(img)
+
+        frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+        
+        for sleap_tracks in sleap_tracks_list:
+            for obj in sleap_tracks.objects:
+                frame_data = obj.dataset[obj.dataset["frame"] == frame]
+
+                # Set nodes for each Sleap_Tracks object individually
+                if nodes is None:
+                    current_nodes = sleap_tracks.node_names
+                elif isinstance(nodes, str):
+                    current_nodes = [nodes]
+                else:
+                    # Filter nodes to include only those that exist in the current object
+                    current_nodes = [node for node in nodes if node in sleap_tracks.node_names]
+
+                # Define colors
+                if colorby == 'Nodes':
+                    right_nodes = [node for node in sleap_tracks.node_names if node.startswith('R')]
+                    left_nodes = [node for node in sleap_tracks.node_names if node.startswith('L')]
+                    central_nodes = [node for node in sleap_tracks.node_names if not node.startswith('R') and not node.startswith('L')]
+
+                    right_shades = get_shades('red', len(right_nodes))
+                    left_shades = get_shades('blue', len(left_nodes))
+                    central_shades = get_shades('green', len(central_nodes))
+
+                    color_map = {}
+                    for i, node in enumerate(right_nodes):
+                        color_map[node] = right_shades[i]
+                    for i, node in enumerate(left_nodes):
+                        color_map[node] = left_shades[i]
+                    for i, node in enumerate(central_nodes):
+                        color_map[node] = central_shades[i]
+                else:
+                    color_map = {node: (0, 255, 255) for node in sleap_tracks.node_names}
+
+                # Annotate nodes and labels
+                for _, row in frame_data.iterrows():
+                    for node in current_nodes:
+                        x = row[f"x_{node}"]
+                        y = row[f"y_{node}"]
+                        if not np.isnan(x) and not np.isnan(y):
+                            x, y = int(x), int(y)
+                            img = gpu_img.download()  # Download to CPU for annotations
+                            cv2.circle(img, (x, y), 2, color_map[node], -1)
+                            if labels:
+                                cv2.putText(
+                                    img,
+                                    node,
+                                    (x, y),
+                                    cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.5,
+                                    (255, 255, 255),
+                                    1,
+                                    cv2.LINE_AA,
+                                )
+                            gpu_img.upload(img)  # Upload back to GPU
+
+                # Annotate edges if needed
+                if edges:
+                    for edge in sleap_tracks.edge_names:
+                        node1, node2 = edge
+                        if node1 in current_nodes and node2 in current_nodes:
+                            x1 = frame_data[f"x_{node1}"].values[0]
+                            y1 = frame_data[f"y_{node1}"].values[0]
+                            x2 = frame_data[f"x_{node2}"].values[0]
+                            y2 = frame_data[f"y_{node2}"].values[0]
+                            if not (
+                                np.isnan(x1) or np.isnan(y1) or np.isnan(x2) or np.isnan(y2)
+                            ):
+                                img = gpu_img.download()  # CPU operations for drawing
+                                x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                                cv2.line(img, (x1, y1), (x2, y2), color_map[node2], 1)
+                                gpu_img.upload(img)  # Back to GPU
+
+        if save:
+            out.write(gpu_img.download())
+        else:
+            cv2.imshow("Annotated Video", gpu_img.download())
+            if cv2.waitKey(25) & 0xFF == ord("q"):
+                break
+
+    cap.release()
+    if save:
+        out.release()
+    else:
+        cv2.destroyAllWindows()
+        
+def generate_annotated_video(
+    video,
+    sleap_tracks_list,
+    save=False,
+    output_path=None,
+    start=None,
+    end=None,
+    nodes=None,
+    labels=False,
+    edges=True,
+    colorby=None,
+):
+    """Generates an annotated video with tracked nodes and edges.
+
+    Args:
+        video (str): Path to the video file.
+        sleap_tracks_list (list): List of Sleap_Tracks objects.
+        save (bool, optional): Whether to save the video. Defaults to False.
+        output_path (str, optional): Path to save the video. Defaults to None.
+        start (int, optional): Start frame for the video. Defaults to None.
+        end (int, optional): End frame for the video. Defaults to None.
+        nodes (list, optional): List of nodes to annotate. Defaults to None.
+        labels (bool, optional): Whether to include labels. Defaults to False.
+        edges (bool, optional): Whether to include edges. Defaults to True.
+        colorby (str, optional): Attribute to color by. Defaults to None.
+
+    Returns:
+        None
+    """
+    # Check if OpenCV has CUDA support
+    try:
+        if cv2.cuda.getCudaEnabledDeviceCount() > 0:
+            print("CUDA is enabled, using GPU for video processing.")
+            gpu_generate_annotated_video(
+                video, sleap_tracks_list, save=save, output_path=output_path, start=start, end=end, nodes=nodes, labels=labels, edges=edges, colorby=colorby
+            )
+        else:
+            print("No CUDA devices found, falling back to CPU processing.")
+            cpu_generate_annotated_video(
+                video, sleap_tracks_list, save=save, output_path=output_path, start=start, end=end, nodes=nodes, labels=labels, edges=edges, colorby=colorby
+            )
+    except cv2.error as e:
+        print(f"Error while checking for CUDA support: {e}")
+        print("Falling back to CPU processing.")
+        cpu_generate_annotated_video(
+            video, sleap_tracks_list, save=save, output_path=output_path, start=start, end=end, nodes=nodes, labels=labels, edges=edges, colorby=colorby
+        )
+
+
 def get_shades(color, num_shades):
     """Generate shades of a given color."""
     shades = []
@@ -182,274 +506,6 @@ class Sleap_Tracks:
             objects.append(self.Object(tracking_df, self.node_names))
 
         return objects
-
-    def generate_annotated_frame(self, frame, nodes=None, labels=False, edges=True, colorby=None):
-        """Generates an annotated frame image for a specific frame."""
-        frame_data = self.dataset[self.dataset["frame"] == frame]
-
-        cap = cv2.VideoCapture(str(self.video))
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame - 1)
-
-        ret, img = cap.read()
-        if not ret:
-            raise ValueError(f"Could not read frame {frame} from video {self.video}")
-
-        if nodes is None:
-            nodes = self.node_names
-        elif isinstance(nodes, str):
-            nodes = [nodes]
-
-        # Define colors
-        if colorby == 'Nodes':
-            color_map = {node: (int(np.random.randint(0, 255)), int(np.random.randint(0, 255)), int(np.random.randint(0, 255))) for node in self.node_names}
-        else:
-            color_map = {node: (0, 255, 255) for node in self.node_names}
-
-        for _, row in frame_data.iterrows():
-            for node in nodes:
-                x = row[f"x_{node}"]
-                y = row[f"y_{node}"]
-                if not np.isnan(x) and not np.isnan(y):
-                    x, y = int(x), int(y)
-                    cv2.circle(img, (x, y), 2, color_map[node], -1)
-                    if labels:
-                        cv2.putText(
-                            img,
-                            node,
-                            (x, y),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (255, 255, 255),
-                            1,
-                            cv2.LINE_AA,
-                        )
-
-        if edges:
-            for edge in self.edge_names:
-                node1, node2 = edge
-                if node1 in nodes and node2 in nodes:
-                    x1 = frame_data[f"x_{node1}"].values[0]
-                    y1 = frame_data[f"y_{node1}"].values[0]
-                    x2 = frame_data[f"x_{node2}"].values[0]
-                    y2 = frame_data[f"y_{node2}"].values[0]
-                    if not (
-                        np.isnan(x1) or np.isnan(y1) or np.isnan(x2) or np.isnan(y2)
-                    ):
-                        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-                        cv2.line(img, (x1, y1), (x2, y2), color_map[node2], 1)
-
-        cap.release()
-        return img
-
-    def cpu_generate_annotated_video(
-        self,
-        save=False,
-        output_path=None,
-        start=None,
-        end=None,
-        nodes=None,
-        labels=False,
-        edges=True,
-        colorby=None,
-    ):
-        cap = cv2.VideoCapture(str(self.video))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-        if start is None:
-            start = 1
-        if end is None:
-            end = total_frames
-
-        if save:
-            if output_path is None:
-                output_path = self.video.with_suffix(".annotated.mp4")
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            out = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
-
-        def process_frame(frame):
-            return self.generate_annotated_frame(
-                frame, nodes=nodes, labels=labels, edges=edges, colorby=colorby
-            )
-
-        with ThreadPoolExecutor() as executor:
-            annotated_frames = list(
-                tqdm(
-                    executor.map(process_frame, range(start, end + 1)),
-                    total=end - start + 1,
-                    desc="Processing frames",
-                )
-            )
-
-        for annotated_frame in annotated_frames:
-            if save:
-                out.write(annotated_frame)
-            else:
-                cv2.imshow("Annotated Video", annotated_frame)
-                if cv2.waitKey(25) & 0xFF == ord("q"):
-                    break
-
-        cap.release()
-        if save:
-            out.release()
-        else:
-            cv2.destroyAllWindows()
-
-    def gpu_generate_annotated_video(
-        self,
-        save=False,
-        output_path=None,
-        start=None,
-        end=None,
-        nodes=None,
-        labels=False,
-        edges=True,
-        colorby=None,
-    ):
-        """Generates a video with GPU-accelerated annotated frames."""
-
-        cap = cv2.VideoCapture(str(self.video))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-        if start is None:
-            start = 1
-        if end is None:
-            end = total_frames
-
-        if save:
-            if output_path is None:
-                output_path = self.video.with_suffix(".annotated.mp4")
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            out = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
-
-        # Define colors
-        if colorby == 'Nodes':
-            right_nodes = [node for node in self.node_names if node.startswith('R')]
-            left_nodes = [node for node in self.node_names if node.startswith('L')]
-            central_nodes = [node for node in self.node_names if not node.startswith('R') and not node.startswith('L')]
-
-            right_shades = get_shades('red', len(right_nodes))
-            left_shades = get_shades('blue', len(left_nodes))
-            central_shades = get_shades('green', len(central_nodes))
-
-            color_map = {}
-            for i, node in enumerate(right_nodes):
-                color_map[node] = right_shades[i]
-            for i, node in enumerate(left_nodes):
-                color_map[node] = left_shades[i]
-            for i, node in enumerate(central_nodes):
-                color_map[node] = central_shades[i]
-        else:
-            color_map = {node: (0, 255, 255) for node in self.node_names}
-
-        while cap.isOpened():
-            ret, img = cap.read()
-            if not ret or cap.get(cv2.CAP_PROP_POS_FRAMES) > end:
-                break
-
-            # Upload frame to GPU
-            gpu_img = cv2.cuda_GpuMat()
-            gpu_img.upload(img)
-
-            frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
-            frame_data = self.dataset[self.dataset["frame"] == frame]
-
-            if nodes is None:
-                nodes = self.node_names
-
-            # Annotate nodes and labels
-            for _, row in frame_data.iterrows():
-                for node in nodes:
-                    x = row[f"x_{node}"]
-                    y = row[f"y_{node}"]
-                    if not np.isnan(x) and not np.isnan(y):
-                        x, y = int(x), int(y)
-                        img = gpu_img.download()  # Download to CPU for annotations
-                        cv2.circle(img, (x, y), 2, color_map[node], -1)
-                        if labels:
-                            cv2.putText(
-                                img,
-                                node,
-                                (x, y),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.5,
-                                (255, 255, 255),
-                                1,
-                                cv2.LINE_AA,
-                            )
-                        gpu_img.upload(img)  # Upload back to GPU
-
-            # Annotate edges if needed
-            if edges:
-                for edge in self.edge_names:
-                    node1, node2 = edge
-                    if node1 in nodes and node2 in nodes:
-                        x1 = frame_data[f"x_{node1}"].values[0]
-                        y1 = frame_data[f"y_{node1}"].values[0]
-                        x2 = frame_data[f"x_{node2}"].values[0]
-                        y2 = frame_data[f"y_{node2}"].values[0]
-                        if not (
-                            np.isnan(x1) or np.isnan(y1) or np.isnan(x2) or np.isnan(y2)
-                        ):
-                            img = gpu_img.download()  # CPU operations for drawing
-                            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-                            cv2.line(img, (x1, y1), (x2, y2), color_map[node2], 1)
-                            gpu_img.upload(img)  # Back to GPU
-
-            if save:
-                out.write(gpu_img.download())
-            else:
-                cv2.imshow("Annotated Video", gpu_img.download())
-                if cv2.waitKey(25) & 0xFF == ord("q"):
-                    break
-
-        cap.release()
-        if save:
-            out.release()
-        else:
-            cv2.destroyAllWindows()
-            
-    def generate_annotated_video(self, 
-            save=False,
-            output_path=None,
-            start=None,
-            end=None,
-            nodes=None,
-            labels=False,
-            edges=True,
-            colorby=None):
-        """Generates an annotated video with tracked nodes and edges.
-
-        Args:
-            save (bool, optional): Whether to save the video. Defaults to False.
-            output_path (str, optional): Path to save the video. Defaults to None.
-            start (int, optional): Start frame for the video. Defaults to None.
-            end (int, optional): End frame for the video. Defaults to None.
-            nodes (list, optional): List of nodes to annotate. Defaults to None.
-            labels (bool, optional): Whether to include labels. Defaults to False.
-            edges (bool, optional): Whether to include edges. Defaults to True.
-            colorby (str, optional): Attribute to color by. Defaults to None.
-
-        Returns:
-            None
-        """
-        # Check if OpenCV has CUDA support
-        try:
-            if cv2.cuda.getCudaEnabledDeviceCount() > 0:
-                print("CUDA is enabled, using GPU for video processing.")
-                self.gpu_generate_annotated_video(save=save, output_path=output_path, start=start, end=end, nodes=nodes, labels=labels, edges=edges, colorby=colorby)
-            else:
-                print("No CUDA devices found, falling back to CPU processing.")
-                self.cpu_generate_annotated_video(save=save, output_path=output_path, start=start, end=end, nodes=nodes, labels=labels, edges=edges, colorby=colorby)
-        except cv2.error as e:
-            print(f"Error while checking for CUDA support: {e}")
-            print("Falling back to CPU processing.")
-            self.cpu_generate_annotated_video(save=save, output_path=output_path, start=start, end=end, nodes=nodes, labels=labels, edges=edges, colorby=colorby)
             
 class CombinedSleapTracks:
     """Class for handling and combining multiple SLEAP Tracks for the same video."""

@@ -10,11 +10,15 @@ for data_folder in data_path.iterdir():
         # Find the corresponding folder in metadata_path
         metadata_folder = metadata_path / data_folder.name
         
-        # Check if the metadata folder exists and contains Metadata.json
-        metadata_file = metadata_folder / "Metadata.json"
-        if metadata_file.exists():
-            # Copy the Metadata.json file to the data folder
-            shutil.copy(metadata_file, data_folder / "Metadata.json")
-            print(f"Copied Metadata.json to {data_folder}")
-        else:
-            print(f"Metadata.json not found in {metadata_folder}")
+        # List of files to copy
+        files_to_copy = ["Metadata.json", "fps.npy", "duration.npy"]
+        
+        for file_name in files_to_copy:
+            # Check if the file exists in the metadata folder
+            metadata_file = metadata_folder / file_name
+            if metadata_file.exists():
+                # Copy the file to the data folder
+                shutil.copy(metadata_file, data_folder / file_name)
+                print(f"Copied {file_name} to {data_folder}")
+            else:
+                print(f"{file_name} not found in {metadata_folder}")

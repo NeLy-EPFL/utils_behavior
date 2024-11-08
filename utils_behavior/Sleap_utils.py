@@ -39,9 +39,9 @@ class Sleap_Tracks:
     class Object:
         """Nested class to represent an object with node properties."""
 
-        def __init__(self, object_data, node_names):
+        def __init__(self, dataset, node_names):
             self.node_names = node_names
-            self.object_data = object_data
+            self.dataset = dataset
 
             for node in node_names:
                 setattr(self, node, self._create_node_property(node))
@@ -58,27 +58,33 @@ class Sleap_Tracks:
 
             @property
             def node_property(self):
-                x_values = self.object_data[f"x_{node}"].values
-                y_values = self.object_data[f"y_{node}"].values
+                x_values = self.dataset[f"x_{node}"].values
+                y_values = self.dataset[f"y_{node}"].values
                 return list(zip(x_values, y_values))
 
             return node_property
 
-    def __init__(self, filename, object_type="object", smoothed_tracks=True):
+    def __init__(self, filename, object_type="object", smoothed_tracks=True, debug=False):
         """Initialize the Sleap_Track object with the given SLEAP tracking file.
 
         Args:
             filename (Path): Path to the SLEAP tracking file.
             object_type (str): Type of the object (e.g., "ball", "fly"). Defaults to "object".
         """
+        
+        self.debug = debug
 
         self.path = Path(filename)
         self.object_type = object_type
         self.smoothed_tracks = smoothed_tracks
 
         # Open the SLEAP tracking file
-        self.h5file = h5py.File(filename, "r")
-
+        try:
+            self.h5file = h5py.File(filename, "r")
+        except FileNotFoundError as e:
+            print(f"Error while opening SLEAP tracking file: {e}")
+            return
+        
         self.node_names = [x.decode("utf-8") for x in self.h5file["node_names"]]
         self.edge_names = [
             [y.decode("utf-8") for y in x] for x in self.h5file["edge_names"]
@@ -104,18 +110,13 @@ class Sleap_Tracks:
             print(f"Video file not available: {self.video}. Check path and server access. Error: {e}")
             self.fps = None  # Set fps to None if video is not accessible
             
-        self.dataset = self.generate_tracks_data()
+        self.objects = self.generate_tracks_data()
 
-        # Create object properties
-        self.objects = []
-        for i in range(len(self.tracks)):
-            object_data = self.dataset[self.dataset["object"] == f"{self.object_type}_{i+1}"]
-            self.objects.append(self.Object(object_data, self.node_names))
-
-        print(f"Loaded SLEAP tracking file: {filename}")
-        print(f"N° of objects: {len(self.objects)}")
-        print(f"Nodes: {self.node_names}")
-        print(f"Video FPS: {self.fps}")
+        if debug:
+            print(f"Loaded SLEAP tracking file: {filename}")
+            print(f"N° of objects: {len(self.objects)}")
+            print(f"Nodes: {self.node_names}")
+            print(f"Video FPS: {self.fps}")
         
     def _handle_video_path(self, video_path):
         """Handle the video path to check for outdated paths and replace them with the new path.
@@ -139,23 +140,17 @@ class Sleap_Tracks:
         return video_path
 
     def generate_tracks_data(self):
-        """Generates a pandas DataFrame with the tracking data, with the following columns:
-        - frame
-        for each node:
-        - node_x
-        - node_y
-
-        The shape of the tracks is instance, x or y, nodes and frame and the order of the nodes is the same as the one in the nodes attribute.
+        """Generates a list of pandas DataFrames, each containing the tracking data for one object.
 
         Returns:
-            DataFrame: DataFrame with the tracking data.
+            list: List of DataFrames with the tracking data for each object.
         """
 
-        df_list = []
+        objects = []
 
         for i, obj in enumerate(self.tracks):
-            
-            print(f"Processing {self.object_type} {i+1}/{len(self.tracks)}")
+            if self.debug:
+                print(f"Processing {self.object_type} {i+1}/{len(self.tracks)}")
 
             x_coords = obj[0]
             y_coords = obj[1]
@@ -172,19 +167,21 @@ class Sleap_Tracks:
             for k, n in enumerate(self.node_names):
                 
                 if self.smoothed_tracks:
-                    print("smoothing tracks")
+                    if self.debug:
+                        print("smoothing tracks")
                     x_coords[k] = savgol_lowpass_filter(x_coords[k], 221, 1)
                     y_coords[k] = savgol_lowpass_filter(y_coords[k], 221, 1)
+                    
+                # Replace NaNs with the previous value
+                replace_nans_with_previous_value(x_coords[k])
+                replace_nans_with_previous_value(y_coords[k])
                 
                 tracking_df[f"x_{n}"] = x_coords[k]
                 tracking_df[f"y_{n}"] = y_coords[k]
                 
+            objects.append(self.Object(tracking_df, self.node_names))
 
-            df_list.append(tracking_df)
-
-        df = pd.concat(df_list, ignore_index=True)
-
-        return df
+        return objects
 
     def generate_annotated_frame(self, frame, nodes=None, labels=False, edges=True, colorby=None):
         """Generates an annotated frame image for a specific frame."""

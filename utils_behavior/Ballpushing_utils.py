@@ -17,6 +17,7 @@ import webbrowser
 
 from holoviews import streams
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from scipy.ndimage import median_filter, gaussian_filter
 from pathlib import Path
 import sys
@@ -283,9 +284,34 @@ class Fly:
 
         self.name = f"{self.experiment.directory.name}_{self.arena}_{self.corridor}"
         self.arena_metadata = self.get_arena_metadata()
+
         # For each value in the arena metadata, add it as an attribute of the fly
         for var, data in self.arena_metadata.items():
             setattr(self, var, data)
+
+        # If the fly has pretraining and unlocked, create a new item in arena_metadata, 'F1_condition'
+        if self.Pretraining and self.Unlocked:
+            if "n" in self.Pretraining:
+                self.arena_metadata["F1_condition"] = "control"
+            elif "y" in self.Pretraining:
+                if "Left" in self.corridor:
+                    if self.Unlocked[0] == "y":
+                        self.arena_metadata["F1_condition"] = "pretrained_unlocked"
+                    else:
+                        self.arena_metadata["F1_condition"] = "pretrained"
+                elif "Right" in self.corridor:
+                    if self.Unlocked[1] == "y":
+                        self.arena_metadata["F1_condition"] = "pretrained_unlocked"
+                    else:
+                        self.arena_metadata["F1_condition"] = "pretrained"
+            else:
+                print(f"Error: Pretraining value not valid for {self.name}")
+
+        # Add F1_condition as an attribute of the fly
+        if "F1_condition" in self.arena_metadata:
+            setattr(self, "F1_condition", self.arena_metadata["F1_condition"])
+
+            #print(f"F1_condition for {self.name}: {self.F1_condition}")
 
         self.flyball_positions = None
         self.fly_skeleton = None
@@ -1398,16 +1424,24 @@ class Experiment:
 
         # print(mp4_files)
 
-        # Create a Fly object for each .mp4 file
-        flies = []
-        for mp4_file in mp4_files:
+        def load_fly(mp4_file):
             print(f"Loading fly from {mp4_file.parent}")
             try:
                 fly = Fly(mp4_file.parent, experiment=self)
                 if fly.valid_data:
-                    flies.append(fly)
+                    return fly
             except TypeError as e:
                 print(f"Error while loading fly from {mp4_file.parent}: {e}")
+            return None
+
+        # Create a Fly object for each .mp4 file using multithreading
+        flies = []
+        with ThreadPoolExecutor() as executor:
+            futures = [executor.submit(load_fly, mp4_file) for mp4_file in mp4_files]
+            for future in as_completed(futures):
+                fly = future.result()
+                if fly is not None:
+                    flies.append(fly)
 
         return flies
 
@@ -1544,12 +1578,7 @@ class Dataset:
                 "Invalid source format: source must be a (list of) Experiment objects or a list of Fly objects"
             )
 
-        self.flies = [
-            fly
-            for fly in self.flies
-            if hasattr(fly, "flyball_positions") and fly.flyball_positions is not None
-        ]
-        self.flies = [fly for fly in self.flies if not fly.valid_data]
+        self.flies = [fly for fly in self.flies if fly.valid_data]
 
         self.brain_regions_path = brain_regions_path
         self.regions_map = pd.read_csv(self.brain_regions_path)
@@ -1610,21 +1639,15 @@ class Dataset:
             dict: A dictionary where keys are ball types and values are DataFrames containing selected metrics for each fly and associated metadata.
         """
 
-        try:
-            dataset_dict = {}
+        Dataset = []
 
+        try:
             if metrics == "coordinates":
                 for fly in self.flies:
-                    for ball_type, flyball_positions in fly.flyball_positions.items():
-                        dataset = self._prepare_dataset_coordinates(
-                            fly,
-                            flyball_positions,
-                            success_cutoff=success_cutoff,
-                            time_range=time_range,
-                        )
-                        if ball_type not in dataset_dict:
-                            dataset_dict[ball_type] = []
-                        dataset_dict[ball_type].append(dataset)
+                    data = self._prepare_dataset_coordinates(
+                        fly, time_range=time_range, success_cutoff=success_cutoff
+                    )
+                    Dataset.append(data)
 
             elif metrics == "summary":
                 for fly in self.flies:
@@ -1642,16 +1665,7 @@ class Dataset:
                         else:
                             print(f"Empty DataFrame for fly {fly.directory}")
 
-            # Concatenate datasets for each ball type
-            for ball_type in dataset_dict:
-                if dataset_dict[ball_type]:  # Only concatenate if the list is not empty
-                    dataset_dict[ball_type] = pd.concat(
-                        dataset_dict[ball_type], ignore_index=True
-                    ).reset_index(drop=True)
-                else:
-                    dataset_dict[ball_type] = pd.DataFrame()
-
-            self.data = dataset_dict
+            self.data = pd.concat(Dataset)
 
         except Exception as e:
             print(f"An error occurred: {e}")
@@ -1660,15 +1674,12 @@ class Dataset:
 
         return self.data
 
-    def _prepare_dataset_coordinates(
-        self, fly, flyball_positions, success_cutoff=True, time_range=None
-    ):
+    def _prepare_dataset_coordinates(self, fly, success_cutoff=True, time_range=None):
         """
         Helper function to prepare individual fly dataset with fly and ball coordinates. It also adds the fly name, experiment name and arena metadata as categorical data.
 
         Args:
             fly (Fly): A Fly object.
-            flyball_positions (pd.DataFrame): DataFrame containing the fly and ball coordinates.
             success_cutoff (bool): Whether to apply the success cutoff. Defaults to True.
             time_range (list): A list containing the start and end times for the dataset. Defaults to None.
 
@@ -1676,37 +1687,65 @@ class Dataset:
             pandas.DataFrame: A DataFrame containing the fly's coordinates and associated metadata.
         """
 
-        dataset = flyball_positions
+        # Get the fly and ball tracking for each fly and ball objects in flytrack and balltrack
+        flydata = [
+            fly.flytrack.objects[i].dataset for i in range(len(fly.flytrack.objects))
+        ]
+        balldata = [
+            fly.balltrack.objects[i].dataset for i in range(len(fly.balltrack.objects))
+        ]
+
+        # Generate a dataframe with each fly and ball y and x coordinates relative to self.start
+        dataset = pd.DataFrame()
+
+        dataset["time"] = flydata[0]["time"]
+        dataset["frame"] = flydata[0]["frame"]
+
+        # If the fly has an exit time, also get the adjusted time
+        if fly.exit_time is not None:
+            dataset["adjusted_time"] = fly.compute_adjusted_time()
+        else:
+            dataset["adjusted_time"] = np.nan
+
+        for i in range(len(flydata)):
+            dataset[f"x_fly_{i}"] = flydata[i]["x_thorax"] - fly.start_x
+            dataset[f"y_fly_{i}"] = flydata[i]["y_thorax"] - fly.start_y
+
+            # Compute the distance from initial position
+            dataset[f"distance_fly_{i}"] = np.sqrt(
+                (dataset[f"x_fly_{i}"] - dataset[f"x_fly_{i}"].iloc[0]) ** 2
+                + (dataset[f"y_fly_{i}"] - dataset[f"y_fly_{i}"].iloc[0]) ** 2
+            )
+
+        for i in range(len(balldata)):
+            dataset[f"x_ball_{i}"] = balldata[i]["x_centre"] - fly.start_x
+            dataset[f"y_ball_{i}"] = balldata[i]["y_centre"] - fly.start_y
+
+            # Compute the distance from initial position
+            dataset[f"distance_ball_{i}"] = np.sqrt(
+                (dataset[f"x_ball_{i}"] - dataset[f"x_ball_{i}"].iloc[0]) ** 2
+                + (dataset[f"y_ball_{i}"] - dataset[f"y_ball_{i}"].iloc[0]) ** 2
+            )
 
         if time_range is not None:
             # If one value is provided, set the end of the range to the end of the video and the start to the provided value
             if len(time_range) == 1:
                 dataset = dataset[dataset["time"] >= time_range[0]]
-
-                # Reindex events if any
-                unique_events = dataset["event"].dropna().unique()
-                event_mapping = {event: i + 1 for i, event in enumerate(unique_events)}
-                dataset["event"] = dataset["event"].map(event_mapping)
             # If two values are provided, set the start and end of the range to the provided values
             elif len(time_range) == 2:
                 dataset = dataset[
                     (dataset["time"] >= time_range[0])
                     & (dataset["time"] <= time_range[1])
                 ]
-
-                # Reindex events
-                unique_events = dataset["event"].dropna().unique()
-                event_mapping = {event: i + 1 for i, event in enumerate(unique_events)}
-                dataset["event"] = dataset["event"].map(event_mapping)
             else:
                 print(
                     "Invalid time range. Please provide one or two values for the time range."
                 )
 
         if success_cutoff:
+            # Get the initial y_ball and subtract 180. Find the first index where y_ball is less than this value
             cutoff_index = (
-                # Get the initial yball and subtract -180. Find the first index where yball is less than this value
-                (dataset["yball"] <= dataset["yball"].iloc[0] - 180)
+                (dataset[f"y_ball_0"] <= dataset[f"y_ball_0"].iloc[0] - 180)
             ).idxmax()
             if cutoff_index != 0:  # idxmax returns 0 if no True value is found
                 dataset = dataset[:cutoff_index]

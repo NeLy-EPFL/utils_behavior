@@ -247,6 +247,8 @@ class Fly:
         directory,
         experiment=None,
         as_individual=False,
+        time_range=None,
+        success_cutoff=False,
     ):
         """
         Initialize a Fly object.
@@ -311,7 +313,7 @@ class Fly:
         if "F1_condition" in self.arena_metadata:
             setattr(self, "F1_condition", self.arena_metadata["F1_condition"])
 
-            #print(f"F1_condition for {self.name}: {self.F1_condition}")
+            # print(f"F1_condition for {self.name}: {self.F1_condition}")
 
         self.flyball_positions = None
         self.fly_skeleton = None
@@ -396,11 +398,25 @@ class Fly:
 
             self.compute_adjusted_time()
 
+            # If time_range is provided, filter the flytrack and balltrack data
+            if time_range is not None:
+                self.filter_tracking_data(time_range)
+
+            self.final_event_init = self.get_final_event(0, 0)
+
+            if self.final_event_init:
+                self.success_cutoff_time_range = (0, self.final_event_init[1])
+
+            if success_cutoff:
+                self.filter_tracking_data(self.success_cutoff_time_range)
+
             # Compute the metrics for the fly
 
             self.metrics = {}
-
+            
             self.compute_metrics()
+            
+            self.training_ball_distances, self.test_ball_distances = self.get_F1_ball_distances()
 
     def __str__(self):
         # Get the genotype from the metadata
@@ -429,13 +445,24 @@ class Fly:
                 except IndexError:
                     raise FileNotFoundError(f"No video found for {self.name}.")
 
-    def load_tracking_file(self, pattern, object_type):
+    def load_tracking_file(
+        self, pattern, object_type, time_range=None, success_cutoff=False
+    ):
         """Load a tracking file for the fly."""
         try:
             tracking_file = list(self.directory.glob(pattern))[0]
             return Sleap_Tracks(tracking_file, object_type=object_type, debug=False)
         except IndexError:
             return None
+
+    def filter_tracking_data(self, time_range):
+        """Filter the tracking data based on the time range."""
+        if self.flytrack is not None:
+            self.flytrack.filter_data(time_range)
+        if self.balltrack is not None:
+            self.balltrack.filter_data(time_range)
+        if self.skeletontrack is not None:
+            self.skeletontrack.filter_data(time_range)
 
     def get_initial_position(self):
         """
@@ -534,6 +561,51 @@ class Fly:
 
         # print(f"{self.name} is alive and interacted with the ball.")
         return True
+    
+    def check_dying(self):
+        # Check if in the fly tracking data, there is any time where the fly doesn't move more than 30 pixels for 15 min
+        
+        if self.flytrack is None:
+            return False
+        
+        fly_data = self.flytrack.objects[0].dataset
+        
+        # Check if the fly has a continuous period of 15 min where it doesn't move more than 30 pixels, 
+        # which means its velocity is less than 2 px/s for 15 min in a row
+        
+        # Get the velocity of the fly
+        fly_data["velocity"] = np.sqrt(
+            np.diff(fly_data["x_thorax"]) ** 2 + np.diff(fly_data["y_thorax"]) ** 2
+        )
+        
+        # Check if the fly has a continuous period of 15 min where it doesn't move more than 30 pixels
+        
+        # Get the time points where the fly's velocity is less than 2 px/s
+        
+        low_velocity = fly_data[fly_data["velocity"] < 2]
+        
+        # Get consecutive time points where the fly's velocity is less than 2 px/s
+        
+        consecutive_points = np.split(low_velocity, np.where(np.diff(low_velocity.index) != 1)[0] + 1)
+        
+        # Get the duration of each consecutive period
+        
+        durations = [len(group) for group in consecutive_points]
+        
+        # Check if there is any consecutive period of 15 min where the fly's velocity is less than 2 px/s
+        
+        for events in durations:
+            if events > 15 * 60 * self.experiment.fps:
+                # Get the corresponding time
+                
+                time = fly_data.loc[consecutive_points[durations.index(events)].index[0]]["time"]
+                
+                print(f"Warning: {self.name} is dying at {time}")
+                
+                return True          
+           
+        
+        
 
     def get_arena_metadata(self):
         """
@@ -750,23 +822,88 @@ class Fly:
     def compute_metrics(self):
         """
         Compute and store various metrics for each pair of fly and ball.
+
+        metrics explanation:
+        - nb_events: The number of events where the fly interacted with the ball.
+        - max_event: The event where the fly pushed the ball to its maximum relative distance using Euclidean distance.
+        - max_event_time: The time of the max_event.
+        - final_event: The event where the fly pushed the ball at least 170 px away from its initial position using Euclidean distance.
+        - final_event_time: The time of the final event.
+        - significant_events: The events where the ball was displaced by more than a given distance.
+        - nb_significant_events: The number of significant events.
+        - first_significant_event: The index of the first significant event.
+        - first_significant_event_time: The time of the first significant event.
+        - aha_moment: The first event where the fly pushed the ball more than before. It is basically a very significant event.
+        - aha_moment_time: The time of the aha_moment.
+        - insight_effect: Ratio of how much the ball is moved on average after the aha_moment compared to before.
+        - breaks: The periods where the fly is not interacting with the ball.
+        - cumulated_breaks_duration: The total duration of the breaks between events.
+        - events_direction: The events where the fly pushed or pulled the ball.
+        - pushed: How many events where the fly pushed the ball.
+        - pulled: How many events where the fly pulled the ball.
+        - pulling_ratio = pulled / (pushed + pulled)
+        - interaction_proportion : (sum of event durations) / (total duration of the video)
+        - distance_moved: How far the ball was moved by the fly when cumulating all events.
         """
         for fly_idx, ball_dict in self.interaction_events.items():
             for ball_idx, events in ball_dict.items():
                 key = f"fly_{fly_idx}_ball_{ball_idx}"
                 # print(f"Computing metrics for {key}")
 
+                max_event = self.get_max_event(fly_idx, ball_idx)
+                significant_events = self.get_significant_events(fly_idx, ball_idx)
+                aha_moment = self.get_aha_moment(fly_idx, ball_idx)
+                breaks = self.find_breaks(fly_idx, ball_idx)
+                events_direction = self.find_events_direction(fly_idx, ball_idx)
+                final_event = self.get_final_event(fly_idx, ball_idx)
+                
+                
+                #print(f"Final event: {final_event}")
+                #print(f"Aha moment: {aha_moment}")
+                
+                
                 self.metrics[key] = {
-                    "max_event": self.get_final_event(fly_idx, ball_idx),
-                    "final_event": self.get_final_event(fly_idx, ball_idx),
-                    "significant_events": self.get_significant_events(
-                        fly_idx, ball_idx
+                    "nb_events": len(events),
+                    "max_event": max_event[0],
+                    "max_event_time": max_event[1],
+                    "final_event": final_event[0],
+                    "final_event_time": final_event[1],
+                    #"significant_events": significant_events,
+                    "nb_significant_events": len(significant_events),
+                    "first_significant_event": significant_events[0][1] if significant_events else None,
+                    "first_significant_event_time": (
+                        significant_events[0][0][0] / self.experiment.fps if significant_events else None
+                        ),
+                    "aha_moment": aha_moment[1],
+                    "aha_moment_time": (
+                        aha_moment[0][0] / self.experiment.fps if aha_moment else None
                     ),
-                    "breaks": self.find_breaks(fly_idx, ball_idx),
+                    "insight_effect": (
+                        self.get_insight_effect(fly_idx, ball_idx)
+                        if aha_moment
+                        else None
+                    ),
+                    "breaks": breaks,
                     "cumulated_breaks_duration": self.get_cumulated_breaks_duration(
                         fly_idx, ball_idx
                     ),
-                    "events_direction": self.find_events_direction(fly_idx, ball_idx),
+                    #"events_direction": events_direction,
+                    "pushed": len(events_direction[0]),
+                    "pulled": len(events_direction[1]),
+                    "pulling_ratio": (
+                        len(events_direction[1])
+                        / (len(events_direction[0]) + len(events_direction[1]))
+                        if (len(events_direction[0]) + len(events_direction[1])) > 0
+                        else None
+                    ),
+                    "interaction_proportion": (
+                        sum([event[2] for event in events])
+                        / (
+                            sum([event[2] for event in events])
+                            + self.get_cumulated_breaks_duration(fly_idx, ball_idx)
+                        )
+                    ),
+                    "distance_moved": self.get_distance_moved(fly_idx, ball_idx),
                 }
 
                 # print(self.metrics[key])
@@ -826,28 +963,56 @@ class Fly:
         """
         Find the event at which the fly pushed the ball to its maximum relative distance using Euclidean distance.
         """
-        return self.find_event_by_distance(
+        
+        max_event = self.find_event_by_distance(
             fly_idx, ball_idx, threshold, distance_type="max"
         )
+        
+        max_event_idx = (max_event[1] if max_event[1] else None)
+        
+        max_event_time = (max_event[0][0] / self.experiment.fps if max_event[0] else None)
+                
+        return max_event_idx, max_event_time
 
     def get_final_event(self, fly_idx, ball_idx, threshold=170):
         """
         Find the event (if any) where the fly pushed the ball at least 170 px away from its initial position using Euclidean distance.
         """
-        return self.find_event_by_distance(
+        
+        # If the ball initial x position is less than 100 px away from the fly, use 170 px as the threshold. If not, use 100 px.
+        
+        ball_data = self.balltrack.objects[ball_idx].dataset
+        
+        if abs(ball_data["x_centre"].iloc[0] - self.start_x) < 100:
+            
+            threshold = 170
+            
+        else:
+                
+            threshold = 100
+                 
+        
+        final_event = self.find_event_by_distance(
             fly_idx, ball_idx, threshold, distance_type="threshold"
         )
-
-    def get_significant_events(self, fly_idx, ball_idx, distance=2):
+        
+        final_event_idx = (final_event[1] if final_event[1] else None)
+        
+        final_event_time = (final_event[0][0] / self.experiment.fps if final_event[0] else None)
+        
+        return final_event_idx, final_event_time
+    
+    def get_significant_events(self, fly_idx, ball_idx, distance=5):
         """
         Get the events where the ball was displaced by more than a given distance.
+        Returns a list of tuples containing the event and its index in the list of regular events.
         """
 
         ball_data = self.balltrack.objects[ball_idx].dataset
 
         significant_events = [
-            event
-            for event in self.interaction_events[fly_idx][ball_idx]
+            (event, i)
+            for i, event in enumerate(self.interaction_events[fly_idx][ball_idx])
             if self.check_yball_variation(event, ball_data, threshold=distance)
         ]
 
@@ -961,6 +1126,73 @@ class Fly:
 
         return pushing_events, pulling_events
 
+    def get_distance_moved(self, fly_idx, ball_idx, subset=None):
+        """Find and cumulate all the ball movements for a given ball or a subset of events.
+
+        Args:
+            ball_idx (int): The index of the ball.
+            subset (list, optional): List of events to consider. Defaults to None.
+
+        Returns:
+            float: The cumulated distance moved of the ball.
+        """
+
+        ball_data = self.balltrack.objects[ball_idx].dataset
+
+        # If subset is None, use all events
+        if subset is None:
+            subset = self.interaction_events[fly_idx][ball_idx]
+
+        # Calculate the Euclidean distance for each event in the subset
+        for event in subset:
+            ball_data.loc[event[0]:event[1], "euclidean_distance"] = np.sqrt(
+                (ball_data["x_centre"] - ball_data["x_centre"].iloc[event[0]]) ** 2
+                + (ball_data["y_centre"] - ball_data["y_centre"].iloc[event[0]]) ** 2
+            )
+
+        return ball_data["euclidean_distance"].sum()
+
+    def get_aha_moment(self, fly_idx, ball_idx, distance=20):
+        """
+        Find the first event where the fly pushed the ball more than before.
+        """
+        ball_data = self.balltrack.objects[ball_idx].dataset
+
+        aha_moment = [
+            (event, i)
+            for i, event in enumerate(self.interaction_events[fly_idx][ball_idx])
+            if self.check_yball_variation(event, ball_data, threshold=distance)
+        ]
+
+        return aha_moment[0]
+
+    def get_insight_effect(self, fly_idx, ball_idx):
+        """
+        Compute the ratio of how much the ball is moved on average after the aha_moment compared to before.
+        """
+        aha_moment = self.get_aha_moment(fly_idx, ball_idx)
+        significant_events = self.get_significant_events(fly_idx, ball_idx)
+        aha_moment_index = significant_events.index(aha_moment)
+        before_aha_moment = significant_events[:aha_moment_index]
+        after_aha_moment = significant_events[aha_moment_index:]
+
+        # Get the distances moved for each event before the aha_moment
+        before_distances = self.get_distance_moved(fly_idx, ball_idx, subset = before_aha_moment) / len(before_aha_moment)
+
+        # Average distance moved before the aha_moment
+        avg_distance_before = np.mean(before_distances)
+
+        # Get the distances moved for each event after the aha_moment
+        after_distances = self.get_distance_moved(fly_idx, ball_idx, subset = after_aha_moment) / len(after_aha_moment)
+
+        # Average distance moved after the aha_moment
+        avg_distance_after = np.mean(after_distances)
+
+        # Compute the insight effect
+        insight_effect = avg_distance_after / avg_distance_before
+
+        return insight_effect
+
     ################################ F1 experiment related functions ################################
 
     def compute_adjusted_time(self):
@@ -976,6 +1208,35 @@ class Fly:
             return flydata["adjusted_time"]
         else:
             return None
+    
+    def get_F1_ball_distances(self):
+        
+        # Get the F1 conditions for the fly
+        fly_condition = self.F1_condition
+        
+        # If the condition is "control", the test_ball is the ball 0, otherwise it is the ball 1
+        test_ball = 0 if fly_condition == "control" else 1
+        
+        # Get the ball euclidian distance from its initial position
+        
+        test_ball_data = self.balltrack.objects[test_ball].dataset
+        
+        test_ball_data["euclidean_distance"] = np.sqrt(
+            (test_ball_data["x_centre"] - test_ball_data["x_centre"].iloc[0]) ** 2
+            + (test_ball_data["y_centre"] - test_ball_data["y_centre"].iloc[0]) ** 2
+        )
+        
+        if fly_condition != "control":
+            training_ball_data = self.balltrack.objects[0].dataset
+            
+            training_ball_data["euclidean_distance"] = np.sqrt(
+                (training_ball_data["x_centre"] - training_ball_data["x_centre"].iloc[0]) ** 2
+                + (training_ball_data["y_centre"] - training_ball_data["y_centre"].iloc[0]) ** 2
+            )
+        
+        return training_ball_data, test_ball_data
+        
+    ################################ Video clip generation ################################
 
     def generate_clip(
         self, event, outpath=None, fps=None, width=None, height=None, tracks=False
@@ -1651,22 +1912,17 @@ class Dataset:
 
             elif metrics == "summary":
                 for fly in self.flies:
-                    for ball_type, flyball_positions in fly.flyball_positions.items():
-                        df = self._prepare_dataset_summary_metrics(
-                            fly,
-                            flyball_positions,
-                            success_cutoff=success_cutoff,
-                            time_range=time_range,
-                        )
-                        if df is not None:
-                            if ball_type not in dataset_dict:
-                                dataset_dict[ball_type] = []
-                            dataset_dict[ball_type].append(df)
-                        else:
-                            print(f"Empty DataFrame for fly {fly.directory}")
+                    data = self._prepare_dataset_summary_metrics(fly)
+
+            
+            
+            elif metrics == "F1":
+                for fly in self.flies:
+                    data = self._prepare_dataset_F1(fly)
+                    Dataset.append(data)
 
             self.data = pd.concat(Dataset)
-
+            
         except Exception as e:
             print(f"An error occurred: {e}")
             traceback.print_exc()
@@ -1674,7 +1930,7 @@ class Dataset:
 
         return self.data
 
-    def _prepare_dataset_coordinates(self, fly, success_cutoff=True, time_range=None):
+    def _prepare_dataset_coordinates(self, fly, downslampling_factor=5):
         """
         Helper function to prepare individual fly dataset with fly and ball coordinates. It also adds the fly name, experiment name and arena metadata as categorical data.
 
@@ -1682,6 +1938,7 @@ class Dataset:
             fly (Fly): A Fly object.
             success_cutoff (bool): Whether to apply the success cutoff. Defaults to True.
             time_range (list): A list containing the start and end times for the dataset. Defaults to None.
+            downslampling_factor (int): The factor (in seconds) by which to downsample the dataset. Defaults to 5.
 
         Returns:
             pandas.DataFrame: A DataFrame containing the fly's coordinates and associated metadata.
@@ -1727,239 +1984,78 @@ class Dataset:
                 + (dataset[f"y_ball_{i}"] - dataset[f"y_ball_{i}"].iloc[0]) ** 2
             )
 
-        if time_range is not None:
-            # If one value is provided, set the end of the range to the end of the video and the start to the provided value
-            if len(time_range) == 1:
-                dataset = dataset[dataset["time"] >= time_range[0]]
-            # If two values are provided, set the start and end of the range to the provided values
-            elif len(time_range) == 2:
-                dataset = dataset[
-                    (dataset["time"] >= time_range[0])
-                    & (dataset["time"] <= time_range[1])
-                ]
-            else:
-                print(
-                    "Invalid time range. Please provide one or two values for the time range."
-                )
-
-        if success_cutoff:
-            # Get the initial y_ball and subtract 180. Find the first index where y_ball is less than this value
-            cutoff_index = (
-                (dataset[f"y_ball_0"] <= dataset[f"y_ball_0"].iloc[0] - 180)
-            ).idxmax()
-            if cutoff_index != 0:  # idxmax returns 0 if no True value is found
-                dataset = dataset[:cutoff_index]
+        if downslampling_factor:
+            dataset = dataset.iloc[:: downslampling_factor * fly.experiment.fps]
 
         dataset = self._add_metadata(dataset, fly)
 
         return dataset
 
     # TODO : Events should be reannotated if the dataset is subsetted
+
+    # TODO: implement events durations
     def _prepare_dataset_summary_metrics(
         self,
         fly,
-        metrics=[
-            "NumberEvents",
-            "FinalEvent",
-            "FinalTime",
-            "SignificantEvents",
-            "SignificantFirst",
-            "SignificantFirstTime",
-            "Pushes",
-            "Pulls",
-            "PullingRatio",
-            "InteractionProportion",
-            "AhaMoment",
-            "AhaMomentIndex",
-            "InsightEffect",
-            "TimeToFinish",
-            "SignificantRatio",
-        ],
-        success_cutoff=True,
-        time_range=None,
+        metrics=[],
     ):
         """
         Prepares a dataset with summary metrics for a given fly. The metrics are computed for all events, but only the ones specified in the 'metrics' argument are included in the returned DataFrame.
 
-        Available metrics:
-        - NumberEvents: The number of events found in the flyball_positions DataFrame.
-        - FinalEvent: The event at which the fly pushed the ball to its maximum relative distance from the start of the corridor.
-        - FinalTime: The time at which the final event occurred.
-        - SignificantEvents: The number of events where the ball was displaced by more than a given distance (this distance is set in check_yball_variation function and its default value is 10px).
-        - SignificantRatio: The ratio of significant events to the total number of events.
-        - AhaMoment: The first event at which the fly pushed the ball to at least a distance of 125px from the start of the corridor.
-        - SignificantFirst: The index of the first significant event.
-        - SignificantFirstTime: The time at which the first significant event occurred.
-        - CumulatedBreaks: The total duration of the breaks between events.
-        - Pushes: The number of events where the fly pushed the ball.
-        - Pulls: The number of events where the fly pulled the ball.
-        - PullingRatio: The ratio of the number of push events to the total number of significant events.
-        - InteractionProportion: The proportion of the video or subset during which the fly was interacting with the ball.
-
         Args:
             fly (Fly): A Fly object.
-            metrics (list): A list of metrics to include in the dataset. The metrics require valid ball and fly tracking data.
-            success_cutoff (bool): If True, only events before the ball reaches the end of the corridor are considered.
+            metrics (list): A list of metrics to include in the dataset. The metrics require valid ball and fly tracking data. If the list is empty, all available metrics are included. Defaults to [].
 
         Returns:
             pandas.DataFrame: A DataFrame containing the fly's summary metrics and associated metadata.
-
         """
-        # TODO: Implement events duration
-        # TODO: Implement some metric about whether the fly brought the ball close enought to the end of the corridor
+        # Initialize an empty DataFrame
+        dataset = pd.DataFrame()
 
-        # Store the results of function calls in variables
+        # If no specific metrics are provided, include all available metrics
+        if not metrics:
+            metrics = list(fly.metrics[next(iter(fly.metrics))].keys())
 
-        fly.annotate_events()
-        positions = fly.flyball_positions
+        # For each pair of fly and ball, get the metrics from the Fly metrics
+        for key, metric_dict in fly.metrics.items():
+            for metric in metrics:
+                if metric in metric_dict:
+                    dataset.at[key, metric] = metric_dict[metric]
 
-        # print(positions.head())
-
-        if success_cutoff:
-            cutoff_index = (fly.flyball_positions["yball"] <= fly.end + 40).idxmax()
-            if cutoff_index != 0:  # idxmax returns 0 if no True value is found
-                positions = fly.flyball_positions[:cutoff_index]
-
-        if time_range is not None:
-            # If one value is provided, set the end of the range to the end of the video and the start to the provided value
-            if len(time_range) == 1:
-                positions = positions[positions["time"] >= time_range[0]]
-
-                # Reindex events
-                unique_events = positions["event"].dropna().unique()
-                event_mapping = {event: i + 1 for i, event in enumerate(unique_events)}
-                positions["event"] = positions["event"].map(event_mapping)
-
-            # If two values are provided, set the start and end of the range to the provided values
-            elif len(time_range) == 2:
-                positions = positions[
-                    (positions["time"] >= time_range[0])
-                    & (positions["time"] <= time_range[1])
-                ]
-
-                # Reindex events
-                unique_events = positions["event"].dropna().unique()
-                event_mapping = {event: i + 1 for i, event in enumerate(unique_events)}
-                positions["event"] = positions["event"].map(event_mapping)
-
-            else:
-                print(
-                    "Invalid time range. Please provide one or two values for the time range."
-                )
-
-        final_event = fly.get_final_event(subset=positions)
-        significant_events = fly.get_significant_events(subset=positions)
-        events_direction = fly.find_events_direction(subset=positions)
-        aha_moment = fly.get_significant_events(distance=50, subset=positions)
-        aha_moment_index = (
-            fly.find_interaction_events(subset=positions).index(aha_moment[0])
-            if aha_moment
-            else None
-        )
-
-        # Create a dictionary of metric calculation functions
-        metric_funcs = {
-            "NumberEvents": lambda: [fly.get_events_number(subset=positions)],
-            "FinalEvent": lambda: (
-                [final_event[1]] if final_event != (None, None) else [None]
-            ),
-            "FinalTime": lambda: (
-                [final_event[0][2] / fly.experiment.fps]
-                if final_event != (None, None)
-                else [None]
-            ),
-            "SignificantEvents": lambda: (
-                [len(significant_events)] if significant_events else [0]
-            ),
-            "SignificantRatio": lambda: (
-                [len(significant_events) / fly.get_events_number(subset=positions)]
-                if significant_events
-                else [0]
-            ),
-            "AhaMoment": lambda: (
-                [aha_moment[0][0] / fly.experiment.fps] if aha_moment else [None]
-            ),
-            "AhaMomentIndex": lambda: (
-                [aha_moment_index] if aha_moment_index is not None else [None]
-            ),
-            "InsightEffect": lambda: (
-                [
-                    np.mean(
-                        [
-                            fly.check_yball_variation(event, subset=positions)[1]
-                            for event in fly.find_interaction_events(subset=positions)[
-                                aha_moment_index:
-                            ]
-                        ]
-                    )
-                    / np.mean(
-                        [
-                            fly.check_yball_variation(event, subset=positions)[1]
-                            for event in fly.find_interaction_events(subset=positions)[
-                                :aha_moment_index
-                            ]
-                        ]
-                    )
-                ]
-                if aha_moment_index is not None
-                and aha_moment_index
-                < len(fly.find_interaction_events(subset=positions))
-                else [None]
-            ),
-            "TimeToFinish": lambda: [len(positions) / fly.experiment.fps],
-            "SignificantFirst": lambda: (
-                [
-                    fly.find_interaction_events(subset=positions).index(
-                        significant_events[0]
-                    )
-                ]
-                if significant_events
-                else [None]
-            ),
-            "SignificantFirstTime": lambda: (
-                [significant_events[0][0] / fly.experiment.fps]
-                if significant_events
-                else [None]
-            ),
-            "CumulatedBreaks": lambda: [
-                fly.get_cumulated_breaks_duration(subset=positions) / fly.experiment.fps
-            ],
-            "InteractionProportion": lambda: [
-                (positions["event"].notnull().sum()) / len(positions)
-            ],
-            "Pushes": lambda: [len(events_direction[0])] if events_direction else [0],
-            "Pulls": lambda: [len(events_direction[1])] if events_direction else [0],
-            "PullingRatio": lambda: [
-                (
-                    (len(events_direction[1]))
-                    / (len(events_direction[0]) + len(events_direction[1]))
-                    if events_direction
-                    and (
-                        len(events_direction[0]) != 0
-                    )  # or len(events_direction[1]) != 0)
-                    else float("nan")
-                )
-            ],
-        }
-
-        # Initialize an empty dictionary
-        data = {}
-
-        # Compute all metrics
-        computed_metrics = {metric: func() for metric, func in metric_funcs.items()}
-
-        # Add only the selected metrics to the data dictionary
-        data = {
-            metric: computed_metrics[metric]
-            for metric in metrics
-            if metric in computed_metrics
-        }
-
-        # Convert the dictionary to a DataFrame
-        dataset = pd.DataFrame(data)
-
+        # Add metadata to the dataset
         dataset = self._add_metadata(dataset, fly)
 
+        return dataset
+    
+    def _prepare_dataset_F1(self, fly, downsampling_factor=5):
+        
+        # Check if the fly ever exits the corridor
+        
+        if fly.exit_time is None:
+            print(f"Fly {fly.name} never exits the corridor")
+            return
+        
+        dataset = pd.DataFrame()
+        
+        dataset["time"] = fly.flytrack.objects[0].dataset["time"]
+        dataset["frame"] = fly.flytrack.objects[0].dataset["frame"]
+        
+        dataset["adjusted_time"] = fly.compute_adjusted_time()
+        
+        dataset["training_ball"], dataset["test_ball"] = fly.training_ball_distances, fly.test_ball_distances
+        
+        # Exclude the fly if test_ball_distances has moved > 10 px before adjusted time 0
+        
+        NegData = dataset[dataset["adjusted_time"] < 0]
+        
+        if NegData["test_ball"].max() > 10:
+            print(f"Fly {fly.name} excluded due to premature ball movements")
+        
+        if downsampling_factor:
+            dataset = dataset.iloc[:: downsampling_factor * fly.experiment.fps]
+
+        dataset = self._add_metadata(dataset, fly)
+        
         return dataset
 
     def _add_metadata(self, data, fly):
@@ -2013,31 +2109,6 @@ class Dataset:
             print(f"Current dataset:\n{dataset}")
 
         return dataset
-
-    # def compute_sample_size(self, data, group_by_columns=["Nickname", "Brain region"]):
-    #     """
-    #     Function used to compute the sample size of a dataset generated by the generate_dataset method. it compute the size of the dataset grouped by columns of interest.
-
-    #     Args:
-    #         data (pandas.DataFrame): A pandas DataFrame generated by the generate_dataset method.
-
-    #         group_by_columns (list): A list of columns to group the data by.
-
-    #     Returns:
-    #         pandas.DataFrame: A DataFrame containing the sample size for each group.
-    #     """
-    #     # Group the data by the columns of interest and compute the sample size
-    #     sample_size = (
-    #         data.groupby(group_by_columns)
-    #         .nunique()["fly"]
-    #         .reset_index()
-    #         .rename(columns={"fly": "SampleSize"})
-    #     )
-
-    #     # Merge the sample size with the original data
-    #     data = pd.merge(data, sample_size, on=group_by_columns)
-
-    #     return data
 
     def get_event_numbers(self):
         # Check that events have been annotated

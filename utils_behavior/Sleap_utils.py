@@ -506,6 +506,21 @@ class Sleap_Tracks:
             objects.append(self.Object(tracking_df, self.node_names))
 
         return objects
+    
+    def filter_data(self, time_range):
+        """Filter the tracking data based on a time range.
+
+        Args:
+            time_range (tuple): Tuple containing the start and end time for the filter.
+
+        Returns:
+            list: List of filtered DataFrames.
+        """
+
+        for obj in self.objects:
+            self.obj.dataset = self.obj.dataset[(obj.dataset["time"] >= time_range[0]) & (obj.dataset["time"] <= time_range[1])]
+
+        return self.objects
             
 class CombinedSleapTracks:
     """Class for handling and combining multiple SLEAP Tracks for the same video."""

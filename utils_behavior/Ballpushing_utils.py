@@ -17,6 +17,9 @@ import webbrowser
 
 from holoviews import streams
 
+import multiprocessing
+from multiprocessing import Pool
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from scipy.ndimage import median_filter, gaussian_filter
 from pathlib import Path
@@ -417,6 +420,8 @@ class Fly:
             self.compute_metrics()
             
             self.training_ball_distances, self.test_ball_distances = self.get_F1_ball_distances()
+            
+            self.F1_checkpoints = self.find_checkpoint_times()
 
     def __str__(self):
         # Get the genotype from the metadata
@@ -874,7 +879,7 @@ class Fly:
                     "first_significant_event_time": (
                         significant_events[0][0][0] / self.experiment.fps if significant_events else None
                         ),
-                    "aha_moment": aha_moment[1],
+                    "aha_moment": (aha_moment[1] if aha_moment else None),
                     "aha_moment_time": (
                         aha_moment[0][0] / self.experiment.fps if aha_moment else None
                     ),
@@ -964,13 +969,11 @@ class Fly:
         Find the event at which the fly pushed the ball to its maximum relative distance using Euclidean distance.
         """
         
-        max_event = self.find_event_by_distance(
-            fly_idx, ball_idx, threshold, distance_type="max"
+        max_event, max_event_idx = self.find_event_by_distance(
+        fly_idx, ball_idx, threshold, distance_type="max"
         )
         
-        max_event_idx = (max_event[1] if max_event[1] else None)
-        
-        max_event_time = (max_event[0][0] / self.experiment.fps if max_event[0] else None)
+        max_event_time = (max_event[0] / self.experiment.fps if max_event else None)
                 
         return max_event_idx, max_event_time
 
@@ -978,27 +981,19 @@ class Fly:
         """
         Find the event (if any) where the fly pushed the ball at least 170 px away from its initial position using Euclidean distance.
         """
-        
         # If the ball initial x position is less than 100 px away from the fly, use 170 px as the threshold. If not, use 100 px.
-        
         ball_data = self.balltrack.objects[ball_idx].dataset
         
         if abs(ball_data["x_centre"].iloc[0] - self.start_x) < 100:
-            
             threshold = 170
-            
         else:
-                
             threshold = 100
-                 
         
-        final_event = self.find_event_by_distance(
+        final_event, final_event_idx = self.find_event_by_distance(
             fly_idx, ball_idx, threshold, distance_type="threshold"
         )
         
-        final_event_idx = (final_event[1] if final_event[1] else None)
-        
-        final_event_time = (final_event[0][0] / self.experiment.fps if final_event[0] else None)
+        final_event_time = (final_event[0] / self.experiment.fps if final_event else None)
         
         return final_event_idx, final_event_time
     
@@ -1086,6 +1081,9 @@ class Fly:
         pulling_events = []
 
         for event in significant_events:
+            
+            event = event[0]
+            
             start_roi = event[0]
             end_roi = event[1]
 
@@ -1115,7 +1113,7 @@ class Fly:
                 ** 2
             )
 
-            # print(f"Start distance: {start_distance}, End distance: {end_distance}")
+            #print(f"Start distance: {start_distance}, End distance: {end_distance}")
 
             if end_distance > start_distance:
                 # print(f"Pushing event: {event}")
@@ -1164,15 +1162,19 @@ class Fly:
             if self.check_yball_variation(event, ball_data, threshold=distance)
         ]
 
-        return aha_moment[0]
+        if aha_moment:
+            return aha_moment[0]
+        
+        else:
+            return None
 
     def get_insight_effect(self, fly_idx, ball_idx):
         """
         Compute the ratio of how much the ball is moved on average after the aha_moment compared to before.
         """
-        aha_moment = self.get_aha_moment(fly_idx, ball_idx)
-        significant_events = self.get_significant_events(fly_idx, ball_idx)
-        aha_moment_index = significant_events.index(aha_moment)
+        
+        significant_events = [significant_event[0] for significant_event in self.get_significant_events(fly_idx, ball_idx)]
+        aha_moment_index = self.get_aha_moment(fly_idx, ball_idx)[1]
         before_aha_moment = significant_events[:aha_moment_index]
         after_aha_moment = significant_events[aha_moment_index:]
 
@@ -1210,31 +1212,58 @@ class Fly:
             return None
     
     def get_F1_ball_distances(self):
+        """
+        Compute the Euclidean distances for the training and test ball data.
+
+        Returns:
+            tuple: The training and test ball data with Euclidean distances.
+        """
+        training_ball_data = None
+        test_ball_data = None
         
-        # Get the F1 conditions for the fly
-        fly_condition = self.F1_condition
-        
-        # If the condition is "control", the test_ball is the ball 0, otherwise it is the ball 1
-        test_ball = 0 if fly_condition == "control" else 1
-        
-        # Get the ball euclidian distance from its initial position
-        
-        test_ball_data = self.balltrack.objects[test_ball].dataset
-        
-        test_ball_data["euclidean_distance"] = np.sqrt(
-            (test_ball_data["x_centre"] - test_ball_data["x_centre"].iloc[0]) ** 2
-            + (test_ball_data["y_centre"] - test_ball_data["y_centre"].iloc[0]) ** 2
-        )
-        
-        if fly_condition != "control":
-            training_ball_data = self.balltrack.objects[0].dataset
+        # TODO: Fix this by selecting training and test based on initial x position of the ball compared to the fly's initial x position
+
+        for ball_idx in range(0, len(self.balltrack.objects)):
+            ball_data = self.balltrack.objects[ball_idx].dataset
             
-            training_ball_data["euclidean_distance"] = np.sqrt(
+            # Check if the ball is > or < 100 px away from the fly's initial x position
+            
+            if abs(ball_data["x_centre"].iloc[0] - self.start_x) < 100:
+                training_ball_data = ball_data
+                training_ball_data["euclidean_distance"] = np.sqrt(
                 (training_ball_data["x_centre"] - training_ball_data["x_centre"].iloc[0]) ** 2
                 + (training_ball_data["y_centre"] - training_ball_data["y_centre"].iloc[0]) ** 2
-            )
-        
+                )
+                
+            else:
+                test_ball_data = ball_data
+                test_ball_data["euclidean_distance"] = np.sqrt(
+                (test_ball_data["x_centre"] - test_ball_data["x_centre"].iloc[0]) ** 2
+                + (test_ball_data["y_centre"] - test_ball_data["y_centre"].iloc[0]) ** 2
+                )
+
         return training_ball_data, test_ball_data
+    
+    def find_checkpoint_times(self, distances=[10, 25, 35, 50, 60, 75, 90, 100]):
+        """
+        Find the times at which the ball reaches certain distances from its initial position.
+        """
+        
+        _, test_ball_data = self.get_F1_ball_distances()
+        
+        checkpoint_times = {}
+        
+        for distance in distances:
+            try:
+                # Find the time at which the test ball reaches the distance
+                checkpoint_time = test_ball_data.loc[test_ball_data["euclidean_distance"] >= distance, "time"].iloc[0]
+            except IndexError:
+                # If the distance is not reached, set the checkpoint time to None
+                checkpoint_time = None
+            
+            checkpoint_times[f"distance_{distance}"] = checkpoint_time
+            
+        return checkpoint_times
         
     ################################ Video clip generation ################################
 
@@ -1646,7 +1675,7 @@ class Experiment:
 
         return fps
 
-    def load_flies(self):
+    def load_flies(self, multithreading = False):
         """
         Loads all flies in the experiment directory. Find subdirectories containing at least one .mp4 file, then find all .mp4 files that are named the same as their parent directory. Create a Fly object for each found folder.
 
@@ -1697,10 +1726,17 @@ class Experiment:
 
         # Create a Fly object for each .mp4 file using multithreading
         flies = []
-        with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(load_fly, mp4_file) for mp4_file in mp4_files]
-            for future in as_completed(futures):
-                fly = future.result()
+        if multithreading:
+            
+            with ThreadPoolExecutor() as executor:
+                futures = [executor.submit(load_fly, mp4_file) for mp4_file in mp4_files]
+                for future in as_completed(futures):
+                    fly = future.result()
+                    if fly is not None:
+                        flies.append(fly)
+        else:
+            for mp4_file in mp4_files:
+                fly = load_fly(mp4_file)
                 if fly is not None:
                     flies.append(fly)
 

@@ -117,6 +117,28 @@ def draw_bs_ci(data, func=np.mean, rg=rg, n_reps=300):
     return conf_int
 
 
+def compute_effect_size(interval1, interval2):
+    """This function takes two sets of intervals and computes the effect size between them.
+
+    Returns:
+        tuple: the average effect size and the interval of the effect size.
+    Args:
+        interval1 (tuple): The first set of intervals.
+        interval1 (tuple): The second set of intervals.
+    """
+
+    # Compute the effect size by getting the central tendency of the two intervals
+    effect_size = np.mean(interval1) - np.mean(interval2)
+
+    # Compute the interval of the effect size
+    interval_min = interval1[1] - interval2[0]
+    interval_max = interval1[0] - interval2[1]
+
+    effect_size_interval = (interval_min, interval_max)
+
+    return effect_size, effect_size_interval
+
+
 def extract_coordinates(h5_file):
     """
     Extracts the x and y coordinates from a h5 file. Only works for single object tracking. For skeleton tracking,

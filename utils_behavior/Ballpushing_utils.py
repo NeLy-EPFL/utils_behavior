@@ -846,6 +846,7 @@ class Fly:
         # Return the dictionary of events count
         return events_count
 
+    # TODO: Compute maximum distance pushed (corresponding to max_event)
     def compute_metrics(self):
         """
         Compute and store various metrics for each pair of fly and ball.

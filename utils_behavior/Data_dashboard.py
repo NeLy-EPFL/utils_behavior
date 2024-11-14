@@ -43,6 +43,10 @@ import matplotlib.pyplot as plt
 from shiny import App, Inputs, Outputs, Session, reactive, render, req, ui, run_app
 import argparse
 import sys
+import io
+import base64
+import pyperclip
+
 
 # Run the app in the browser
 import nest_asyncio
@@ -75,13 +79,22 @@ def create_dashboard(data: pd.DataFrame):
             ui.input_select(
                 "plot_type",
                 "Plot type",
-                ["scatter", "box", "violin", "histogram", "bar"],
+                ["scatter", "box", "violin", "histogram"],
             ),
             ui.input_switch("show_margins", "Show marginal plots", value=True),
+            ui.hr(),
+            ui.input_select("save_format", "Save format", ["png", "svg"]),
+            ui.download_button("save_plot", "Save Plot"),
+            ui.hr(),
+            ui.input_select(
+                "export_format", "Export format", ["Python script", "Clipboard"]
+            ),
+            ui.input_action_button("export_code", "Export Source Code"),
         ),
         ui.card(
             ui.output_plot("main_plot"),
         ),
+        ui.output_text("export_message"),
     )
 
     def server(input: Inputs, output: Outputs, session: Session):
@@ -89,10 +102,9 @@ def create_dashboard(data: pd.DataFrame):
         def filtered_df() -> pd.DataFrame:
             return data
 
-        @output
-        @render.plot
-        def main_plot():
-            plt.figure(figsize=(10, 6))
+        @reactive.Calc
+        def generate_plot():
+            fig, ax = plt.subplots(figsize=(10, 6))
 
             x = input.xvar()
             y = input.yvar()
@@ -100,30 +112,106 @@ def create_dashboard(data: pd.DataFrame):
 
             if input.plot_type() == "scatter":
                 if input.show_margins():
-                    sns.jointplot(
+                    g = sns.jointplot(
                         data=filtered_df(), x=x, y=y, hue=group[0] if group else None
                     )
+                    return g.figure
                 else:
                     sns.scatterplot(
-                        data=filtered_df(), x=x, y=y, hue=group[0] if group else None
+                        data=filtered_df(),
+                        x=x,
+                        y=y,
+                        hue=group[0] if group else None,
+                        ax=ax,
                     )
             elif input.plot_type() == "box":
                 sns.boxplot(
-                    data=filtered_df(), x=x, y=y, hue=group[0] if group else None
+                    data=filtered_df(),
+                    x=x,
+                    y=y,
+                    hue=group[0] if group else None,
+                    fliersize=0,
+                    gap=0.1,
+                    ax=ax,
+                )
+
+                dodge = True if (group and x != group[0]) else False
+
+                sns.stripplot(
+                    data=filtered_df(),
+                    x=x,
+                    y=y,
+                    hue=group[0] if group else None,
+                    color="black",
+                    jitter=True,
+                    alpha=0.7,
+                    dodge=dodge,
+                    ax=ax,
                 )
             elif input.plot_type() == "violin":
                 sns.violinplot(
-                    data=filtered_df(), x=x, y=y, hue=group[0] if group else None
+                    data=filtered_df(), x=x, y=y, hue=group[0] if group else None, ax=ax
                 )
             elif input.plot_type() == "histogram":
-                sns.histplot(data=filtered_df(), x=x, hue=group[0] if group else None)
-            elif input.plot_type() == "bar":
-                sns.barplot(
-                    data=filtered_df(), x=x, y=y, hue=group[0] if group else None
+                sns.histplot(
+                    data=filtered_df(), x=x, hue=group[0] if group else None, ax=ax
                 )
 
             plt.title(f"{input.plot_type().capitalize()} Plot: {y} vs {x}")
             plt.tight_layout()
+            return fig
+
+        @output
+        @render.plot
+        def main_plot():
+            return generate_plot()
+
+        @render.download(filename=lambda: f"plot.{input.save_format()}")
+        def save_plot():
+            img_bytes = io.BytesIO()
+            generate_plot().savefig(img_bytes, format=input.save_format())
+            img_bytes.seek(0)
+            return img_bytes
+
+        @reactive.Effect
+        @reactive.event(input.export_code)
+        def export_source_code():
+            code = f"""
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Assuming you have your data in a DataFrame called 'data'
+x = "{input.xvar()}"
+y = "{input.yvar()}"
+group = {input.group_var() if input.group_var() else None}
+
+fig, ax = plt.subplots(figsize=(10, 6))
+
+if "{input.plot_type()}" == "scatter":
+    {"g = sns.jointplot(data=data, x=x, y=y, hue=group[0] if group else None)" if input.show_margins() else "sns.scatterplot(data=data, x=x, y=y, hue=group[0] if group else None, ax=ax)"}
+elif "{input.plot_type()}" == "box":
+    sns.boxplot(data=data, x=x, y=y, hue=group[0] if group else None, fliersize=0, gap=0.1, ax=ax)
+    dodge = True if (group and x != group[0]) else False
+    sns.stripplot(data=data, x=x, y=y, hue=group[0] if group else None, color="black", jitter=True, alpha=0.7, dodge=dodge, ax=ax)
+elif "{input.plot_type()}" == "violin":
+    sns.violinplot(data=data, x=x, y=y, hue=group[0] if group else None, ax=ax)
+elif "{input.plot_type()}" == "histogram":
+    sns.histplot(data=data, x=x, hue=group[0] if group else None, ax=ax)
+
+plt.title(f"{input.plot_type().capitalize()} Plot: {{y}} vs {{x}}")
+plt.tight_layout()
+plt.show()
+"""
+            if input.export_format() == "Python script":
+                with open("plot_code.py", "w") as f:
+                    f.write(code)
+                ui.notification_show(
+                    "Python script saved as 'plot_code.py'", duration=3
+                )
+            else:
+                pyperclip.copy(code)
+                ui.notification_show("Code copied to clipboard", duration=3)
 
     return App(app_ui, server)
 

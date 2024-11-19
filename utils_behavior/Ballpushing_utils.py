@@ -252,6 +252,126 @@ def load_fly(mp4_file, experiment):
 # Pixel size: 30 mm = 500 pixels, 4 mm = 70 pixels, 1.5 mm = 25 pixels
 
 
+class FlyMetadata:
+    def __init__(self, directory, experiment):
+        self.directory = directory
+        self.experiment = experiment
+        self.arena = self.directory.parent.name
+        self.corridor = self.directory.name
+        self.name = f"{self.experiment.directory.name}_{self.arena}_{self.corridor}"
+        self.arena_metadata = self.get_arena_metadata()
+
+        # For each value in the arena metadata, add it as an attribute of the fly
+        for var, data in self.arena_metadata.items():
+            setattr(self, var, data)
+
+        # If the fly has pretraining and unlocked, create a new item in arena_metadata, 'F1_condition'
+        if self.Pretraining and self.Unlocked:
+            if "n" in self.Pretraining:
+                self.arena_metadata["F1_condition"] = "control"
+            elif "y" in self.Pretraining:
+                if "Left" in self.corridor:
+                    if self.Unlocked[0] == "y":
+                        self.arena_metadata["F1_condition"] = "pretrained_unlocked"
+                    else:
+                        self.arena_metadata["F1_condition"] = "pretrained"
+                elif "Right" in self.corridor:
+                    if self.Unlocked[1] == "y":
+                        self.arena_metadata["F1_condition"] = "pretrained_unlocked"
+                    else:
+                        self.arena_metadata["F1_condition"] = "pretrained"
+            else:
+                print(f"Error: Pretraining value not valid for {self.name}")
+
+        # Add F1_condition as an attribute of the fly
+        if "F1_condition" in self.arena_metadata:
+            setattr(self, "F1_condition", self.arena_metadata["F1_condition"])
+
+        self.nickname, self.brain_region = self.load_brain_regions(brain_regions_path)
+
+        self.video = self.load_video()
+
+    def get_arena_metadata(self):
+        """
+        Retrieve the metadata for the Fly object's arena.
+
+        This method looks up the arena's metadata in the experiment's metadata dictionary.
+        The arena's name is converted to lowercase and used as the key to find the corresponding metadata.
+
+        Returns:
+            dict: A dictionary containing the metadata for the arena. The keys are the metadata variable names and the values are the corresponding metadata values. If no metadata is found for the arena, an empty dictionary is returned.
+        """
+        # Get the metadata for this fly's arena
+        arena_key = self.arena.lower()
+        return {
+            var: data[arena_key]
+            for var, data in self.experiment.metadata.items()
+            if arena_key in data
+        }
+
+    def load_brain_regions(self, brain_regions_path):
+        # Get the brain regions table
+        brain_regions = pd.read_csv(brain_regions_path, index_col=0)
+
+        # If the fly's genotype is defined in the arena metadata, find the associated nickname and brain region from the brain_regions_path file
+        if "Genotype" in self.arena_metadata:
+            try:
+                genotype = self.arena_metadata["Genotype"]
+
+                # If the genotype is None, skip the fly
+                if genotype.lower() == "none":
+                    print(f"Genotype is None: {self.name} is empty.")
+                    return
+
+                # Convert to lowercase for comparison
+                lowercase_index = brain_regions.index.str.lower()
+                matched_index = lowercase_index.get_loc(genotype.lower())
+
+                self.nickname = brain_regions.iloc[matched_index]["Nickname"]
+                self.brain_region = brain_regions.iloc[matched_index][
+                    "Simplified region"
+                ]
+            except KeyError:
+                print(
+                    f"Genotype {genotype} not found in brain regions table for {self.name}. Defaulting to PR"
+                )
+                self.nickname = "PR"
+                self.brain_region = "Control"
+
+        return self.nickname, self.brain_region
+
+    def load_video(self):
+        """Load the video file for the fly."""
+        try:
+            return list(self.directory.glob(f"{self.corridor}.mp4"))[0]
+        except IndexError:
+            try:
+                return list(
+                    self.directory.glob(
+                        f"{self.directory.parent.name}_corridor_{self.corridor[-1]}.mp4"
+                    )
+                )[0]
+            except IndexError:
+                try:
+                    # Look for a video file in the corridor directory
+                    return list(self.directory.glob("*.mp4"))[0]
+                except IndexError:
+                    raise FileNotFoundError(f"No video found for {self.name}.")
+
+    def display_metadata(self):
+        """
+        Print the metadata for the Fly object's arena.
+
+        This method iterates over the arena's metadata dictionary and prints each key-value pair.
+
+        Prints:
+            str: The metadata variable name and its corresponding value, formatted as 'variable: value'.
+        """
+        # Print the metadata for this fly's arena
+        for var, data in self.metadata.arena_metadata.items():
+            print(f"{var}: {data}")
+
+
 # TODO : Test the valid_data function in conditions where I know the fly is dead or the arena is empty or not to check success
 class Fly:
     """
@@ -297,74 +417,13 @@ class Fly:
         else:
             self.experiment = Experiment(self.directory.parent.parent)
 
-        self.arena = self.directory.parent.name
-        self.corridor = self.directory.name
-
-        self.name = f"{self.experiment.directory.name}_{self.arena}_{self.corridor}"
-        self.arena_metadata = self.get_arena_metadata()
-
-        # For each value in the arena metadata, add it as an attribute of the fly
-        for var, data in self.arena_metadata.items():
-            setattr(self, var, data)
-
-        # If the fly has pretraining and unlocked, create a new item in arena_metadata, 'F1_condition'
-        if self.Pretraining and self.Unlocked:
-            if "n" in self.Pretraining:
-                self.arena_metadata["F1_condition"] = "control"
-            elif "y" in self.Pretraining:
-                if "Left" in self.corridor:
-                    if self.Unlocked[0] == "y":
-                        self.arena_metadata["F1_condition"] = "pretrained_unlocked"
-                    else:
-                        self.arena_metadata["F1_condition"] = "pretrained"
-                elif "Right" in self.corridor:
-                    if self.Unlocked[1] == "y":
-                        self.arena_metadata["F1_condition"] = "pretrained_unlocked"
-                    else:
-                        self.arena_metadata["F1_condition"] = "pretrained"
-            else:
-                print(f"Error: Pretraining value not valid for {self.name}")
-
-        # Add F1_condition as an attribute of the fly
-        if "F1_condition" in self.arena_metadata:
-            setattr(self, "F1_condition", self.arena_metadata["F1_condition"])
-
-            # print(f"F1_condition for {self.name}: {self.F1_condition}")
+        self.metadata = FlyMetadata(self.directory, self.experiment)
 
         self.flyball_positions = None
         self.fly_skeleton = None
 
-        # Get the brain regions table
-        brain_regions = pd.read_csv(brain_regions_path, index_col=0)
-
-        # If the fly's genotype is defined in the arena metadata, find the associated nickname and brain region from the brain_regions_path file
-        if "Genotype" in self.arena_metadata:
-            try:
-                genotype = self.arena_metadata["Genotype"]
-
-                # If the genotype is None, skip the fly
-                if genotype.lower() == "none":
-                    print(f"Genotype is None: {self.name} is empty.")
-                    # self.valid_data = True
-                    return
-
-                # Convert to lowercase for comparison
-                lowercase_index = brain_regions.index.str.lower()
-                matched_index = lowercase_index.get_loc(genotype.lower())
-
-                self.nickname = brain_regions.iloc[matched_index]["Nickname"]
-                self.brain_region = brain_regions.iloc[matched_index][
-                    "Simplified region"
-                ]
-            except KeyError:
-                print(
-                    f"Genotype {genotype} not found in brain regions table for {self.name}. Defaulting to PR"
-                )
-                self.nickname = "PR"
-                self.brain_region = "Control"
-
         # Load the video file
-        self.video = self.load_video()
+        # self.video = self.load_video()
 
         # Load the tracking files
         try:
@@ -376,14 +435,14 @@ class Fly:
             if self.balltrack is None or (
                 self.flytrack is None and self.skeletontrack is None
             ):
-                print(f"Missing required tracking files for {self.name}.")
+                print(f"Missing required tracking files for {self.metadata.name}.")
                 self.flytrack = None
                 self.balltrack = None
                 self.skeletontrack = None
                 return
 
         except (FileNotFoundError, OSError, IOError, Exception) as e:
-            print(f"Error loading tracking files for {self.name}: {e}")
+            print(f"Error loading tracking files for {self.metadata.name}: {e}")
             self.flytrack = None
             self.balltrack = None
             self.skeletontrack = None
@@ -396,7 +455,7 @@ class Fly:
         self.valid_data = self.check_data_quality()
 
         if not self.valid_data:
-            print(f"Invalid data for: {self.name}. Skipping.")
+            print(f"Invalid data for: {self.metadata.name}. Skipping.")
             return
 
         else:
@@ -444,32 +503,18 @@ class Fly:
 
             self.F1_checkpoints = self.find_checkpoint_times()
 
+            self.direction_match = self.get_direction_match()
+
+            # print(f"direction match: {self.direction_match}")
+
     def __str__(self):
         # Get the genotype from the metadata
-        genotype = self.arena_metadata["Genotype"]
+        genotype = self.metadata.arena_metadata["Genotype"]
 
-        return f"Fly: {self.name}\nArena: {self.arena}\nCorridor: {self.corridor}\nVideo: {self.video}\nFlytrack: {self.flytrack}\nBalltrack: {self.balltrack}\nGenotype: {genotype}"
+        return f"Fly: {self.metadata.name}\nArena: {self.metadata.arena}\nCorridor: {self.metadata.corridor}\nVideo: {self.metadata.video}\nFlytrack: {self.flytrack}\nBalltrack: {self.balltrack}\nGenotype: {genotype}"
 
     def __repr__(self):
         return f"Fly({self.directory})"
-
-    def load_video(self):
-        """Load the video file for the fly."""
-        try:
-            return list(self.directory.glob(f"{self.corridor}.mp4"))[0]
-        except IndexError:
-            try:
-                return list(
-                    self.directory.glob(
-                        f"{self.directory.parent.name}_corridor_{self.corridor[-1]}.mp4"
-                    )
-                )[0]
-            except IndexError:
-                try:
-                    # Look for a video file in the corridor directory
-                    return list(self.directory.glob("*.mp4"))[0]
-                except IndexError:
-                    raise FileNotFoundError(f"No video found for {self.name}.")
 
     def load_tracking_file(
         self, pattern, object_type, time_range=None, success_cutoff=False
@@ -525,7 +570,7 @@ class Fly:
                     self.fly_skeleton["y_thorax"].iloc[0],
                 )
 
-        raise ValueError(f"No valid position data found for {self.name}.")
+        raise ValueError(f"No valid position data found for {self.metadata.name}.")
 
     def get_exit_time(self):
         """
@@ -566,7 +611,7 @@ class Fly:
         """
         # Ensure that flytrack is not None
         if self.flytrack is None:
-            print(f"{self.name} has no tracking data.")
+            print(f"{self.metadata.name} has no tracking data.")
             return False
 
         # Use the flytrack dataset
@@ -577,15 +622,15 @@ class Fly:
         moved_x = np.any(abs(fly_data["x_thorax"] - fly_data["x_thorax"].iloc[0]) > 30)
 
         if not moved_y and not moved_x:
-            print(f"{self.name} did not move significantly.")
+            print(f"{self.metadata.name} did not move significantly.")
             return False
 
         # Check if the interaction events dictionary is empty
         if not self.interaction_events or not any(self.interaction_events.values()):
-            print(f"{self.name} did not interact with the ball.")
+            print(f"{self.metadata.name} did not interact with the ball.")
             return False
 
-        # print(f"{self.name} is alive and interacted with the ball.")
+        # print(f"{self.metadata.name} is alive and interacted with the ball.")
         return True
 
     def check_dying(self):
@@ -630,40 +675,9 @@ class Fly:
                     consecutive_points[durations.index(events)].index[0]
                 ]["time"]
 
-                print(f"Warning: {self.name} is dying at {time}")
+                print(f"Warning: {self.metadata.name} is dying at {time}")
 
                 return True
-
-    def get_arena_metadata(self):
-        """
-        Retrieve the metadata for the Fly object's arena.
-
-        This method looks up the arena's metadata in the experiment's metadata dictionary.
-        The arena's name is converted to lowercase and used as the key to find the corresponding metadata.
-
-        Returns:
-            dict: A dictionary containing the metadata for the arena. The keys are the metadata variable names and the values are the corresponding metadata values. If no metadata is found for the arena, an empty dictionary is returned.
-        """
-        # Get the metadata for this fly's arena
-        arena_key = self.arena.lower()
-        return {
-            var: data[arena_key]
-            for var, data in self.experiment.metadata.items()
-            if arena_key in data
-        }
-
-    def display_metadata(self):
-        """
-        Print the metadata for the Fly object's arena.
-
-        This method iterates over the arena's metadata dictionary and prints each key-value pair.
-
-        Prints:
-            str: The metadata variable name and its corresponding value, formatted as 'variable: value'.
-        """
-        # Print the metadata for this fly's arena
-        for var, data in self.arena_metadata.items():
-            print(f"{var}: {data}")
 
     def detect_boundaries(self, threshold1=30, threshold2=100):
         """Detects the start and end of the corridor in the video. This is later used to compute the relative distance of the fly from the start of the corridor.
@@ -678,7 +692,7 @@ class Fly:
             end (int): the end of the corridor.
         """
 
-        video_file = self.video
+        video_file = self.metadata.video
 
         if not video_file.exists():
             print(f"Error: Video file {video_file} does not exist")
@@ -734,7 +748,7 @@ class Fly:
         """
 
         if self.skeletontrack is None:
-            warnings.warn(f"No skeleton tracking file found for {self.name}.")
+            warnings.warn(f"No skeleton tracking file found for {self.metadata.name}.")
             return None
 
         # Get the first track
@@ -752,7 +766,7 @@ class Fly:
 
             if x.empty or y.empty:
                 warnings.warn(
-                    f"Skipping skeleton coordinates for {self.name} and node: {x_col} and {y_col} due to empty data."
+                    f"Skipping skeleton coordinates for {self.metadata.name} and node: {x_col} and {y_col} due to empty data."
                 )
                 return None
 
@@ -761,7 +775,7 @@ class Fly:
                 replace_nans_with_previous_value(y)
             except ValueError as e:
                 warnings.warn(
-                    f"Skipping skeleton coordinates for {self.name} and node: {x_col} and {y_col} due to error: {e}"
+                    f"Skipping skeleton coordinates for {self.metadata.name} and node: {x_col} and {y_col} due to error: {e}"
                 )
                 return None
 
@@ -788,7 +802,7 @@ class Fly:
 
         if self.flytrack is None or self.balltrack is None:
             print(
-                f"Skipping interaction events for {self.name} due to missing tracking data."
+                f"Skipping interaction events for {self.metadata.name} due to missing tracking data."
             )
             return None
 
@@ -882,6 +896,8 @@ class Fly:
                 nb_events = self.get_adjusted_nb_events(fly_idx, ball_idx, signif=False)
 
                 max_event = self.get_max_event(fly_idx, ball_idx)
+
+                max_distance = self.get_max_distance(fly_idx, ball_idx)
                 # print(f"Max event: {max_event}")
                 significant_events = self.get_significant_events(fly_idx, ball_idx)
                 # print(f"Significant events: {significant_events}")
@@ -911,6 +927,7 @@ class Fly:
                     "nb_events": nb_events,
                     "max_event": max_event[0],
                     "max_event_time": max_event[1],
+                    "max_distance": max_distance,
                     "final_event": final_event[0],
                     "final_event_time": final_event[1],
                     # "significant_events": significant_events,
@@ -968,7 +985,7 @@ class Fly:
 
         key = f"fly_{fly_idx}_ball_{ball_idx}"
 
-        if self.F1_condition == "control":
+        if self.metadata.F1_condition == "control":
             if ball_idx == 0 and self.exit_time is not None:
                 adjusted_nb_events = (
                     len(events) * 1000 / (self.duration - self.exit_time)
@@ -1076,6 +1093,17 @@ class Fly:
             )
 
         return max_event_idx, max_event_time
+
+    def get_max_distance(self, fly_idx, ball_idx):
+        # Get the maximum euclidean distance between the ball positions and the initial position
+        ball_data = self.balltrack.objects[ball_idx].dataset
+
+        max_distance = np.sqrt(
+            (ball_data["x_centre"] - ball_data["x_centre"].iloc[0]) ** 2
+            + (ball_data["y_centre"] - ball_data["y_centre"].iloc[0]) ** 2
+        ).max()
+
+        return max_distance
 
     def get_final_event(self, fly_idx, ball_idx, threshold=170):
         """
@@ -1365,9 +1393,6 @@ class Fly:
         """
         ball_data = self.balltrack.objects[ball_idx].dataset
 
-        if abs(ball_data["x_centre"].iloc[0] - self.start_x) < 100:
-            return None
-
         initial_y = ball_data["y_centre"].iloc[0]
 
         # Calculate the Euclidean distance for each frame
@@ -1383,8 +1408,14 @@ class Fly:
             return None
 
         # Determine if the ball was pushed, pulled, or both
-        pushed = any(moved_data["y_centre"] > initial_y)
-        pulled = any(moved_data["y_centre"] < initial_y)
+
+        if abs(ball_data["x_centre"].iloc[0] - self.start_x) < 100:
+            pushed = any(moved_data["y_centre"] < initial_y)
+            pulled = any(moved_data["y_centre"] > initial_y)
+
+        else:
+            pushed = any(moved_data["y_centre"] > initial_y)
+            pulled = any(moved_data["y_centre"] < initial_y)
 
         if pushed and pulled:
             return "both"
@@ -1479,6 +1510,39 @@ class Fly:
 
         return checkpoint_times
 
+    def get_direction_match(self):
+        # For each of the flyball pair, check the success_direction metric and compare it with the success_direction of the other flyball pair
+
+        # Get the success_direction for each flyball pair
+        success_directions = {}
+
+        for fly_idx, ball_dict in self.interaction_events.items():
+            for ball_idx, events in ball_dict.items():
+                key = f"fly_{fly_idx}_ball_{ball_idx}"
+                success_direction = self.metrics[key]["success_direction"]
+                success_directions[key] = success_direction
+
+        # Check if the success_directions match for the two flyball pairs
+
+        if len(self.balltrack.objects) > 1:
+
+            # print(f"succes_directions: {success_directions}")
+            direction_1 = success_directions["fly_0_ball_0"]
+            direction_2 = success_directions["fly_0_ball_1"]
+
+            # If direction 1 and 2 are strictly the same, return "match"
+            if direction_1 == direction_2:
+                return "match"
+            # Else if direction 1 or 2 is "both", return "partial_match"
+            elif direction_1 == "both" or direction_2 == "both":
+                return "partial_match"
+            # Else return "no_match"
+            else:
+                return "different"
+
+        else:
+            return None
+
     ################################ Video clip generation ################################
 
     def generate_clip(
@@ -1509,7 +1573,7 @@ class Fly:
             event = self.interaction_events[event - 1]
 
         start_frame, end_frame = event[0], event[1]
-        cap = cv2.VideoCapture(str(self.video))
+        cap = cv2.VideoCapture(str(self.metadata.video))
 
         # If no fps, width or height is provided, use the original video's fps, width and height
         if not fps:
@@ -1529,7 +1593,7 @@ class Fly:
 
             if outpath == get_labserver() / "Videos":
                 clip_path = outpath.joinpath(
-                    f"{self.name}_{event_index}.mp4"
+                    f"{self.metadata.name}_{event_index}.mp4"
                 ).as_posix()
             else:
                 clip_path = outpath.joinpath(f"output_{event_index}.mp4").as_posix()
@@ -1654,7 +1718,7 @@ class Fly:
         """
 
         if self.flyball_positions is None:
-            print(f"No tracking data available for {self.name}. Skipping...")
+            print(f"No tracking data available for {self.metadata.name}. Skipping...")
             return
 
         if outpath is None:
@@ -1662,12 +1726,14 @@ class Fly:
         events = self.interaction_events
         clips = []
 
-        cap = cv2.VideoCapture(str(self.video))
+        cap = cv2.VideoCapture(str(self.metadata.video))
         fps = cap.get(cv2.CAP_PROP_FPS)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap.release()
-        vidname = f"{self.name}_{self.Genotype if self.Genotype else 'undefined'}"
+        vidname = (
+            f"{self.metadata.name}_{self.Genotype if self.Genotype else 'undefined'}"
+        )
 
         for i, event in enumerate(events):
             clip_path = self.generate_clip(event, outpath, fps, width, height, tracks)
@@ -1733,11 +1799,11 @@ class Fly:
                 get_labserver()
                 / "Videos"
                 / "Previews"
-                / f"{self.name}_{self.Genotype if self.Genotype else 'undefined'}_x{speed}.mp4"
+                / f"{self.metadata.name}_{self.Genotype if self.Genotype else 'undefined'}_x{speed}.mp4"
             )
 
         # Load the video file
-        clip = VideoFileClip(self.video.as_posix())
+        clip = VideoFileClip(self.metadata.video.as_posix())
 
         # If tracks is True, add circles to the video
 
@@ -1765,7 +1831,9 @@ class Fly:
 
         # If saving, write the new video clip to a file
         if save:
-            print(f"Saving {self.video.name} at {speed}x speed in {output_path.parent}")
+            print(
+                f"Saving {self.metadata.video.name} at {speed}x speed in {output_path.parent}"
+            )
             sped_up_clip.write_videofile(
                 str(output_path), fps=clip.fps
             )  # Save the sped-up clip
@@ -1784,7 +1852,7 @@ class Fly:
             # Set the title of the Pygame window
             pygame.display.set_caption(f"Preview (speed = x{speed})")
 
-            print(f"Previewing {self.video.name} at {speed}x speed")
+            print(f"Previewing {self.metadata.video.name} at {speed}x speed")
 
             sped_up_clip.preview(fps=self.experiment.fps * speed)
 
@@ -2275,6 +2343,8 @@ class Dataset:
                     if isinstance(value, list) or isinstance(value, dict):
                         value = str(value)  # Convert lists and dicts to strings
                     dataset.at[key, metric] = value
+
+        dataset["direction_match"] = fly.direction_match
 
         # Add metadata to the dataset
         dataset = self._add_metadata(dataset, fly)

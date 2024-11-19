@@ -2019,10 +2019,12 @@ class Dataset:
 
         # Get the fly and ball tracking for each fly and ball objects in flytrack and balltrack
         flydata = [
-            fly.flytrack.objects[i].dataset for i in range(len(fly.flytrack.objects))
+            fly.tracking_data.flytrack.objects[i].dataset
+            for i in range(len(fly.tracking_data.flytrack.objects))
         ]
         balldata = [
-            fly.balltrack.objects[i].dataset for i in range(len(fly.balltrack.objects))
+            fly.tracking_data.balltrack.objects[i].dataset
+            for i in range(len(fly.tracking_data.balltrack.objects))
         ]
 
         # Generate a dataframe with each fly and ball y and x coordinates relative to self.start
@@ -2032,14 +2034,14 @@ class Dataset:
         dataset["frame"] = flydata[0]["frame"]
 
         # If the fly has an exit time, also get the adjusted time
-        if fly.exit_time is not None:
-            dataset["adjusted_time"] = fly.compute_adjusted_time()
+        if fly.tracking_data.exit_time is not None:
+            dataset["adjusted_time"] = fly.f1_metrics["adjusted_time"]
         else:
             dataset["adjusted_time"] = np.nan
 
         for i in range(len(flydata)):
-            dataset[f"x_fly_{i}"] = flydata[i]["x_thorax"] - fly.start_x
-            dataset[f"y_fly_{i}"] = flydata[i]["y_thorax"] - fly.start_y
+            dataset[f"x_fly_{i}"] = flydata[i]["x_thorax"] - fly.tracking_data.start_x
+            dataset[f"y_fly_{i}"] = flydata[i]["y_thorax"] - fly.tracking_data.start_y
 
             # Compute the distance from initial position
             dataset[f"distance_fly_{i}"] = np.sqrt(
@@ -2048,8 +2050,8 @@ class Dataset:
             )
 
         for i in range(len(balldata)):
-            dataset[f"x_ball_{i}"] = balldata[i]["x_centre"] - fly.start_x
-            dataset[f"y_ball_{i}"] = balldata[i]["y_centre"] - fly.start_y
+            dataset[f"x_ball_{i}"] = balldata[i]["x_centre"] - fly.tracking_data.start_x
+            dataset[f"y_ball_{i}"] = balldata[i]["y_centre"] - fly.tracking_data.start_y
 
             # Compute the distance from initial position
             dataset[f"distance_ball_{i}"] = np.sqrt(
@@ -2087,10 +2089,10 @@ class Dataset:
 
         # If no specific metrics are provided, include all available metrics
         if not metrics:
-            metrics = list(fly.metrics[next(iter(fly.metrics))].keys())
+            metrics = list(fly.events_metrics[next(iter(fly.events_metrics))].keys())
 
         # For each pair of fly and ball, get the metrics from the Fly metrics
-        for key, metric_dict in fly.metrics.items():
+        for key, metric_dict in fly.events_metrics.items():
 
             for metric in metrics:
                 if metric in metric_dict:
@@ -2100,18 +2102,21 @@ class Dataset:
                         value = str(value)  # Convert lists and dicts to strings
                     dataset.at[key, metric] = value
 
-        dataset["direction_match"] = fly.direction_match
+        if fly.f1_metrics:
+            dataset["direction_match"] = fly.f1_metrics["direction_match"]
 
         # Add metadata to the dataset
         dataset = self._add_metadata(dataset, fly)
 
+        # print(dataset.columns)
+
         # Assign summaries condition based on F1 condition
         if dataset["F1_condition"].iloc[0] == "control":
-            for key in fly.metrics.keys():
+            for key in fly.events_metrics.keys():
                 if key == "fly_0_ball_0":
                     dataset.at[key, "ball_condition"] = "test"
         else:
-            for key in fly.metrics.keys():
+            for key in fly.events_metrics.keys():
                 if key == "fly_0_ball_0":
                     dataset.at[key, "ball_condition"] = "training"
                 elif key == "fly_0_ball_1":
@@ -2121,29 +2126,33 @@ class Dataset:
 
     def _prepare_dataset_F1_coordinates(self, fly, downsampling_factor=5):
         # Check if the fly ever exits the corridor
-        if fly.exit_time is None:
-            print(f"Fly {fly.name} never exits the corridor")
+        if fly.tracking_data.exit_time is None:
+            print(f"Fly {fly.metadata.name} never exits the corridor")
             return
 
         dataset = pd.DataFrame()
 
-        dataset["time"] = fly.flytrack.objects[0].dataset["time"]
-        dataset["frame"] = fly.flytrack.objects[0].dataset["frame"]
+        dataset["time"] = fly.tracking_data.flytrack.objects[0].dataset["time"]
+        dataset["frame"] = fly.tracking_data.flytrack.objects[0].dataset["frame"]
 
-        dataset["adjusted_time"] = fly.compute_adjusted_time()
+        dataset["adjusted_time"] = fly.f1_metrics["adjusted_time"]
 
         # Assign training_ball and test_ball distances separately
 
-        if fly.F1_condition != "control":
-            dataset["training_ball"] = fly.training_ball_distances["euclidean_distance"]
+        if fly.metadata.F1_condition != "control":
+            dataset["training_ball"] = fly.f1_metrics["training_ball_distances"][
+                "euclidean_distance"
+            ]
 
-        dataset["test_ball"] = fly.test_ball_distances["euclidean_distance"]
+        dataset["test_ball"] = fly.f1_metrics["test_ball_distances"][
+            "euclidean_distance"
+        ]
 
         # Exclude the fly if test_ball_distances has moved > 10 px before adjusted time 0
         NegData = dataset[dataset["adjusted_time"] < 0]
 
         if NegData["test_ball"].max() > 10:
-            print(f"Fly {fly.name} excluded due to premature ball movements")
+            print(f"Fly {fly.metadata.name} excluded due to premature ball movements")
             return
 
         if downsampling_factor:
@@ -2154,18 +2163,18 @@ class Dataset:
         return dataset
 
     def _prepare_dataset_F1_checkpoints(self, fly):
-        if fly.exit_time is None:
-            print(f"Fly {fly.name} never exits the corridor")
+        if fly.tracking_data.exit_time is None:
+            print(f"Fly {fly.metadata.name} never exits the corridor")
             return pd.DataFrame()  # Return an empty DataFrame
 
         # Create a list of dictionaries for each checkpoint
         data = [
             {
-                "fly_exit_time": fly.exit_time,
+                "fly_exit_time": fly.tracking_data.exit_time,
                 "distance": distance,
                 "adjusted_time": adjusted_time,
             }
-            for distance, adjusted_time in fly.F1_checkpoints.items()
+            for distance, adjusted_time in fly.f1_metrics["F1_checkpoints"].items()
         ]
 
         # Convert the list of dictionaries to a DataFrame
@@ -2174,13 +2183,13 @@ class Dataset:
         # Add metadata to the dataset
         dataset = self._add_metadata(dataset, fly)
 
-        if fly.F1_condition == "control":
-            dataset["success_direction"] = fly.metrics["fly_0_ball_0"][
+        if fly.metadata.F1_condition == "control":
+            dataset["success_direction"] = fly.events_metrics["fly_0_ball_0"][
                 "success_direction"
             ]
 
         else:
-            dataset["success_direction"] = fly.metrics["fly_0_ball_1"][
+            dataset["success_direction"] = fly.events_metrics["fly_0_ball_1"][
                 "success_direction"
             ]
 
@@ -2202,11 +2211,11 @@ class Dataset:
             dataset = data
 
             # Add a column with the fly name as categorical data
-            dataset["fly"] = fly.name
+            dataset["fly"] = fly.metadata.name
             dataset["fly"] = dataset["fly"].astype("category")
 
             # Add a column with the path to the fly's folder
-            dataset["flypath"] = fly.directory.as_posix()
+            dataset["flypath"] = fly.metadata.directory.as_posix()
             dataset["flypath"] = dataset["flypath"].astype("category")
 
             # Add a column with the experiment name as categorical data
@@ -2215,14 +2224,18 @@ class Dataset:
 
             # Handle missing values for 'Nickname' and 'Brain region'
             dataset["Nickname"] = (
-                fly.nickname if fly.nickname is not None else "Unknown"
+                fly.metadata.nickname
+                if fly.metadata.nickname is not None
+                else "Unknown"
             )
             dataset["Brain region"] = (
-                fly.brain_region if fly.brain_region is not None else "Unknown"
+                fly.metadata.brain_region
+                if fly.metadata.brain_region is not None
+                else "Unknown"
             )
 
             # Add the metadata for the fly's arena as columns
-            for var, data in fly.arena_metadata.items():
+            for var, data in fly.metadata.arena_metadata.items():
                 # Handle missing values in arena metadata
                 data = data if data is not None else "Unknown"
                 dataset[var] = data
@@ -2233,53 +2246,12 @@ class Dataset:
                     self.metadata.append(var)
 
         except Exception as e:
-            print(f"Error occurred while adding metadata for fly {fly.name}: {str(e)}")
+            print(
+                f"Error occurred while adding metadata for fly {fly.metadata.name}: {str(e)}"
+            )
             print(f"Current dataset:\n{dataset}")
 
         return dataset
-
-    def get_event_numbers(self):
-        # Check that events have been annotated
-        if "event" not in self.data.columns:
-            raise ValueError(
-                "No events have been annotated. Run the annotate_events method first."
-            )
-
-        # Group the data by Fly and Event
-        GroupedData = (
-            self.data.groupby(["fly", "Nickname", "Simplified region"])
-            .nunique(["event"])
-            .reset_index()
-        )
-
-        # Calculate sample size
-        SampleSize = (
-            self.data.groupby(["Nickname", "Simplified region"])
-            .nunique()["fly"]
-            .reset_index()
-            .rename(columns={"fly": "SampleSize"})
-        )
-
-        # Merge GroupedData and SampleSize
-        GroupedData = pd.merge(
-            GroupedData, SampleSize, on=["Nickname", "Simplified region"]
-        )
-
-        # Make a new column with the nickname and the sample size
-        GroupedData["label"] = (
-            GroupedData["Nickname"]
-            + " (n = "
-            + GroupedData["SampleSize"].astype(str)
-            + ")"
-        )
-
-        # Add the metadata to the GroupedData
-        GroupedData.set_index("fly", inplace=True)
-
-        GroupedData.update(self.dropdata[self.metadata])
-        GroupedData.reset_index(inplace=True)
-
-        # TODO: Add handling when there's no simplified region, to get the simpler version of the data
 
 
 def detect_boundaries(Fly, threshold1=30, threshold2=100):

@@ -49,6 +49,8 @@ from .Sleap_utils import *
 
 from .HoloviewsTemplates import hv_main
 
+from dataclasses import dataclass
+
 sys.modules["Ballpushing_utils"] = sys.modules[
     __name__
 ]  # This line creates an alias for utils_behavior.Ballpushing_utils to utils_behavior.__init__ so that the previously made pkl files can be loaded.
@@ -252,6 +254,22 @@ def load_fly(mp4_file, experiment):
 # Pixel size: 30 mm = 500 pixels, 4 mm = 70 pixels, 1.5 mm = 25 pixels
 
 
+@dataclass
+class Config:
+    """
+    Configuration class for the Ball pushing experiments
+
+    Attributes:
+    interaction_threshold: tuple: The lower and upper limit values (in pixels) for the signal to be considered an event. Defaults to (0, 70).
+    success_cutoff: None or ?: The time range for the success cutoff. Defaults to None. If None, the success cutoff is not applied.
+    """
+
+    interaction_threshold: tuple = (0, 70)
+    success_cutoff: None
+    # TODO: Complete this to make it all clean
+
+
+# @dataclass
 class FlyMetadata:
     def __init__(self, directory, experiment):
         self.directory = directory
@@ -290,6 +308,7 @@ class FlyMetadata:
         self.nickname, self.brain_region = self.load_brain_regions(brain_regions_path)
 
         self.video = self.load_video()
+        self.fps = self.experiment.fps
 
     def get_arena_metadata(self):
         """
@@ -374,6 +393,7 @@ class FlyMetadata:
 
 class FlyTrackingData:
     def __init__(self, fly, time_range=None):
+
         self.fly = fly
         self.flytrack = None
         self.balltrack = None
@@ -1297,6 +1317,7 @@ class Fly:
         self,
         directory,
         experiment=None,
+        experiment_type=None,
         as_individual=False,
         time_range=None,
         success_cutoff=False,
@@ -1332,6 +1353,10 @@ class Fly:
         else:
             self.experiment = Experiment(self.directory.parent.parent)
 
+        self.config = self.experiment.config
+
+        self.experiment_type = experiment_type
+
         self.metadata = FlyMetadata(self.directory, self.experiment)
 
         self.tracking_data = FlyTrackingData(self, time_range)
@@ -1348,9 +1373,9 @@ class Fly:
 
         else:
 
-            self.events_metrics = BallpushingMetrics(self.tracking_data).metrics
+            self.events_metrics = None
 
-            self.f1_metrics = F1Metrics(self.tracking_data).metrics
+            self.f1_metrics = None
 
     def __str__(self):
         # Get the genotype from the metadata
@@ -1360,6 +1385,20 @@ class Fly:
 
     def __repr__(self):
         return f"Fly({self.directory})"
+
+    @property
+    def compute_events_metrics(self):
+        if self.events_metrics is None:
+            self.events_metrics = BallpushingMetrics(self.tracking_data).metrics
+
+        return self.events_metrics
+
+    @property
+    def compute_f1_metrics(self):
+        if self.f1_metrics is None and self.experiment_type == "F1":
+            self.f1_metrics = F1Metrics(self.tracking_data).metrics
+
+        return self.f1_metrics
 
     ################################ Video clip generation ################################
 
@@ -1705,6 +1744,8 @@ class Experiment:
             fps : str
             The frame rate of the videos.
         """
+
+        self.config = Config()
         self.directory = Path(directory)
         self.metadata = self.load_metadata()
         self.fps = self.load_fps()

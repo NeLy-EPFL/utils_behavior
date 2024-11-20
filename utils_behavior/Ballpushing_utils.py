@@ -263,11 +263,16 @@ class Config:
     interaction_threshold: tuple: The lower and upper limit values (in pixels) for the signal to be considered an event. Defaults to (0, 70).
     time_range: tuple: The time range (in seconds) to filter the tracking data. Defaults to None.
     success_cutoff: bool: Whether to filter the tracking data based on the success cutoff time range. Defaults to False. If True, the success_cutoff_time_range computed in the FlyTrackingData class will be used to filter the tracking data.
+    tracks_smoothing: bool: Whether to apply smoothing to the tracking data. Defaults to True.
+    dead_threshold: int: The threshold value (in pixels traveled) for the fly to be considered dead. Defaults to 30.
     """
 
     interaction_threshold: tuple = (0, 70)
     time_range: tuple = None
     success_cutoff: bool = False
+    tracks_smoothing: bool = True
+    dead_threshold: int = 30
+    # TODO: Add the significant event threshold, the Aha moment threshold, etc.
 
     def set_experiment_time_range(self, experiment_type):
         """
@@ -424,7 +429,9 @@ class FlyTrackingData:
         try:
             self.balltrack = self.load_tracking_file("*ball*.h5", "ball")
             self.flytrack = self.load_tracking_file("*fly*.h5", "fly")
-            self.skeletontrack = self.load_tracking_file("*full_body*.h5", "fly")
+            self.skeletontrack = self.load_tracking_file(
+                "*full_body*.h5", "fly", smoothing=False
+            )
 
             # Check if the balltrack file exists and either flytrack or skeletontrack exists
             if self.balltrack is None or (
@@ -464,12 +471,13 @@ class FlyTrackingData:
 
             self.adjusted_time = self.compute_adjusted_time()
 
-            self.final_event_init = BallpushingMetrics(self).get_final_event(0, 0)
-
-            if self.final_event_init:
-                self.success_cutoff_time_range = (0, self.final_event_init[1])
-
             if self.fly.config.success_cutoff:
+
+                self.final_event_init = BallpushingMetrics(self).get_final_event(0, 0)
+
+                if self.final_event_init:
+                    self.success_cutoff_time_range = (0, self.final_event_init[1])
+
                 self.filter_tracking_data(self.success_cutoff_time_range)
 
         else:
@@ -477,9 +485,16 @@ class FlyTrackingData:
             return
 
     def load_tracking_file(
-        self, pattern, object_type, time_range=None, success_cutoff=False
+        self,
+        pattern,
+        object_type,
+        smoothing=None,
     ):
         """Load a tracking file for the fly."""
+
+        if smoothing is None:
+            smoothing = self.fly.config.tracks_smoothing
+
         try:
             tracking_file = list(self.fly.directory.glob(pattern))[0]
             return Sleap_Tracks(tracking_file, object_type=object_type, debug=False)
@@ -562,8 +577,14 @@ class FlyTrackingData:
         fly_data = self.flytrack.objects[0].dataset
 
         # Check if any of the smoothed fly x and y coordinates are more than 30 pixels away from their initial position
-        moved_y = np.any(abs(fly_data["y_thorax"] - fly_data["y_thorax"].iloc[0]) > 30)
-        moved_x = np.any(abs(fly_data["x_thorax"] - fly_data["x_thorax"].iloc[0]) > 30)
+        moved_y = np.any(
+            abs(fly_data["y_thorax"] - fly_data["y_thorax"].iloc[0])
+            > self.fly.config.dead_threshold
+        )
+        moved_x = np.any(
+            abs(fly_data["x_thorax"] - fly_data["x_thorax"].iloc[0])
+            > self.fly.config.dead_threshold
+        )
 
         if not moved_y and not moved_x:
             print(f"{self.fly.metadata.name} did not move significantly.")

@@ -1,6 +1,6 @@
 import h5py
 
-#import h5pickle as h5py
+# import h5pickle as h5py
 
 import pandas as pd
 
@@ -23,7 +23,10 @@ import yaml
 
 import subprocess
 
-def generate_annotated_frame(video, sleap_tracks_list, frame, nodes=None, labels=False, edges=True, colorby=None):
+
+def generate_annotated_frame(
+    video, sleap_tracks_list, frame, nodes=None, labels=False, edges=True, colorby=None
+):
     """Generates an annotated frame image for a specific frame."""
 
     cap = cv2.VideoCapture(str(video))
@@ -33,18 +36,18 @@ def generate_annotated_frame(video, sleap_tracks_list, frame, nodes=None, labels
     if not ret:
         raise ValueError(f"Could not read frame {frame} from video {video}")
 
-    #print(sleap_tracks_list)
-    
+    # print(sleap_tracks_list)
+
     for sleap_tracks in sleap_tracks_list:
-        
-        #print(f"Processing {sleap_tracks.object_type}")
-        
+
+        # print(f"Processing {sleap_tracks.object_type}")
+
         for obj in sleap_tracks.objects:
-            
-            #print(f"Processing {obj}")
-        
+
+            # print(f"Processing {obj}")
+
             frame_data = obj.dataset[obj.dataset["frame"] == frame]
-    
+
             # Set nodes for each Sleap_Tracks object individually
             if nodes is None:
                 current_nodes = sleap_tracks.node_names
@@ -52,17 +55,27 @@ def generate_annotated_frame(video, sleap_tracks_list, frame, nodes=None, labels
                 current_nodes = [nodes]
             else:
                 # Filter nodes to include only those that exist in the current object
-                current_nodes = [node for node in nodes if node in sleap_tracks.node_names]
+                current_nodes = [
+                    node for node in nodes if node in sleap_tracks.node_names
+                ]
 
             # Define colors
-            if colorby == 'Nodes':
-                right_nodes = [node for node in sleap_tracks.node_names if node.startswith('R')]
-                left_nodes = [node for node in sleap_tracks.node_names if node.startswith('L')]
-                central_nodes = [node for node in sleap_tracks.node_names if not node.startswith('R') and not node.startswith('L')]
+            if colorby == "Nodes":
+                right_nodes = [
+                    node for node in sleap_tracks.node_names if node.startswith("R")
+                ]
+                left_nodes = [
+                    node for node in sleap_tracks.node_names if node.startswith("L")
+                ]
+                central_nodes = [
+                    node
+                    for node in sleap_tracks.node_names
+                    if not node.startswith("R") and not node.startswith("L")
+                ]
 
-                right_shades = get_shades('red', len(right_nodes))
-                left_shades = get_shades('blue', len(left_nodes))
-                central_shades = get_shades('green', len(central_nodes))
+                right_shades = get_shades("red", len(right_nodes))
+                left_shades = get_shades("blue", len(left_nodes))
+                central_shades = get_shades("green", len(central_nodes))
 
                 color_map = {}
                 for i, node in enumerate(right_nodes):
@@ -95,7 +108,6 @@ def generate_annotated_frame(video, sleap_tracks_list, frame, nodes=None, labels
                         # Add a circle to show the radius of the ball if the node is "Centre" or "centre"
                         if node.lower() == "centre":
                             cv2.circle(img, (x, y), 12, color_map[node], 2)
-                        
 
             if edges:
                 for edge in sleap_tracks.edge_names:
@@ -113,6 +125,7 @@ def generate_annotated_frame(video, sleap_tracks_list, frame, nodes=None, labels
 
     cap.release()
     return img
+
 
 def cpu_generate_annotated_video(
     video,
@@ -145,7 +158,13 @@ def cpu_generate_annotated_video(
 
     def process_frame(frame):
         return generate_annotated_frame(
-            video, sleap_tracks_list, frame, nodes=nodes, labels=labels, edges=edges, colorby=colorby
+            video,
+            sleap_tracks_list,
+            frame,
+            nodes=nodes,
+            labels=labels,
+            edges=edges,
+            colorby=colorby,
         )
 
     with ThreadPoolExecutor() as executor:
@@ -170,7 +189,8 @@ def cpu_generate_annotated_video(
         out.release()
     else:
         cv2.destroyAllWindows()
-        
+
+
 def gpu_generate_annotated_video(
     video,
     sleap_tracks_list,
@@ -212,7 +232,7 @@ def gpu_generate_annotated_video(
         gpu_img.upload(img)
 
         frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
-        
+
         for sleap_tracks in sleap_tracks_list:
             for obj in sleap_tracks.objects:
                 frame_data = obj.dataset[obj.dataset["frame"] == frame]
@@ -224,17 +244,27 @@ def gpu_generate_annotated_video(
                     current_nodes = [nodes]
                 else:
                     # Filter nodes to include only those that exist in the current object
-                    current_nodes = [node for node in nodes if node in sleap_tracks.node_names]
+                    current_nodes = [
+                        node for node in nodes if node in sleap_tracks.node_names
+                    ]
 
                 # Define colors
-                if colorby == 'Nodes':
-                    right_nodes = [node for node in sleap_tracks.node_names if node.startswith('R')]
-                    left_nodes = [node for node in sleap_tracks.node_names if node.startswith('L')]
-                    central_nodes = [node for node in sleap_tracks.node_names if not node.startswith('R') and not node.startswith('L')]
+                if colorby == "Nodes":
+                    right_nodes = [
+                        node for node in sleap_tracks.node_names if node.startswith("R")
+                    ]
+                    left_nodes = [
+                        node for node in sleap_tracks.node_names if node.startswith("L")
+                    ]
+                    central_nodes = [
+                        node
+                        for node in sleap_tracks.node_names
+                        if not node.startswith("R") and not node.startswith("L")
+                    ]
 
-                    right_shades = get_shades('red', len(right_nodes))
-                    left_shades = get_shades('blue', len(left_nodes))
-                    central_shades = get_shades('green', len(central_nodes))
+                    right_shades = get_shades("red", len(right_nodes))
+                    left_shades = get_shades("blue", len(left_nodes))
+                    central_shades = get_shades("green", len(central_nodes))
 
                     color_map = {}
                     for i, node in enumerate(right_nodes):
@@ -244,7 +274,9 @@ def gpu_generate_annotated_video(
                     for i, node in enumerate(central_nodes):
                         color_map[node] = central_shades[i]
                 else:
-                    color_map = {node: (0, 255, 255) for node in sleap_tracks.node_names}
+                    color_map = {
+                        node: (0, 255, 255) for node in sleap_tracks.node_names
+                    }
 
                 # Annotate nodes and labels
                 for _, row in frame_data.iterrows():
@@ -278,7 +310,10 @@ def gpu_generate_annotated_video(
                             x2 = frame_data[f"x_{node2}"].values[0]
                             y2 = frame_data[f"y_{node2}"].values[0]
                             if not (
-                                np.isnan(x1) or np.isnan(y1) or np.isnan(x2) or np.isnan(y2)
+                                np.isnan(x1)
+                                or np.isnan(y1)
+                                or np.isnan(x2)
+                                or np.isnan(y2)
                             ):
                                 img = gpu_img.download()  # CPU operations for drawing
                                 x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
@@ -297,7 +332,8 @@ def gpu_generate_annotated_video(
         out.release()
     else:
         cv2.destroyAllWindows()
-        
+
+
 def generate_annotated_video(
     video,
     sleap_tracks_list,
@@ -332,18 +368,45 @@ def generate_annotated_video(
         if cv2.cuda.getCudaEnabledDeviceCount() > 0:
             print("CUDA is enabled, using GPU for video processing.")
             gpu_generate_annotated_video(
-                video, sleap_tracks_list, save=save, output_path=output_path, start=start, end=end, nodes=nodes, labels=labels, edges=edges, colorby=colorby
+                video,
+                sleap_tracks_list,
+                save=save,
+                output_path=output_path,
+                start=start,
+                end=end,
+                nodes=nodes,
+                labels=labels,
+                edges=edges,
+                colorby=colorby,
             )
         else:
             print("No CUDA devices found, falling back to CPU processing.")
             cpu_generate_annotated_video(
-                video, sleap_tracks_list, save=save, output_path=output_path, start=start, end=end, nodes=nodes, labels=labels, edges=edges, colorby=colorby
+                video,
+                sleap_tracks_list,
+                save=save,
+                output_path=output_path,
+                start=start,
+                end=end,
+                nodes=nodes,
+                labels=labels,
+                edges=edges,
+                colorby=colorby,
             )
     except cv2.error as e:
         print(f"Error while checking for CUDA support: {e}")
         print("Falling back to CPU processing.")
         cpu_generate_annotated_video(
-            video, sleap_tracks_list, save=save, output_path=output_path, start=start, end=end, nodes=nodes, labels=labels, edges=edges, colorby=colorby
+            video,
+            sleap_tracks_list,
+            save=save,
+            output_path=output_path,
+            start=start,
+            end=end,
+            nodes=nodes,
+            labels=labels,
+            edges=edges,
+            colorby=colorby,
         )
 
 
@@ -351,13 +414,20 @@ def get_shades(color, num_shades):
     """Generate shades of a given color."""
     shades = []
     for i in range(num_shades):
-        if color == 'red':
-            shades.append((255, int(255 * (i / num_shades)), int(255 * (i / num_shades))))
-        elif color == 'blue':
-            shades.append((int(255 * (i / num_shades)), int(255 * (i / num_shades)), 255))
-        elif color == 'green':
-            shades.append((int(255 * (i / num_shades)), 255, int(255 * (i / num_shades))))
+        if color == "red":
+            shades.append(
+                (255, int(255 * (i / num_shades)), int(255 * (i / num_shades)))
+            )
+        elif color == "blue":
+            shades.append(
+                (int(255 * (i / num_shades)), int(255 * (i / num_shades)), 255)
+            )
+        elif color == "green":
+            shades.append(
+                (int(255 * (i / num_shades)), 255, int(255 * (i / num_shades)))
+            )
     return shades
+
 
 class Sleap_Tracks:
     """Class for handling SLEAP tracking data. It is a wrapper around the SLEAP H5 file format."""
@@ -390,14 +460,16 @@ class Sleap_Tracks:
 
             return node_property
 
-    def __init__(self, filename, object_type="object", smoothed_tracks=True, debug=False):
+    def __init__(
+        self, filename, object_type="object", smoothed_tracks=True, debug=False
+    ):
         """Initialize the Sleap_Track object with the given SLEAP tracking file.
 
         Args:
             filename (Path): Path to the SLEAP tracking file.
             object_type (str): Type of the object (e.g., "ball", "fly"). Defaults to "object".
         """
-        
+
         self.debug = debug
 
         self.path = Path(filename)
@@ -410,7 +482,7 @@ class Sleap_Tracks:
         except FileNotFoundError as e:
             print(f"Error while opening SLEAP tracking file: {e}")
             return
-        
+
         self.node_names = [x.decode("utf-8") for x in self.h5file["node_names"]]
         self.edge_names = [
             [y.decode("utf-8") for y in x] for x in self.h5file["edge_names"]
@@ -420,7 +492,7 @@ class Sleap_Tracks:
         self.tracks = self.h5file["tracks"][:]
 
         self.video = Path(self.h5file["video_path"][()].decode("utf-8"))
-        
+
         self.video = self._handle_video_path(self.video)
 
         # Try to load the video file to check its accessibility and get fps
@@ -428,14 +500,16 @@ class Sleap_Tracks:
             cap = cv2.VideoCapture(str(self.video))
             if not cap.isOpened():
                 raise ValueError(f"Could not open video file: {self.video}")
-            
+
             self.fps = cap.get(cv2.CAP_PROP_FPS)
             self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             cap.release()
         except Exception as e:
-            print(f"Video file not available: {self.video}. Check path and server access. Error: {e}")
+            print(
+                f"Video file not available: {self.video}. Check path and server access. Error: {e}"
+            )
             self.fps = None  # Set fps to None if video is not accessible
-            
+
         self.objects = self.generate_tracks_data()
 
         if debug:
@@ -443,7 +517,7 @@ class Sleap_Tracks:
             print(f"N° of objects: {len(self.objects)}")
             print(f"Nodes: {self.node_names}")
             print(f"Video FPS: {self.fps}")
-        
+
     def _handle_video_path(self, video_path):
         """Handle the video path to check for outdated paths and replace them with the new path.
 
@@ -453,10 +527,15 @@ class Sleap_Tracks:
         Returns:
             Path: The corrected video path.
         """
-        
+
         # Check if the path contains "labserver" and replace it with the new path
         if "labserver" in str(video_path):
-            video_path = Path(str(video_path).replace("/mnt/labserver/DURRIEU_Matthias/Experimental_data/", "/mnt/upramdya_data/MD/"))
+            video_path = Path(
+                str(video_path).replace(
+                    "/mnt/labserver/DURRIEU_Matthias/Experimental_data/",
+                    "/mnt/upramdya_data/MD/",
+                )
+            )
 
         # Check if the video file exists at the given path
         if not video_path.exists():
@@ -484,46 +563,56 @@ class Sleap_Tracks:
             frames = range(1, len(obj[0][0]) + 1)
 
             tracking_df = pd.DataFrame(frames, columns=["frame"])
-            
+
             tracking_df["time"] = tracking_df["frame"] / self.fps
 
             # Give each object some number
             tracking_df["object"] = f"{self.object_type}_{i+1}"
 
             for k, n in enumerate(self.node_names):
-                
+
                 if self.smoothed_tracks:
                     if self.debug:
                         print("smoothing tracks")
                     x_coords[k] = savgol_lowpass_filter(x_coords[k], 221, 1)
                     y_coords[k] = savgol_lowpass_filter(y_coords[k], 221, 1)
-                    
+
                 # Replace NaNs with the previous value
                 replace_nans_with_previous_value(x_coords[k])
                 replace_nans_with_previous_value(y_coords[k])
-                
+
                 tracking_df[f"x_{n}"] = x_coords[k]
                 tracking_df[f"y_{n}"] = y_coords[k]
-                
+
             objects.append(self.Object(tracking_df, self.node_names))
 
         return objects
-    
+
     def filter_data(self, time_range):
         """Filter the tracking data based on a time range.
 
         Args:
-            time_range (tuple): Tuple containing the start and end time for the filter.
+            time_range (tuple): Tuple containing the start and end time for the filter. Either value can be None to indicate no limit.
 
         Returns:
             list: List of filtered DataFrames.
         """
+        start_time, end_time = time_range
 
         for obj in self.objects:
-            self.obj.dataset = self.obj.dataset[(obj.dataset["time"] >= time_range[0]) & (obj.dataset["time"] <= time_range[1])]
+            if start_time is not None and end_time is not None:
+                obj.dataset = obj.dataset[
+                    (obj.dataset["time"] >= start_time)
+                    & (obj.dataset["time"] <= end_time)
+                ]
+            elif start_time is not None:
+                obj.dataset = obj.dataset[obj.dataset["time"] >= start_time]
+            elif end_time is not None:
+                obj.dataset = obj.dataset[obj.dataset["time"] <= end_time]
 
         return self.objects
-            
+
+
 class CombinedSleapTracks:
     """Class for handling and combining multiple SLEAP Tracks for the same video."""
 
@@ -551,23 +640,25 @@ class CombinedSleapTracks:
             )
             colors[tracks] = color
         return colors
-    
+
     def generate_dataset(self):
         """Generates a combined dataset from multiple Sleap_Tracks objects."""
-        combined_dataset = pd.concat([tracks.dataset for tracks in self.sleap_tracks_list], ignore_index=True)
+        combined_dataset = pd.concat(
+            [tracks.dataset for tracks in self.sleap_tracks_list], ignore_index=True
+        )
         return combined_dataset
 
     def cpu_generate_combined_annotated_video(
-        self, 
-        save=False, 
-        output_path=None, 
-        start=None, 
-        end=None, 
-        labels=False, 
-        edges=True
+        self,
+        save=False,
+        output_path=None,
+        start=None,
+        end=None,
+        labels=False,
+        edges=True,
     ):
         """Generates a combined annotated video from multiple Sleap_Tracks objects (CPU version).
-        
+
         Args:
             video_path (Path): Path to the video file.
             sleap_tracks_list (list): List of Sleap_Tracks objects.
@@ -577,14 +668,14 @@ class CombinedSleapTracks:
             end (int): End frame. Defaults to None.
             labels (bool): Whether to include labels. Defaults to False.
             edges (bool): Whether to include edges. Defaults to True.
-        
+
         Returns:
             None
         """
-        
+
         video_path = self.video_path
         sleap_tracks_list = self.sleap_tracks_list
-        
+
         cap = cv2.VideoCapture(str(video_path))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
@@ -594,7 +685,12 @@ class CombinedSleapTracks:
             end = total_frames
 
         # Define a list of colors for each Sleap_Tracks object
-        colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]  # Add more as needed
+        colors = [
+            (255, 0, 0),
+            (0, 255, 0),
+            (0, 0, 255),
+            (255, 255, 0),
+        ]  # Add more as needed
 
         if save:
             if output_path is None:
@@ -609,7 +705,7 @@ class CombinedSleapTracks:
             ret, img = cap.read()
             if not ret:
                 return None
-            
+
             # Loop through each Sleap_Tracks object and annotate
             for idx, tracks in enumerate(sleap_tracks_list):
                 frame_data = tracks.dataset[tracks.dataset["frame"] == frame]
@@ -624,7 +720,14 @@ class CombinedSleapTracks:
                             cv2.circle(img, (x, y), 2, color, -1)
                             if labels:
                                 cv2.putText(
-                                    img, node, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA
+                                    img,
+                                    node,
+                                    (x, y),
+                                    cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.5,
+                                    color,
+                                    1,
+                                    cv2.LINE_AA,
                                 )
 
                 if edges:
@@ -634,7 +737,12 @@ class CombinedSleapTracks:
                         y1 = row[f"y_{node1}"]
                         x2 = row[f"x_{node2}"]
                         y2 = row[f"y_{node2}"]
-                        if not np.isnan(x1) and not np.isnan(y1) and not np.isnan(x2) and not np.isnan(y2):
+                        if (
+                            not np.isnan(x1)
+                            and not np.isnan(y1)
+                            and not np.isnan(x2)
+                            and not np.isnan(y2)
+                        ):
                             x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
                             cv2.line(img, (x1, y1), (x2, y2), color, 1)
 
@@ -656,18 +764,18 @@ class CombinedSleapTracks:
             out.release()
         else:
             cv2.destroyAllWindows()
-            
+
     def gpu_generate_combined_annotated_video(
         self,
-        save=False, 
-        output_path=None, 
-        start=None, 
-        end=None, 
-        labels=False, 
-        edges=True
+        save=False,
+        output_path=None,
+        start=None,
+        end=None,
+        labels=False,
+        edges=True,
     ):
         """Generates a combined annotated video from multiple Sleap_Tracks objects (GPU version).
-        
+
         Args:
             video_path (Path): Path to the video file.
             sleap_tracks_list (list): List of Sleap_Tracks objects.
@@ -677,14 +785,14 @@ class CombinedSleapTracks:
             end (int): End frame. Defaults to None.
             labels (bool): Whether to include labels. Defaults to False.
             edges (bool): Whether to include edges. Defaults to True.
-        
+
         Returns:
             None
         """
-        
+
         video_path = self.video_path
         sleap_tracks_list = self.sleap_tracks_list
-        
+
         cap = cv2.VideoCapture(str(video_path))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
@@ -694,7 +802,12 @@ class CombinedSleapTracks:
             end = total_frames
 
         # Define colors for each Sleap_Tracks object
-        colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]  # Extend as needed
+        colors = [
+            (255, 0, 0),
+            (0, 255, 0),
+            (0, 0, 255),
+            (255, 255, 0),
+        ]  # Extend as needed
 
         if save:
             if output_path is None:
@@ -731,7 +844,14 @@ class CombinedSleapTracks:
                             cv2.circle(img, (x, y), 2, color, -1)
                             if labels:
                                 cv2.putText(
-                                    img, node, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA
+                                    img,
+                                    node,
+                                    (x, y),
+                                    cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.5,
+                                    color,
+                                    1,
+                                    cv2.LINE_AA,
                                 )
                             gpu_img.upload(img)  # Upload back to GPU
 
@@ -743,7 +863,12 @@ class CombinedSleapTracks:
                         y1 = row[f"y_{node1}"]
                         x2 = row[f"x_{node2}"]
                         y2 = row[f"y_{node2}"]
-                        if not np.isnan(x1) and not np.isnan(y1) and not np.isnan(x2) and not np.isnan(y2):
+                        if (
+                            not np.isnan(x1)
+                            and not np.isnan(y1)
+                            and not np.isnan(x2)
+                            and not np.isnan(y2)
+                        ):
                             img = gpu_img.download()  # CPU operations for drawing
                             x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
                             cv2.line(img, (x1, y1), (x2, y2), color, 1)
@@ -761,7 +886,7 @@ class CombinedSleapTracks:
             out.release()
         else:
             cv2.destroyAllWindows()
-            
+
     def generate_combined_annotated_video(
         self,
         save=False,
@@ -771,21 +896,55 @@ class CombinedSleapTracks:
         labels=False,
         edges=True,
     ):
-        
+
         try:
             if cv2.cuda.getCudaEnabledDeviceCount() > 0:
                 print("CUDA is enabled, using GPU for video processing.")
-                self.gpu_generate_combined_annotated_video(save=save, output_path=output_path, start=start, end=end, labels=labels, edges=edges)
+                self.gpu_generate_combined_annotated_video(
+                    save=save,
+                    output_path=output_path,
+                    start=start,
+                    end=end,
+                    labels=labels,
+                    edges=edges,
+                )
             else:
                 print("No CUDA devices found, falling back to CPU processing.")
-                self.cpu_generate_combined_annotated_video(save=save, output_path=output_path, start=start, end=end, labels=labels, edges=edges)
+                self.cpu_generate_combined_annotated_video(
+                    save=save,
+                    output_path=output_path,
+                    start=start,
+                    end=end,
+                    labels=labels,
+                    edges=edges,
+                )
         except cv2.error as e:
             print(f"Error while checking for CUDA support: {e}")
             print("Falling back to CPU processing.")
-            self.cpu_generate_combined_annotated_video(save=save, output_path=output_path, start=start, end=end, labels=labels, edges=edges)
-            
+            self.cpu_generate_combined_annotated_video(
+                save=save,
+                output_path=output_path,
+                start=start,
+                end=end,
+                labels=labels,
+                edges=edges,
+            )
+
+
 class SleapTracker:
-    def __init__(self, model_path, data_folder=None, model_centered_instance_path=None, output_folder=None, conda_env='sleap', batch_size=16, max_tracks=None, tracker='simple', video_filter=None, yaml_file=None):
+    def __init__(
+        self,
+        model_path,
+        data_folder=None,
+        model_centered_instance_path=None,
+        output_folder=None,
+        conda_env="sleap",
+        batch_size=16,
+        max_tracks=None,
+        tracker="simple",
+        video_filter=None,
+        yaml_file=None,
+    ):
         """
         Initialize the SleapTracker class.
 
@@ -800,7 +959,7 @@ class SleapTracker:
             tracker (str, optional): The type of tracker to use (e.g., 'simple', 'flow', etc.). Defaults to 'simple'.
             video_filter (str, optional): Optional filter for videos to process.
             yaml_file (str or pathlib.Path, optional): Path to a YAML file containing a list of directories to process instead of data_folder.
-            
+
         Example usage:
             tracker = SleapTracker(model_path="path/to/model", data_folder="path/to/videos", batch_size=16)
             tracker.run()
@@ -808,14 +967,16 @@ class SleapTracker:
         If you have a YAML file with folders:
             tracker = SleapTracker(model_path="path/to/model", yaml_file="path/to/config.yaml")
             tracker.run()
-            
+
             example YAML file:
             directories:
               - path/to/videos1
               - path/to/videos2
         """
         self.model_path = Path(model_path)
-        self.model_centered_instance = Path(model_centered_instance_path) if model_centered_instance_path else None
+        self.model_centered_instance = (
+            Path(model_centered_instance_path) if model_centered_instance_path else None
+        )
         self.data_folder = Path(data_folder) if data_folder else None
         self.output_folder = Path(output_folder) if output_folder else self.data_folder
         self.conda_env = conda_env
@@ -831,8 +992,8 @@ class SleapTracker:
         Load directories from a YAML file if provided.
         """
         if self.yaml_file:
-            with open(self.yaml_file, 'r') as file:
-                directories = yaml.safe_load(file).get('directories', [])
+            with open(self.yaml_file, "r") as file:
+                directories = yaml.safe_load(file).get("directories", [])
                 if directories:
                     print(f"Loaded {len(directories)} directories from YAML file.")
                     return [Path(d) for d in directories]
@@ -844,11 +1005,13 @@ class SleapTracker:
 
         If a YAML file is provided, directories from the YAML file will be used instead of data_folder.
         """
-        directories_to_process = self.load_directories_from_yaml() if self.yaml_file else [self.data_folder]
-        
+        directories_to_process = (
+            self.load_directories_from_yaml() if self.yaml_file else [self.data_folder]
+        )
+
         for folder in directories_to_process:
             if folder.exists() and folder.is_dir():
-                self.videos_to_process.extend(list(folder.rglob(f'*{video_extension}')))
+                self.videos_to_process.extend(list(folder.rglob(f"*{video_extension}")))
         print(f"Collected {len(self.videos_to_process)} videos for tracking.")
 
     def filter_tracked_videos(self):
@@ -869,13 +1032,13 @@ class SleapTracker:
     def activate_conda(self):
         """
         Activate the conda environment where SLEAP is installed.
-        
+
         Example usage:
             tracker.activate_conda()
-        
+
         This is necessary to ensure the correct environment is used for tracking.
         """
-        subprocess.run(['conda', 'activate', self.conda_env], check=True)
+        subprocess.run(["conda", "activate", self.conda_env], check=True)
 
     def process_videos(self):
         """
@@ -891,15 +1054,23 @@ class SleapTracker:
             sleap_track_cmd = [
                 "sleap-track",
                 str(video),
-                "--model", str(self.model_path),
-                "--output", str(self.output_folder / f"{video.stem}_tracked.slp"),
-                "--batch_size", str(self.batch_size),
+                "--model",
+                str(self.model_path),
+                "--output",
+                str(self.output_folder / f"{video.stem}_tracked.slp"),
+                "--batch_size",
+                str(self.batch_size),
                 # Add tracker if a centered instance model is specified
-                *(["--tracking.tracker", self.tracker] if self.model_centered_instance else []),
+                *(
+                    ["--tracking.tracker", self.tracker]
+                    if self.model_centered_instance
+                    else []
+                ),
                 # Add max_tracks and set max_tracking if specified
                 *(["--max_tracking", "1"] if self.max_tracks else []),
                 *(["--max_tracks", str(self.max_tracks)] if self.max_tracks else []),
-                "--verbosity", "rich"
+                "--verbosity",
+                "rich",
             ]
             if self.model_centered_instance:
                 sleap_track_cmd.extend(["--model", str(self.model_centered_instance)])
@@ -910,7 +1081,8 @@ class SleapTracker:
             sleap_convert_cmd = [
                 "sleap-convert",
                 str(self.output_folder / f"{video.stem}_tracked.slp"),
-                "--format", "analysis"
+                "--format",
+                "analysis",
             ]
             subprocess.run(sleap_convert_cmd, check=True)
 
@@ -927,10 +1099,12 @@ class SleapTracker:
         self.filter_tracked_videos()
         if self.videos_to_process:
             self.process_videos()
-            
+
             if render:
-                sleap_tracks = Sleap_Tracks(self.output_folder / f"{self.videos_to_process[0].stem}_tracked.h5")
-                
+                sleap_tracks = Sleap_Tracks(
+                    self.output_folder / f"{self.videos_to_process[0].stem}_tracked.h5"
+                )
+
                 sleap_tracks.generate_annotated_video(save=True)
         else:
             print("No new videos to track.")

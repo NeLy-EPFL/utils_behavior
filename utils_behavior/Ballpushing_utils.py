@@ -261,19 +261,34 @@ class Config:
 
     Attributes:
     interaction_threshold: tuple: The lower and upper limit values (in pixels) for the signal to be considered an event. Defaults to (0, 70).
-    success_cutoff: None or ?: The time range for the success cutoff. Defaults to None. If None, the success cutoff is not applied.
+    time_range: tuple: The time range (in seconds) to filter the tracking data. Defaults to None.
+    success_cutoff: bool: Whether to filter the tracking data based on the success cutoff time range. Defaults to False. If True, the success_cutoff_time_range computed in the FlyTrackingData class will be used to filter the tracking data.
     """
 
     interaction_threshold: tuple = (0, 70)
-    success_cutoff: None
-    # TODO: Complete this to make it all clean
+    time_range: tuple = None
+    success_cutoff: bool = False
+
+    def set_experiment_time_range(self, experiment_type):
+        """
+        Set the time range for the experiment based on the experiment type.
+
+        Args:
+            experiment_type (str): The type of experiment, either 'pretraining' or 'training'.
+        """
+        if experiment_type == "MagnetBlock":
+            self.time_range = (3600, None)
+        else:
+            print(f"{experiment_type} has no particular time range.")
 
 
 # @dataclass
 class FlyMetadata:
-    def __init__(self, directory, experiment):
-        self.directory = directory
-        self.experiment = experiment
+    def __init__(self, fly):
+
+        self.fly = fly
+        self.directory = self.fly.directory
+        self.experiment = self.fly.experiment
         self.arena = self.directory.parent.name
         self.corridor = self.directory.name
         self.name = f"{self.experiment.directory.name}_{self.arena}_{self.corridor}"
@@ -283,27 +298,8 @@ class FlyMetadata:
         for var, data in self.arena_metadata.items():
             setattr(self, var, data)
 
-        # If the fly has pretraining and unlocked, create a new item in arena_metadata, 'F1_condition'
-        if self.Pretraining and self.Unlocked:
-            if "n" in self.Pretraining:
-                self.arena_metadata["F1_condition"] = "control"
-            elif "y" in self.Pretraining:
-                if "Left" in self.corridor:
-                    if self.Unlocked[0] == "y":
-                        self.arena_metadata["F1_condition"] = "pretrained_unlocked"
-                    else:
-                        self.arena_metadata["F1_condition"] = "pretrained"
-                elif "Right" in self.corridor:
-                    if self.Unlocked[1] == "y":
-                        self.arena_metadata["F1_condition"] = "pretrained_unlocked"
-                    else:
-                        self.arena_metadata["F1_condition"] = "pretrained"
-            else:
-                print(f"Error: Pretraining value not valid for {self.name}")
-
-        # Add F1_condition as an attribute of the fly
-        if "F1_condition" in self.arena_metadata:
-            setattr(self, "F1_condition", self.arena_metadata["F1_condition"])
+        if fly.experiment_type == "F1":
+            self.compute_F1_condition()
 
         self.nickname, self.brain_region = self.load_brain_regions(brain_regions_path)
 
@@ -377,6 +373,31 @@ class FlyMetadata:
                 except IndexError:
                     raise FileNotFoundError(f"No video found for {self.name}.")
 
+    def compute_F1_condition(self):
+        if "Pretraining" in self.arena_metadata and "Unlocked" in self.arena_metadata:
+            pretraining = self.arena_metadata["Pretraining"]
+            unlocked = self.arena_metadata["Unlocked"]
+
+            if "n" in pretraining:
+                self.arena_metadata["F1_condition"] = "control"
+            elif "y" in pretraining:
+                if "Left" in self.corridor:
+                    if unlocked[0] == "y":
+                        self.arena_metadata["F1_condition"] = "pretrained_unlocked"
+                    else:
+                        self.arena_metadata["F1_condition"] = "pretrained"
+                elif "Right" in self.corridor:
+                    if unlocked[1] == "y":
+                        self.arena_metadata["F1_condition"] = "pretrained_unlocked"
+                    else:
+                        self.arena_metadata["F1_condition"] = "pretrained"
+            else:
+                print(f"Error: Pretraining value not valid for {self.name}")
+
+        # Add F1_condition as an attribute of the fly
+        if "F1_condition" in self.arena_metadata:
+            setattr(self, "F1_condition", self.arena_metadata["F1_condition"])
+
     def display_metadata(self):
         """
         Print the metadata for the Fly object's arena.
@@ -424,6 +445,9 @@ class FlyTrackingData:
             self.valid_data = False
             return
 
+        if self.fly.config.time_range is not None:
+            self.filter_tracking_data(self.fly.config.time_range)
+
         self.interaction_events = self.find_flyball_interactions()
 
         self.valid_data = self.check_data_quality()
@@ -440,13 +464,13 @@ class FlyTrackingData:
 
             self.adjusted_time = self.compute_adjusted_time()
 
-            if time_range is not None:
-                self.filter_tracking_data(time_range)
-
             self.final_event_init = BallpushingMetrics(self).get_final_event(0, 0)
 
             if self.final_event_init:
                 self.success_cutoff_time_range = (0, self.final_event_init[1])
+
+            if self.fly.config.success_cutoff:
+                self.filter_tracking_data(self.success_cutoff_time_range)
 
         else:
             print(f"Invalid data for: {self.fly.metadata.name}. Skipping.")
@@ -463,7 +487,7 @@ class FlyTrackingData:
             return None
 
     def find_flyball_interactions(
-        self, gap_between_events=4, event_min_length=2, thresh=[0, 70]
+        self, gap_between_events=4, event_min_length=2, thresh=None
     ):
         """This function applies find_interaction_events for each fly in the flytrack dataset and each ball in the balltrack dataset. It returns a dictionary where keys are the fly and ball indices and values are the interaction events.
 
@@ -475,6 +499,9 @@ class FlyTrackingData:
         Returns:
             dict: A nested dictionary where the outer keys are fly indices and the inner keys are ball indices, with interaction events as values.
         """
+
+        if thresh is None:
+            thresh = self.fly.experiment.config.interaction_threshold
 
         if self.flytrack is None or self.balltrack is None:
             print(
@@ -752,13 +779,24 @@ class BallpushingMetrics:
             for ball_idx, events in ball_dict.items():
                 key = f"fly_{fly_idx}_ball_{ball_idx}"
 
-                nb_events = self.get_adjusted_nb_events(fly_idx, ball_idx, signif=False)
+                if self.fly.experiment_type == "F1":
+                    nb_events = self.get_adjusted_nb_events(
+                        fly_idx, ball_idx, signif=False
+                    )
+                else:
+                    nb_events = len(events)
+
                 max_event = self.get_max_event(fly_idx, ball_idx)
                 max_distance = self.get_max_distance(fly_idx, ball_idx)
                 significant_events = self.get_significant_events(fly_idx, ball_idx)
-                nb_significant_events = self.get_adjusted_nb_events(
-                    fly_idx, ball_idx, signif=True
-                )
+
+                if self.fly.experiment_type == "F1":
+                    nb_significant_events = self.get_adjusted_nb_events(
+                        fly_idx, ball_idx, signif=True
+                    )
+                else:
+                    nb_significant_events = len(significant_events)
+
                 first_significant_event = self.get_first_significant_event(
                     fly_idx, ball_idx
                 )
@@ -1320,7 +1358,6 @@ class Fly:
         experiment_type=None,
         as_individual=False,
         time_range=None,
-        success_cutoff=False,
     ):
         """
         Initialize a Fly object.
@@ -1357,25 +1394,41 @@ class Fly:
 
         self.experiment_type = experiment_type
 
-        self.metadata = FlyMetadata(self.directory, self.experiment)
+        if self.experiment_type:
+            self.config.set_experiment_time_range(self.experiment_type)
 
-        self.tracking_data = FlyTrackingData(self, time_range)
+        self.metadata = FlyMetadata(self)
+
+        self._tracking_data = None
 
         self.flyball_positions = None
         self.fly_skeleton = None
 
-        # Check if the fly is alive or dead and if it interacts with the ball
-        self.valid_data = self.tracking_data.valid_data
+        self._events_metrics = None
 
-        if not self.valid_data:
-            print(f"Invalid data for: {self.metadata.name}. Skipping.")
-            return
+        self._f1_metrics = None
 
-        else:
+    @property
+    def tracking_data(self):
+        if self._tracking_data is None:
+            self._tracking_data = FlyTrackingData(self)
+            if not self._tracking_data.valid_data:
+                print(f"Invalid data for: {self.metadata.name}. Skipping.")
+                self._tracking_data = None
+        return self._tracking_data
 
-            self.events_metrics = None
+    @property
+    def events_metrics(self):
+        if self._events_metrics is None:
+            # print("Computing events metrics...")
+            self._events_metrics = BallpushingMetrics(self.tracking_data).metrics
+        return self._events_metrics
 
-            self.f1_metrics = None
+    @property
+    def f1_metrics(self):
+        if self._f1_metrics is None and self.experiment_type == "F1":
+            self._f1_metrics = F1Metrics(self.tracking_data).metrics
+        return self._f1_metrics
 
     def __str__(self):
         # Get the genotype from the metadata
@@ -1385,20 +1438,6 @@ class Fly:
 
     def __repr__(self):
         return f"Fly({self.directory})"
-
-    @property
-    def compute_events_metrics(self):
-        if self.events_metrics is None:
-            self.events_metrics = BallpushingMetrics(self.tracking_data).metrics
-
-        return self.events_metrics
-
-    @property
-    def compute_f1_metrics(self):
-        if self.f1_metrics is None and self.experiment_type == "F1":
-            self.f1_metrics = F1Metrics(self.tracking_data).metrics
-
-        return self.f1_metrics
 
     ################################ Video clip generation ################################
 

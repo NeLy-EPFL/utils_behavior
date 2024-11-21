@@ -265,6 +265,14 @@ class Config:
     success_cutoff: bool: Whether to filter the tracking data based on the success cutoff time range. Defaults to False. If True, the success_cutoff_time_range computed in the FlyTrackingData class will be used to filter the tracking data.
     tracks_smoothing: bool: Whether to apply smoothing to the tracking data. Defaults to True.
     dead_threshold: int: The threshold value (in pixels traveled) for the fly to be considered dead. Defaults to 30.
+    adjusted_events_normalisation: int: The normalisation value for the adjusted number of events. It's an arbitrary value that multiplies all the adjusted events values to make it more easily readable. Defaults to 1000.
+    significant_threshold: int: The threshold value (in pixels) for an event to be considered significant. Defaults to 5.
+    aha_moment_threshold: int: The threshold value (in pixels) for an event to be considered an Aha moment. Defaults to 20.
+    success_direction_threshold: int: The threshold value (in pixels) for an event to be considered a success direction, which is used to check whether a fly is a "pusher" or a "puller", or "both. Defaults to 25.
+    final_event_threshold: int: The threshold value (in pixels) for an event to be considered a final event. Defaults to 170.
+    final_event_F1_threshold: int: The threshold value (in pixels) for an event to be considered a final event in the F1 condition. Defaults to 100.
+    max_event_threshold: int: The threshold value (in pixels) for an event to be considered a maximum event. Defaults to 10.
+
     """
 
     interaction_threshold: tuple = (0, 70)
@@ -272,6 +280,13 @@ class Config:
     success_cutoff: bool = False
     tracks_smoothing: bool = True
     dead_threshold: int = 30
+    adjusted_events_normalisation: int = 1000
+    significant_threshold: int = 5
+    aha_moment_threshold: int = 20
+    success_direction_threshold: int = 25
+    fina_event_threshold: int = 170
+    final_event_F1_threshold: int = 100
+    max_event_threshold: int = 10
     # TODO: Add the significant event threshold, the Aha moment threshold, etc.
 
     def set_experiment_time_range(self, experiment_type):
@@ -458,6 +473,8 @@ class FlyTrackingData:
         self.interaction_events = self.find_flyball_interactions()
 
         self.valid_data = self.check_data_quality()
+
+        self.check_dying()
 
         if self.valid_data:
 
@@ -884,7 +901,7 @@ class BallpushingMetrics:
             if ball_idx == 0 and self.tracking_data.exit_time is not None:
                 adjusted_nb_events = (
                     len(events)
-                    * 1000
+                    * self.fly.config.adjusted_events_normalisation
                     / (self.tracking_data.duration - self.tracking_data.exit_time)
                     if self.tracking_data.duration - self.tracking_data.exit_time > 0
                     else 0
@@ -893,19 +910,23 @@ class BallpushingMetrics:
             if ball_idx == 1 and self.tracking_data.exit_time is not None:
                 adjusted_nb_events = (
                     len(events)
-                    * 1000
+                    * self.fly.config.adjusted_events_normalisation
                     / (self.tracking_data.duration - self.tracking_data.exit_time)
                     if self.tracking_data.duration - self.tracking_data.exit_time > 0
                     else 0
                 )
             elif ball_idx == 0:
                 adjusted_nb_events = (
-                    len(events) * 1000 / self.tracking_data.exit_time
+                    len(events)
+                    * self.fly.config.adjusted_events_normalisation
+                    / self.tracking_data.exit_time
                     if (
                         self.tracking_data.exit_time
                         and self.tracking_data.exit_time > 0
                     )
-                    else len(events) * 1000 / self.tracking_data.duration
+                    else len(events)
+                    * self.fly.config.adjusted_events_normalisation
+                    / self.tracking_data.duration
                 )
 
         return adjusted_nb_events
@@ -949,7 +970,11 @@ class BallpushingMetrics:
 
         return event, event_index
 
-    def get_max_event(self, fly_idx, ball_idx, threshold=10):
+    def get_max_event(self, fly_idx, ball_idx, threshold=None):
+
+        if threshold is None:
+            threshold = self.fly.config.max_event_threshold
+
         ball_data = self.tracking_data.balltrack.objects[ball_idx].dataset
 
         max_event, max_event_idx = self.find_event_by_distance(
@@ -979,12 +1004,12 @@ class BallpushingMetrics:
 
         return max_distance
 
-    def get_final_event(self, fly_idx, ball_idx, threshold=170, init=False):
+    def get_final_event(self, fly_idx, ball_idx, threshold=None, init=False):
 
         ball_data = self.tracking_data.balltrack.objects[ball_idx].dataset
 
         if abs(ball_data["x_centre"].iloc[0] - self.tracking_data.start_x) < 100:
-            threshold = 170
+            threshold = self.fly.config.final_event_threshold
 
             final_event, final_event_idx = self.find_event_by_distance(
                 fly_idx, ball_idx, threshold, distance_type="threshold"
@@ -995,7 +1020,7 @@ class BallpushingMetrics:
             )
 
         else:
-            threshold = 100
+            threshold = self.fly.config.final_event_F1_threshold
 
             final_event, final_event_idx = self.find_event_by_distance(
                 fly_idx, ball_idx, threshold, distance_type="threshold"
@@ -1047,7 +1072,11 @@ class BallpushingMetrics:
         else:
             return None, None
 
-    def check_yball_variation(self, event, ball_data, threshold=5):
+    def check_yball_variation(self, event, ball_data, threshold=None):
+
+        if threshold is None:
+            threshold = self.fly.config.significant_threshold
+
         yball_event = ball_data.loc[event[0] : event[1], "y_centre"]
         variation = yball_event.max() - yball_event.min()
         return variation > threshold
@@ -1157,7 +1186,11 @@ class BallpushingMetrics:
 
         return ball_data["euclidean_distance"].sum()
 
-    def get_aha_moment(self, fly_idx, ball_idx, distance=20):
+    def get_aha_moment(self, fly_idx, ball_idx, distance=None):
+
+        if distance is None:
+            distance = self.fly.config.aha_moment_threshold
+
         ball_data = self.tracking_data.balltrack.objects[ball_idx].dataset
 
         aha_moment = [
@@ -1207,7 +1240,11 @@ class BallpushingMetrics:
 
         return insight_effect
 
-    def get_success_direction(self, fly_idx, ball_idx, threshold=25):
+    def get_success_direction(self, fly_idx, ball_idx, threshold=None):
+
+        if threshold is None:
+            threshold = self.fly.config.success_direction_threshold
+
         ball_data = self.tracking_data.balltrack.objects[ball_idx].dataset
 
         initial_y = ball_data["y_centre"].iloc[0]

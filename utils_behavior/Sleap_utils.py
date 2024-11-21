@@ -577,9 +577,9 @@ class Sleap_Tracks:
                     x_coords[k] = savgol_lowpass_filter(x_coords[k], 221, 1)
                     y_coords[k] = savgol_lowpass_filter(y_coords[k], 221, 1)
 
-                # Replace NaNs with the previous value
-                replace_nans_with_previous_value(x_coords[k])
-                replace_nans_with_previous_value(y_coords[k])
+                    # Replace NaNs with the previous value
+                    replace_nans_with_previous_value(x_coords[k])
+                    replace_nans_with_previous_value(y_coords[k])
 
                 tracking_df[f"x_{n}"] = x_coords[k]
                 tracking_df[f"y_{n}"] = y_coords[k]

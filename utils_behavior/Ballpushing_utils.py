@@ -275,19 +275,33 @@ class Config:
 
     """
 
-    interaction_threshold: tuple = (0, 70)
+    # General configuration attributes
+
     time_range: tuple = None
     success_cutoff: bool = False
     tracks_smoothing: bool = True
+
+    # Events related thresholds
+
+    interaction_threshold: tuple = (0, 70)
     dead_threshold: int = 30
     adjusted_events_normalisation: int = 1000
     significant_threshold: int = 5
     aha_moment_threshold: int = 20
     success_direction_threshold: int = 25
-    fina_event_threshold: int = 170
+    final_event_threshold: int = 170
     final_event_F1_threshold: int = 100
     max_event_threshold: int = 10
     # TODO: Add the significant event threshold, the Aha moment threshold, etc.
+
+    # Skeleton tracking configuration attributes
+
+    # Template size
+    template_width: int = 96
+    template_height: int = 516
+
+    padding: int = 20
+    y_crop: tuple = (74, None)
 
     def set_experiment_time_range(self, experiment_type):
         """
@@ -325,6 +339,8 @@ class FlyMetadata:
 
         self.video = self.load_video()
         self.fps = self.experiment.fps
+
+        self.original_size = self.get_video_size()
 
     def get_arena_metadata(self):
         """
@@ -392,6 +408,17 @@ class FlyMetadata:
                     return list(self.directory.glob("*.mp4"))[0]
                 except IndexError:
                     raise FileNotFoundError(f"No video found for {self.name}.")
+
+    def get_video_size(self):
+        """Get the size of the video."""
+
+        # Load the video
+        video = cv2.VideoCapture(str(self.video))
+
+        return (
+            video.get(cv2.CAP_PROP_FRAME_WIDTH),
+            video.get(cv2.CAP_PROP_FRAME_HEIGHT),
+        )
 
     def compute_F1_condition(self):
         if "Pretraining" in self.arena_metadata and "Unlocked" in self.arena_metadata:
@@ -514,7 +541,12 @@ class FlyTrackingData:
 
         try:
             tracking_file = list(self.fly.directory.glob(pattern))[0]
-            return Sleap_Tracks(tracking_file, object_type=object_type, debug=False)
+            return Sleap_Tracks(
+                tracking_file,
+                object_type=object_type,
+                smoothed_tracks=smoothing,
+                debug=False,
+            )
         except IndexError:
             return None
 
@@ -627,9 +659,16 @@ class FlyTrackingData:
         # which means its velocity is less than 2 px/s for 15 min in a row
 
         # Get the velocity of the fly
-        fly_data["velocity"] = np.sqrt(
-            np.diff(fly_data["x_thorax"]) ** 2 + np.diff(fly_data["y_thorax"]) ** 2
+        velocity = np.sqrt(
+            np.diff(fly_data["x_thorax"], prepend=np.nan) ** 2
+            + np.diff(fly_data["y_thorax"], prepend=np.nan) ** 2
         )
+
+        # Ensure the length of the velocity array matches the length of the DataFrame index
+        if len(velocity) != len(fly_data):
+            velocity = np.append(velocity, np.nan)
+
+        fly_data["velocity"] = velocity
 
         # Check if the fly has a continuous period of 15 min where it doesn't move more than 30 pixels
 
@@ -714,34 +753,6 @@ class FlyTrackingData:
 
         # Get the first track
         full_body_data = self.skeletontrack.objects[0].dataset
-
-        # For each node, replace NaNs with the previous value
-        # Get the columns containing the x and y coordinates
-        x_columns = [col for col in full_body_data.columns if "x_" in col]
-        y_columns = [col for col in full_body_data.columns if "y_" in col]
-
-        for x_col, y_col in zip(x_columns, y_columns):
-
-            x = full_body_data[x_col]
-            y = full_body_data[y_col]
-
-            if x.empty or y.empty:
-                warnings.warn(
-                    f"Skipping skeleton coordinates for {self.fly.metadata.name} and node: {x_col} and {y_col} due to empty data."
-                )
-                return None
-
-            try:
-                replace_nans_with_previous_value(x)
-                replace_nans_with_previous_value(y)
-            except ValueError as e:
-                warnings.warn(
-                    f"Skipping skeleton coordinates for {self.fly.metadata.name} and node: {x_col} and {y_col} due to error: {e}"
-                )
-                return None
-
-            full_body_data[x_col] = x
-            full_body_data[y_col] = y
 
         return full_body_data
 
@@ -1404,6 +1415,102 @@ class F1Metrics:
             return None
 
 
+class SkeletonMetrics:
+    """
+    A class for computing metrics from the skeleton data. It requires to have a fly object with a valid skeleton data, and check whether there is a "preprocessed" ball data available.
+    """
+
+    def __init__(self, fly):
+        self.fly = fly
+        self.ball = self.fly.tracking_data.balltrack
+
+        self.compute_preprocessed_ball()
+
+    def resize_frame(self, frame, width, height):
+        """Resize the frame to the given width and height."""
+        return cv2.resize(frame, (width, height))
+
+    def crop_and_pad_frame(self, frame, cropping=True, padding=True):
+        """Crop and pad the frame according to the configuration."""
+        if cropping:
+            cropped_frame = frame[74:, :]
+        else:
+            cropped_frame = frame
+
+        if padding:
+            padded_frame = cv2.copyMakeBorder(
+                cropped_frame,
+                0,
+                0,
+                self.fly.config.padding,
+                self.fly.config.padding,
+                cv2.BORDER_CONSTANT,
+                value=[0, 0, 0],
+            )
+        else:
+            padded_frame = cropped_frame
+
+        return padded_frame
+
+    def compute_preprocessed_ball(self):
+        """Transform the ball tracking data to match the skeleton data."""
+        ball_data = self.ball.objects[0].dataset
+
+        # Apply resizing, cropping, and padding to the ball tracking data
+        ball_data["x_centre_preprocessed"] = ball_data["x_centre"].apply(
+            lambda x: self.resize_and_transform_coordinate(
+                x,
+                self.fly.config.template_width,
+                self.fly.metadata.original_size[0],
+                self.fly.config.padding,
+            )
+        )
+        ball_data["y_centre_preprocessed"] = ball_data["y_centre"].apply(
+            lambda y: self.resize_and_transform_coordinate(
+                y,
+                self.fly.config.template_height,
+                self.fly.metadata.original_size[1],
+                self.fly.config.padding,
+                crop_offset=74,
+            )
+        )
+
+        return ball_data
+
+    def resize_and_transform_coordinate(
+        self, coord, template_size, original_size, padding, crop_offset=0
+    ):
+        """Resize and transform the coordinate to match the preprocessed frame."""
+        # Resize the coordinate
+        resized_coord = coord * (template_size / original_size)
+
+        # Apply cropping offset
+        cropped_coord = resized_coord - crop_offset
+
+        # Apply padding
+        preprocessed_coord = cropped_coord + padding
+
+        return preprocessed_coord
+
+    def plot_skeleton_and_ball(self, frame=2039):
+        """
+        Plot the skeleton and ball tracking data on a given frame.
+        """
+
+        annotated_frame = generate_annotated_frame(
+            video=self.fly.tracking_data.skeletontrack.video,
+            sleap_tracks_list=[self.fly.tracking_data.skeletontrack, self.ball],
+            frame=frame,
+        )
+
+        # Plot the frame with the skeleton and ball tracking data
+        plt.imshow(annotated_frame)
+        plt.axis("off")
+        plt.show()
+
+        return annotated_frame
+
+
 class Fly:
     """
     A class for a single fly. This represents a folder containing a video, associated tracking files, and metadata files. It is usually contained in an Experiment object, and inherits the Experiment object's metadata.
@@ -1466,6 +1573,8 @@ class Fly:
 
         self._f1_metrics = None
 
+        self._skeleton_metrics = None
+
     @property
     def tracking_data(self):
         if self._tracking_data is None:
@@ -1487,6 +1596,17 @@ class Fly:
         if self._f1_metrics is None and self.experiment_type == "F1":
             self._f1_metrics = F1Metrics(self.tracking_data).metrics
         return self._f1_metrics
+
+    @property
+    def skeleton_metrics(self):
+        if self.tracking_data.skeletontrack is None:
+            print("No skeleton data available.")
+        elif (
+            self._skeleton_metrics is None
+            and self.tracking_data.skeletontrack is not None
+        ):
+            self._skeleton_metrics = SkeletonMetrics(self)
+        return self._skeleton_metrics
 
     def __str__(self):
         # Get the genotype from the metadata

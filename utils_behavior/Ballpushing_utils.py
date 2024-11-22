@@ -292,7 +292,6 @@ class Config:
     final_event_threshold: int = 170
     final_event_F1_threshold: int = 100
     max_event_threshold: int = 10
-    # TODO: Add the significant event threshold, the Aha moment threshold, etc.
 
     # Skeleton tracking configuration attributes
 
@@ -301,7 +300,11 @@ class Config:
     template_height: int = 516
 
     padding: int = 20
-    y_crop: tuple = (74, None)
+    y_crop: tuple = (74, 0)
+    
+    # Skeleton metrics
+    
+    contact_threshold: tuple = (0,13)
 
     def set_experiment_time_range(self, experiment_type):
         """
@@ -1423,84 +1426,111 @@ class SkeletonMetrics:
     def __init__(self, fly):
         self.fly = fly
         self.ball = self.fly.tracking_data.balltrack
+        self.preprocess_ball()
 
-        self.compute_preprocessed_ball()
+    def resize_coordinates(
+        self, x, y, original_width, original_height, new_width, new_height
+    ):
+        """Resize the coordinates according to the new frame size."""
+        x_scale = new_width / original_width
+        y_scale = new_height / original_height
+        return int(x * x_scale), int(y * y_scale)
 
-    def resize_frame(self, frame, width, height):
-        """Resize the frame to the given width and height."""
-        return cv2.resize(frame, (width, height))
-
-    def crop_and_pad_frame(self, frame, cropping=True, padding=True):
-        """Crop and pad the frame according to the configuration."""
-        if cropping:
-            cropped_frame = frame[74:, :]
+    def apply_arena_mask_to_labels(
+        self, x, y, mask_padding, crop_top, crop_bottom, new_height
+    ):
+        """Adjust the coordinates according to the cropping and padding applied to the frame."""
+        # Crop from top and bottom
+        if crop_top <= y < (new_height - crop_bottom):
+            y -= crop_top
         else:
-            cropped_frame = frame
+            return None, None
 
-        if padding:
-            padded_frame = cv2.copyMakeBorder(
-                cropped_frame,
-                0,
-                0,
-                self.fly.config.padding,
-                self.fly.config.padding,
-                cv2.BORDER_CONSTANT,
-                value=[0, 0, 0],
-            )
-        else:
-            padded_frame = cropped_frame
+        # Add padding to the left and right
+        x += mask_padding
 
-        return padded_frame
-
-    def compute_preprocessed_ball(self):
-        """Transform the ball tracking data to match the skeleton data."""
-        ball_data = self.ball.objects[0].dataset
-
-        # Apply resizing, cropping, and padding to the ball tracking data
-        ball_data["x_centre_preprocessed"] = ball_data["x_centre"].apply(
-            lambda x: self.resize_and_transform_coordinate(
-                x,
-                self.fly.config.template_width,
-                self.fly.metadata.original_size[0],
-                self.fly.config.padding,
-            )
-        )
-        ball_data["y_centre_preprocessed"] = ball_data["y_centre"].apply(
-            lambda y: self.resize_and_transform_coordinate(
-                y,
-                self.fly.config.template_height,
-                self.fly.metadata.original_size[1],
-                self.fly.config.padding,
-                crop_offset=74,
-            )
-        )
-
-        return ball_data
+        return x, y
 
     def resize_and_transform_coordinate(
-        self, coord, template_size, original_size, padding, crop_offset=0
+        self,
+        x,
+        y,
+        original_width,
+        original_height,
+        new_width,
+        new_height,
+        mask_padding,
+        crop_top,
+        crop_bottom,
     ):
         """Resize and transform the coordinate to match the preprocessed frame."""
         # Resize the coordinate
-        resized_coord = coord * (template_size / original_size)
+        x, y = self.resize_coordinates(
+            x, y, original_width, original_height, new_width, new_height
+        )
 
-        # Apply cropping offset
-        cropped_coord = resized_coord - crop_offset
+        # Apply cropping offset and padding
+        x, y = self.apply_arena_mask_to_labels(
+            x, y, mask_padding, crop_top, crop_bottom, new_height
+        )
 
-        # Apply padding
-        preprocessed_coord = cropped_coord + padding
+        return x, y
 
-        return preprocessed_coord
+    def preprocess_ball(self):
+        """Transform the ball coordinates to match the skeleton data."""
+
+        ball_data = self.ball.objects[0].dataset
+
+        ball_coords = [
+            (x, y) for x, y in zip(ball_data["x_centre"], ball_data["y_centre"])
+        ]
+
+        # Apply resizing, cropping, and padding to the ball tracking data
+        ball_coords = [
+            self.resize_and_transform_coordinate(
+                x,
+                y,
+                self.fly.metadata.original_size[0],
+                self.fly.metadata.original_size[1],
+                self.fly.config.template_width,
+                self.fly.config.template_height,
+                self.fly.config.padding,
+                self.fly.config.y_crop[0],
+                self.fly.config.y_crop[1],
+            )
+            for x, y in ball_coords
+        ]
+
+        ball_data["x_centre_preprocessed"] = [
+            x for x, y in ball_coords if x is not None and y is not None
+        ]
+        ball_data["y_centre_preprocessed"] = [
+            y for x, y in ball_coords if x is not None and y is not None
+        ]
+
+        # Add x_centre_preprocessed and y_centre_preprocessed in the node_names
+
+        self.ball.node_names.extend(["centre_preprocessed"])
+
+        print(self.ball.objects[0].dataset)
+        print(self.ball.node_names)
+
+        self.ball
 
     def plot_skeleton_and_ball(self, frame=2039):
         """
         Plot the skeleton and ball tracking data on a given frame.
         """
 
+        nodes_list = self.fly.tracking_data.skeletontrack.node_names + [
+            node for node in self.ball.node_names if "preprocessed" in node
+        ]
+
         annotated_frame = generate_annotated_frame(
             video=self.fly.tracking_data.skeletontrack.video,
             sleap_tracks_list=[self.fly.tracking_data.skeletontrack, self.ball],
             frame=frame,
+            nodes=nodes_list,
         )
 
         # Plot the frame with the skeleton and ball tracking data

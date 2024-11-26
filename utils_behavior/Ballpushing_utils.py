@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 from openTSNE import TSNE
+from openTSNE.callbacks import Callback
+from tqdm.auto import tqdm
 
 import itertools
 from operator import itemgetter
@@ -59,6 +61,18 @@ sys.modules["Ballpushing_utils"] = sys.modules[
 ]  # This line creates an alias for utils_behavior.Ballpushing_utils to utils_behavior.__init__ so that the previously made pkl files can be loaded.
 
 brain_regions_path = "/mnt/upramdya_data/MD/Region_map_240122.csv"
+
+
+class ProgressCallback(Callback):
+    def __init__(self, n_iter):
+        self.pbar = tqdm(total=n_iter, desc="t-SNE progress")
+
+    def __call__(self, iteration, error, embedding):
+        self.pbar.update(1)
+        return False
+
+    def close(self):
+        self.pbar.close()
 
 
 def save_object(obj, filename):
@@ -2591,41 +2605,34 @@ class Dataset:
         return dataset
 
     def compute_behavior_map(
-        self, perplexity=30, n_iter=3000, pca_components=22, hidden_value=None
+        self,
+        perplexity=30,
+        n_iter=3000,
+        pca_components=50,
+        hidden_value=None,
+        savepath=None,
     ):
-        """
-        Compute a behavior map using openTSNE with PCA preprocessing for the skeleton tracking data of multiple flies.
-
-        Args:
-            perplexity (int): The perplexity parameter for t-SNE. Default is 30.
-            n_iter (int): The number of iterations for t-SNE. Default is 3000.
-            pca_components (int): The number of PCA components to use. Default is 50.
-            hidden_value (int or float): The value to replace NaNs with to indicate hidden keypoints.
-
-        Returns:
-            pd.DataFrame: A DataFrame containing t-SNE results and metadata for each contact event.
-        """
-
         if hidden_value is None:
             hidden_value = self.config.hidden_value
 
         all_contact_data = []
         metadata = []
+        contact_indices = []
 
         print("Fetching contacts for all flies...")
 
-        for fly in self.flies:
+        for fly_idx, fly in enumerate(self.flies):
             skeleton_data = fly.tracking_data.skeletontrack.objects[0].dataset
             contact_events = fly.skeleton_metrics.find_contact_events()
 
-            for event in contact_events:
+            for event_idx, event in enumerate(contact_events):
                 start_idx, end_idx = event[0], event[1]
                 contact_data = skeleton_data.iloc[start_idx:end_idx]
                 all_contact_data.append(contact_data)
 
                 metadata.append(
                     {
-                        "fly": fly.metadata.name,
+                        "fly_id": fly.metadata.name,
                         "flypath": fly.metadata.directory.as_posix(),
                         "experiment": fly.experiment.directory.name,
                         "Nickname": (
@@ -2645,39 +2652,58 @@ class Dataset:
                     }
                 )
 
-        # Concatenate all contact data
-        combined_data = pd.concat(all_contact_data, ignore_index=True)
+                contact_indices.append(event_idx)
 
-        # Replace NaNs with the specified hidden value
+        combined_data = pd.concat(all_contact_data, ignore_index=True)
         combined_data.fillna(hidden_value, inplace=True)
 
-        print("Applying PCA and t-SNE...")
+        print("Applying PCA...")
 
-        # Extract relevant features for PCA and t-SNE
         features = combined_data.filter(regex="^(x|y)_").values
 
-        # Apply PCA
+        # Adjust PCA components if necessary
+        n_features = features.shape[1]
+        pca_components = min(pca_components, n_features)
+
         pca = PCA(n_components=pca_components)
         pca_results = pca.fit_transform(features)
 
-        # Apply openTSNE
+        print("PCA completed. Starting t-SNE...")
+
+        # Create the progress callback
+        progress_callback = ProgressCallback(n_iter)
+
         tsne = TSNE(
             n_components=2,
             perplexity=perplexity,
             n_iter=n_iter,
             random_state=42,
-            n_jobs=-1,  # Use all available cores
+            n_jobs=-1,
+            callbacks=[progress_callback],
+            callbacks_every_iters=1,
         )
         tsne_results = tsne.fit(pca_results)
 
-        # Convert t-SNE results to DataFrame
+        # Close the progress bar
+        progress_callback.close()
+
         tsne_df = pd.DataFrame(
             tsne_results, columns=["t-SNE Component 1", "t-SNE Component 2"]
         )
-
-        # Add metadata to t-SNE results
         metadata_df = pd.DataFrame(metadata)
-        result_df = pd.concat([tsne_df, metadata_df.reset_index(drop=True)], axis=1)
+
+        result_df = pd.concat(
+            [
+                tsne_df,
+                metadata_df.reset_index(drop=True),
+                pd.DataFrame({"contact_index": contact_indices}),
+            ],
+            axis=1,
+        )
+
+        if savepath:
+            result_df.to_csv(savepath, index=False)
+            print(f"Behavior map saved to {savepath}")
 
         return result_df
 

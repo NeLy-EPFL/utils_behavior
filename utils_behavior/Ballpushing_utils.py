@@ -284,6 +284,9 @@ class Config:
     # Events related thresholds
 
     interaction_threshold: tuple = (0, 70)
+    gap_between_events: int = 4
+    events_min_length: int = 2
+
     dead_threshold: int = 30
     adjusted_events_normalisation: int = 1000
     significant_threshold: int = 5
@@ -301,10 +304,12 @@ class Config:
 
     padding: int = 20
     y_crop: tuple = (74, 0)
-    
+
     # Skeleton metrics
-    
-    contact_threshold: tuple = (0,13)
+
+    contact_threshold: tuple = (0, 13)
+    gap_between_contacts: int = 1 / 2
+    contact_min_length: int = 1 / 2
 
     def set_experiment_time_range(self, experiment_type):
         """
@@ -554,7 +559,7 @@ class FlyTrackingData:
             return None
 
     def find_flyball_interactions(
-        self, gap_between_events=4, event_min_length=2, thresh=None
+        self, gap_between_events=None, event_min_length=None, thresh=None
     ):
         """This function applies find_interaction_events for each fly in the flytrack dataset and each ball in the balltrack dataset. It returns a dictionary where keys are the fly and ball indices and values are the interaction events.
 
@@ -569,6 +574,12 @@ class FlyTrackingData:
 
         if thresh is None:
             thresh = self.fly.experiment.config.interaction_threshold
+
+        if gap_between_events is None:
+            gap_between_events = self.fly.experiment.config.gap_between_events
+
+        if event_min_length is None:
+            event_min_length = self.fly.experiment.config.events_min_length
 
         if self.flytrack is None or self.balltrack is None:
             print(
@@ -1428,6 +1439,8 @@ class SkeletonMetrics:
         self.ball = self.fly.tracking_data.balltrack
         self.preprocess_ball()
 
+        self.contacts = self.find_contact_events()
+
     def resize_coordinates(
         self, x, y, original_width, original_height, new_width, new_height
     ):
@@ -1516,6 +1529,35 @@ class SkeletonMetrics:
         print(self.ball.node_names)
 
         self.ball
+
+    def find_contact_events(
+        self, threshold=None, gap_between_events=None, event_min_length=None
+    ):
+
+        if threshold is None:
+            threshold = self.fly.experiment.config.contact_threshold
+
+        if gap_between_events is None:
+            gap_between_events = self.fly.experiment.config.gap_between_contacts
+
+        if event_min_length is None:
+            event_min_length = self.fly.experiment.config.contact_min_length
+
+        fly_data = self.fly.tracking_data.skeletontrack.objects[0].dataset
+
+        ball_data = self.ball.objects[0].dataset
+
+        contact_events = find_interaction_events(
+            fly_data,
+            ball_data,
+            nodes1=["Rfront", "Lfront"],
+            nodes2=["centre_preprocessed"],
+            threshold=threshold,
+            gap_between_events=gap_between_events,
+            event_min_length=event_min_length,
+        )
+
+        return contact_events
 
     def plot_skeleton_and_ball(self, frame=2039):
         """

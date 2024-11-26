@@ -4,6 +4,9 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
+from openTSNE import TSNE
 
 import itertools
 from operator import itemgetter
@@ -244,7 +247,7 @@ def load_fly(mp4_file, experiment):
     print(f"Loading fly from {mp4_file.parent}")
     try:
         fly = Fly(mp4_file.parent, experiment=experiment)
-        if fly.valid_data:
+        if fly.tracking_data and fly.tracking_data.valid_data:
             return fly
     except TypeError as e:
         print(f"Error while loading fly from {mp4_file.parent}: {e}")
@@ -310,6 +313,8 @@ class Config:
     contact_threshold: tuple = (0, 13)
     gap_between_contacts: int = 1 / 2
     contact_min_length: int = 1 / 2
+
+    hidden_value: int = -1
 
     def set_experiment_time_range(self, experiment_type):
         """
@@ -1525,8 +1530,8 @@ class SkeletonMetrics:
 
         self.ball.node_names.extend(["centre_preprocessed"])
 
-        print(self.ball.objects[0].dataset)
-        print(self.ball.node_names)
+        # print(self.ball.objects[0].dataset)
+        # print(self.ball.node_names)
 
         self.ball
 
@@ -2193,6 +2198,8 @@ class Dataset:
         source : can either be a list of Experiment objects, one Experiment object, a list of Fly objects or one Fly object.
 
         """
+        self.config = Config()
+
         self.source = source
 
         # Define the experiments and flies attributes
@@ -2233,7 +2240,7 @@ class Dataset:
                 "Invalid source format: source must be a (list of) Experiment objects or a list of Fly objects"
             )
 
-        self.flies = [fly for fly in self.flies if fly.valid_data]
+        self.flies = [fly for fly in self.flies if fly._tracking_data.valid_data]
 
         self.brain_regions_path = brain_regions_path
         self.regions_map = pd.read_csv(self.brain_regions_path)
@@ -2582,6 +2589,97 @@ class Dataset:
             print(f"Current dataset:\n{dataset}")
 
         return dataset
+
+    def compute_behavior_map(
+        self, perplexity=30, n_iter=3000, pca_components=22, hidden_value=None
+    ):
+        """
+        Compute a behavior map using openTSNE with PCA preprocessing for the skeleton tracking data of multiple flies.
+
+        Args:
+            perplexity (int): The perplexity parameter for t-SNE. Default is 30.
+            n_iter (int): The number of iterations for t-SNE. Default is 3000.
+            pca_components (int): The number of PCA components to use. Default is 50.
+            hidden_value (int or float): The value to replace NaNs with to indicate hidden keypoints.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing t-SNE results and metadata for each contact event.
+        """
+
+        if hidden_value is None:
+            hidden_value = self.config.hidden_value
+
+        all_contact_data = []
+        metadata = []
+
+        print("Fetching contacts for all flies...")
+
+        for fly in self.flies:
+            skeleton_data = fly.tracking_data.skeletontrack.objects[0].dataset
+            contact_events = fly.skeleton_metrics.find_contact_events()
+
+            for event in contact_events:
+                start_idx, end_idx = event[0], event[1]
+                contact_data = skeleton_data.iloc[start_idx:end_idx]
+                all_contact_data.append(contact_data)
+
+                metadata.append(
+                    {
+                        "fly": fly.metadata.name,
+                        "flypath": fly.metadata.directory.as_posix(),
+                        "experiment": fly.experiment.directory.name,
+                        "Nickname": (
+                            fly.metadata.nickname
+                            if fly.metadata.nickname is not None
+                            else "Unknown"
+                        ),
+                        "Brain region": (
+                            fly.metadata.brain_region
+                            if fly.metadata.brain_region is not None
+                            else "Unknown"
+                        ),
+                        **{
+                            var: data if data is not None else "Unknown"
+                            for var, data in fly.metadata.arena_metadata.items()
+                        },
+                    }
+                )
+
+        # Concatenate all contact data
+        combined_data = pd.concat(all_contact_data, ignore_index=True)
+
+        # Replace NaNs with the specified hidden value
+        combined_data.fillna(hidden_value, inplace=True)
+
+        print("Applying PCA and t-SNE...")
+
+        # Extract relevant features for PCA and t-SNE
+        features = combined_data.filter(regex="^(x|y)_").values
+
+        # Apply PCA
+        pca = PCA(n_components=pca_components)
+        pca_results = pca.fit_transform(features)
+
+        # Apply openTSNE
+        tsne = TSNE(
+            n_components=2,
+            perplexity=perplexity,
+            n_iter=n_iter,
+            random_state=42,
+            n_jobs=-1,  # Use all available cores
+        )
+        tsne_results = tsne.fit(pca_results)
+
+        # Convert t-SNE results to DataFrame
+        tsne_df = pd.DataFrame(
+            tsne_results, columns=["t-SNE Component 1", "t-SNE Component 2"]
+        )
+
+        # Add metadata to t-SNE results
+        metadata_df = pd.DataFrame(metadata)
+        result_df = pd.concat([tsne_df, metadata_df.reset_index(drop=True)], axis=1)
+
+        return result_df
 
 
 def detect_boundaries(Fly, threshold1=30, threshold2=100):

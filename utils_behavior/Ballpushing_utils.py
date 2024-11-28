@@ -41,6 +41,7 @@ import os
 import platform
 
 import cv2
+from moviepy.editor import VideoFileClip, clips_array, ColorClip
 from moviepy.editor import VideoClip
 from moviepy.editor import VideoFileClip
 from moviepy.video.fx import all as vfx
@@ -257,10 +258,12 @@ def filter_experiments(source, **criteria):
     return flies
 
 
-def load_fly(mp4_file, experiment):
+def load_fly(mp4_file, experiment, experiment_type):
     print(f"Loading fly from {mp4_file.parent}")
     try:
-        fly = Fly(mp4_file.parent, experiment=experiment)
+        fly = Fly(
+            mp4_file.parent, experiment=experiment, experiment_type=experiment_type
+        )
         if fly.tracking_data and fly.tracking_data.valid_data:
             return fly
     except TypeError as e:
@@ -1460,6 +1463,8 @@ class SkeletonMetrics:
 
         self.contacts = self.find_contact_events()
 
+        self.ball_displacements = self.compute_ball_displacements()
+
     def resize_coordinates(
         self, x, y, original_width, original_height, new_width, new_height
     ):
@@ -1577,6 +1582,26 @@ class SkeletonMetrics:
         )
 
         return contact_events
+
+    def compute_ball_displacements(self):
+        """
+        Compute the derivative of the ball position for each contact event
+        """
+
+        self.ball_displacements = []
+
+        for event in self.contacts:
+            # Get the ball positions for the event
+            ball_positions = self.ball.objects[0].dataset.loc[event[0] : event[1]]
+            # Get the derivative of the ball positions
+
+            ball_velocity = np.mean(
+                abs(np.diff(ball_positions["y_centre_preprocessed"], axis=0))
+            )
+
+            self.ball_displacements.append(ball_velocity)
+
+        return self.ball_displacements
 
     def plot_skeleton_and_ball(self, frame=2039):
         """
@@ -2036,7 +2061,7 @@ class Experiment:
     A class for an experiment. This represents a folder containing multiple flies, each of which is represented by a Fly object.
     """
 
-    def __init__(self, directory, metadata_only=False):
+    def __init__(self, directory, metadata_only=False, experiment_type=None):
         """
         Parameters
         ----------
@@ -2057,6 +2082,8 @@ class Experiment:
         self.directory = Path(directory)
         self.metadata = self.load_metadata()
         self.fps = self.load_fps()
+
+        self.experiment_type = experiment_type
 
         # If metadata_only is True, don't load the flies
         if not metadata_only:
@@ -2160,7 +2187,9 @@ class Experiment:
         if multithreading:
             with Pool(processes=os.cpu_count()) as pool:
                 results = [
-                    pool.apply_async(load_fly, args=(mp4_file, self))
+                    pool.apply_async(
+                        load_fly, args=(mp4_file, self, self.experiment_type)
+                    )
                     for mp4_file in mp4_files
                 ]
                 for result in results:
@@ -2169,7 +2198,7 @@ class Experiment:
                         flies.append(fly)
         else:
             for mp4_file in mp4_files:
-                fly = load_fly(mp4_file, self)
+                fly = load_fly(mp4_file, self, experiment_type=self.experiment_type)
                 if fly is not None:
                     flies.append(fly)
 
@@ -2300,6 +2329,34 @@ class Dataset:
         elif isinstance(self.source, Fly):
             return f"Dataset({self.flies[0].directory})"
 
+    def find_flies(self, on, value):
+        """
+        Makes a list of Fly objects matching a certain criterion.
+
+        Parameters
+        ----------
+        on : str
+            The name of the attribute to filter on. Can be a nested attribute (e.g., 'metadata.name').
+
+        value : str
+            The value of the attribute to filter on.
+
+        Returns
+        ----------
+        list
+            A list of Fly objects matching the criterion.
+        """
+
+        def get_nested_attr(obj, attr):
+            """Helper function to get nested attributes."""
+            for part in attr.split("."):
+                obj = getattr(obj, part, None)
+                if obj is None:
+                    return None
+            return obj
+
+        return [fly for fly in self.flies if get_nested_attr(fly, on) == value]
+
     def generate_dataset(self, metrics="coordinates"):
         """Generates a pandas DataFrame from a list of Experiment objects. The dataframe contains the smoothed fly and ball positions for each experiment.
 
@@ -2319,7 +2376,7 @@ class Dataset:
             if metrics == "coordinates":
                 for fly in self.flies:
                     data = self._prepare_dataset_coordinates(
-                        fly, downslampling_factor=5
+                        fly, downslampling_factor=None
                     )
                     Dataset.append(data)
 
@@ -2344,6 +2401,10 @@ class Dataset:
                 for fly in self.flies:
                     data = self._prepare_dataset_F1_checkpoints(fly)
                     Dataset.append(data)
+            elif metrics == "Skeleton_contacts":
+                for fly in self.flies:
+                    data = self._prepare_dataset_skeleton_contacts(fly)
+                    Dataset.append(data)
 
             self.data = pd.concat(Dataset).reset_index()
 
@@ -2354,7 +2415,7 @@ class Dataset:
 
         return self.data
 
-    def _prepare_dataset_coordinates(self, fly, downslampling_factor=5):
+    def _prepare_dataset_coordinates(self, fly, downslampling_factor=None):
         """
         Helper function to prepare individual fly dataset with fly and ball coordinates. It also adds the fly name, experiment name and arena metadata as categorical data.
 
@@ -2546,6 +2607,37 @@ class Dataset:
 
         return dataset
 
+    def _prepare_dataset_skeleton_contacts(self, fly):
+        """
+        Prepares a dataset with the fly's contacts with the ball and associated ball displacement, + metadata
+        """
+
+        # Check if there are contacts for this fly
+        if not fly.skeleton_metrics.ball_displacements:
+            print(f"No contacts found for fly {fly.metadata.name}")
+            return pd.DataFrame()
+
+        dataset = pd.DataFrame()
+
+        # Get the ball displacements of the fly
+
+        ball_displacements = fly.skeleton_metrics.ball_displacements
+
+        # Use the list indices + 1 as the contact indices
+
+        contact_indices = [i + 1 for i in range(len(ball_displacements))]
+
+        # Create a DataFrame with the contact indices and the ball displacements
+
+        dataset["contact_index"] = contact_indices
+        dataset["ball_displacement"] = ball_displacements
+
+        # Add metadata to the dataset
+
+        dataset = self._add_metadata(dataset, fly)
+
+        return dataset
+
     def _add_metadata(self, data, fly):
         """
         Adds the metadata to a dataset generated by a _prepare_dataset_... method.
@@ -2622,37 +2714,44 @@ class Dataset:
         print("Fetching contacts for all flies...")
 
         for fly_idx, fly in enumerate(self.flies):
-            skeleton_data = fly.tracking_data.skeletontrack.objects[0].dataset
-            contact_events = fly.skeleton_metrics.find_contact_events()
 
-            for event_idx, event in enumerate(contact_events):
-                start_idx, end_idx = event[0], event[1]
-                contact_data = skeleton_data.iloc[start_idx:end_idx]
-                all_contact_data.append(contact_data)
-
-                metadata.append(
-                    {
-                        "fly_id": fly.metadata.name,
-                        "flypath": fly.metadata.directory.as_posix(),
-                        "experiment": fly.experiment.directory.name,
-                        "Nickname": (
-                            fly.metadata.nickname
-                            if fly.metadata.nickname is not None
-                            else "Unknown"
-                        ),
-                        "Brain region": (
-                            fly.metadata.brain_region
-                            if fly.metadata.brain_region is not None
-                            else "Unknown"
-                        ),
-                        **{
-                            var: data if data is not None else "Unknown"
-                            for var, data in fly.metadata.arena_metadata.items()
-                        },
-                    }
+            if fly.skeleton_metrics is None:
+                print(
+                    f"No skeleton metrics found for fly {fly.metadata.name}. Skipping..."
                 )
+                continue
+            else:
+                skeleton_data = fly.tracking_data.skeletontrack.objects[0].dataset
+                contact_events = fly.skeleton_metrics.find_contact_events()
 
-                contact_indices.append(event_idx)
+                for event_idx, event in enumerate(contact_events):
+                    start_idx, end_idx = event[0], event[1]
+                    contact_data = skeleton_data.iloc[start_idx:end_idx]
+                    all_contact_data.append(contact_data)
+
+                    metadata.append(
+                        {
+                            "name": fly.metadata.name,
+                            "flypath": fly.metadata.directory.as_posix(),
+                            "experiment": fly.experiment.directory.name,
+                            "Nickname": (
+                                fly.metadata.nickname
+                                if fly.metadata.nickname is not None
+                                else "Unknown"
+                            ),
+                            "Brain region": (
+                                fly.metadata.brain_region
+                                if fly.metadata.brain_region is not None
+                                else "Unknown"
+                            ),
+                            **{
+                                var: data if data is not None else "Unknown"
+                                for var, data in fly.metadata.arena_metadata.items()
+                            },
+                        }
+                    )
+
+                    contact_indices.append(event_idx)
 
         combined_data = pd.concat(all_contact_data, ignore_index=True)
         combined_data.fillna(hidden_value, inplace=True)
@@ -2701,11 +2800,163 @@ class Dataset:
             axis=1,
         )
 
+        self.behavior_map = result_df
+
         if savepath:
             result_df.to_csv(savepath, index=False)
             print(f"Behavior map saved to {savepath}")
 
         return result_df
+
+    def generate_clip(self, fly, event, outpath):
+        """
+        Make a video clip of a fly's event.
+        """
+
+        # Get the fly object
+        flies = self.find_flies("metadata.name", fly)
+        if not flies:
+            raise ValueError(f"Fly with name {fly} not found.")
+        fly = flies[0]
+
+        # Get the event start and end frames
+        event_start = fly.skeleton_metrics.contacts[event][0]
+        event_end = fly.skeleton_metrics.contacts[event][1]
+
+        # Get the video file
+        video_file = fly.metadata.video
+
+        # Open the video file
+        cap = cv2.VideoCapture(str(video_file))
+        if not cap.isOpened():
+            raise IOError(f"Cannot open video file: {video_file}")
+
+        # Get the frame rate of the video
+        fps = int(cap.get(cv2.CAP_PROP_FPS))
+
+        # Set the start and end frames
+        cap.set(cv2.CAP_PROP_POS_FRAMES, event_start)
+        start_frame = event_start
+        end_frame = event_end
+
+        # Create a VideoWriter object
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+
+        # Get the video dimensions
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        # Create the output file
+        out = cv2.VideoWriter(outpath, fourcc, fps, (width, height))
+
+        try:
+            # Go to the start frame
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+            # Read the video frame by frame and write to the output file
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if ret:
+                    out.write(frame)
+                    if cap.get(cv2.CAP_PROP_POS_FRAMES) >= end_frame:
+                        break
+                else:
+                    break
+        finally:
+            # Release the video capture and writer objects
+            cap.release()
+            out.release()
+
+        return outpath
+
+    def make_events_grid(self, events_dict, clip_path):
+        """
+        This function will generate a grid video of all the events selected in events_dict, identified by the fly name and the event index.
+
+        Args:
+            events_dict (list): List of dictionaries with keys "name" and "event_index".
+            clip_path (str): The path where the grid video will be saved.
+        """
+
+        clips = []
+
+        for event in events_dict:
+            print(event)
+
+            fly_name = event["name"]
+            event_index = event["event_index"]
+
+            try:
+                # Generate the clip for the event using the new generate_clip method
+                event_clip_path = self.generate_clip(
+                    fly_name,
+                    event_index,
+                    outpath=f"{os.path.dirname(clip_path)}/{fly_name}_event_{event_index}.mp4",
+                )
+                clips.append(event_clip_path)
+            except Exception as e:
+                print(
+                    f"Error generating clip for fly {fly_name}, event {event_index}: {e}"
+                )
+                continue
+
+        if clips:
+            # Concatenate the clips into a grid video
+            self.concatenate_clips(clips, clip_path)
+
+            # Remove the individual clip files
+            for event_clip_path in clips:
+                os.remove(event_clip_path)
+
+            print(f"Finished processing events grid! Saved to {clip_path}")
+        else:
+            print("No clips were generated.")
+
+    def concatenate_clips(self, clips, output_path):
+        """
+        Concatenate the clips into a grid video.
+
+        Args:
+            clips (list): List of paths to the video clips.
+            output_path (str): The path where the grid video will be saved.
+        """
+        video_clips = [VideoFileClip(clip) for clip in clips]
+
+        # Determine the number of rows and columns for the grid
+        num_clips = len(video_clips)
+        grid_size = int(np.ceil(np.sqrt(num_clips)))
+
+        # Create a grid of clips
+        clip_grid = []
+        for i in range(0, num_clips, grid_size):
+            clip_row = video_clips[i : i + grid_size]
+            # Pad the row with empty clips if necessary
+            while len(clip_row) < grid_size:
+                empty_clip = ColorClip(
+                    size=(video_clips[0].w, video_clips[0].h),
+                    color=(0, 0, 0),
+                    duration=video_clips[0].duration,
+                )
+                clip_row.append(empty_clip)
+            clip_grid.append(clip_row)
+
+        # Pad the grid with empty rows if necessary
+        while len(clip_grid) < grid_size:
+            empty_row = [
+                ColorClip(
+                    size=(video_clips[0].w, video_clips[0].h),
+                    color=(0, 0, 0),
+                    duration=video_clips[0].duration,
+                )
+                for _ in range(grid_size)
+            ]
+            clip_grid.append(empty_row)
+
+        # Stack the clips into a grid
+        final_clip = clips_array(clip_grid)
+
+        # Write the final video to the output path
+        final_clip.write_videofile(output_path, fps=29)
 
 
 def detect_boundaries(Fly, threshold1=30, threshold2=100):

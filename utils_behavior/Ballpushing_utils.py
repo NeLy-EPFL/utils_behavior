@@ -2612,6 +2612,10 @@ class Dataset:
         Prepares a dataset with the fly's contacts with the ball and associated ball displacement, + metadata
         """
 
+        if not fly.skeleton_metrics:
+            print(f"No skeleton metrics found for fly {fly.metadata.name}")
+            return pd.DataFrame()
+        
         # Check if there are contacts for this fly
         if not fly.skeleton_metrics.ball_displacements:
             print(f"No contacts found for fly {fly.metadata.name}")

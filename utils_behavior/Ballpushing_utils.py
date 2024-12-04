@@ -81,11 +81,13 @@ def save_object(obj, filename):
 
     Args:
         obj (object): The object to be saved.
-        filename (Pathlib path): the path where to save the object. No need to add the .pkl extension.
+        filename (Path): The path where to save the object. No need to add the .pkl extension.
     """
+    # Ensure filename is a Path object
+    filename = Path(filename)
 
     # If the filename does not end with .pkl, add it
-    if not filename.endswith(".pkl"):
+    if filename.suffix != ".pkl":
         filename = filename.with_suffix(".pkl")
 
     with open(filename, "wb") as output:
@@ -2615,7 +2617,7 @@ class Dataset:
         if not fly.skeleton_metrics:
             print(f"No skeleton metrics found for fly {fly.metadata.name}")
             return pd.DataFrame()
-        
+
         # Check if there are contacts for this fly
         if not fly.skeleton_metrics.ball_displacements:
             print(f"No contacts found for fly {fly.metadata.name}")

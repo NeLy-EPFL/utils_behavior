@@ -438,27 +438,38 @@ class Sleap_Tracks:
         def __init__(self, dataset, node_names):
             self.node_names = node_names
             self.dataset = dataset
+            self._node_properties = {}
 
             for node in node_names:
-                setattr(self, node, self._create_node_property(node))
+                self._node_properties[node] = self._create_node_property(node)
 
         def _create_node_property(self, node):
-            """Creates a property for a node to access its x and y coordinates for each frame.
+            """Creates a property for a node to access its x and y coordinates for each frame."""
+            x_values = self.dataset[f"x_{node}"].values
+            y_values = self.dataset[f"y_{node}"].values
+            return list(zip(x_values, y_values))
 
-            Args:
-                node (str): The name of the node.
+        def __getattr__(self, name):
+            if name in self._node_properties:
+                return self._node_properties[name]
+            raise AttributeError(
+                f"'{self.__class__.__name__}' object has no attribute '{name}'"
+            )
 
-            Returns:
-                property: A property for the node coordinates.
-            """
+        def __getstate__(self):
+            """Prepare object for pickling."""
+            state = self.__dict__.copy()
+            # Remove the _node_properties from the state
+            del state["_node_properties"]
+            return state
 
-            @property
-            def node_property(self):
-                x_values = self.dataset[f"x_{node}"].values
-                y_values = self.dataset[f"y_{node}"].values
-                return list(zip(x_values, y_values))
-
-            return node_property
+        def __setstate__(self, state):
+            """Restore object from pickling."""
+            self.__dict__.update(state)
+            # Recreate _node_properties
+            self._node_properties = {}
+            for node in self.node_names:
+                self._node_properties[node] = self._create_node_property(node)
 
     def __init__(
         self, filename, object_type="object", smoothed_tracks=True, debug=False
@@ -476,22 +487,20 @@ class Sleap_Tracks:
         self.object_type = object_type
         self.smoothed_tracks = smoothed_tracks
 
-        # Open the SLEAP tracking file
+        # Open the SLEAP tracking file and read the necessary data
         try:
-            self.h5file = h5py.File(filename, "r")
+            with h5py.File(filename, "r") as h5file:
+                self.node_names = [x.decode("utf-8") for x in h5file["node_names"][:]]
+                self.edge_names = [
+                    [y.decode("utf-8") for y in x] for x in h5file["edge_names"][:]
+                ]
+                self.edges_idx = h5file["edge_inds"][:].tolist()
+                self.tracks = h5file["tracks"][:].tolist()
+                self.video = Path(h5file["video_path"][()].decode("utf-8"))
+
         except FileNotFoundError as e:
             print(f"Error while opening SLEAP tracking file: {e}")
             return
-
-        self.node_names = [x.decode("utf-8") for x in self.h5file["node_names"]]
-        self.edge_names = [
-            [y.decode("utf-8") for y in x] for x in self.h5file["edge_names"]
-        ]
-        self.edges_idx = self.h5file["edge_inds"]
-
-        self.tracks = self.h5file["tracks"][:]
-
-        self.video = Path(self.h5file["video_path"][()].decode("utf-8"))
 
         self.video = self._handle_video_path(self.video)
 

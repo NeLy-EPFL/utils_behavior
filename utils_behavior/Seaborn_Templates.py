@@ -95,7 +95,7 @@ def clean_data(data, metric, groupby=None):
     return data
 
 
-def compute_controls_bs_ci(data, metric, control_label, kdims):
+def compute_controls_bs_ci(data, metric, control_label, kdims, func=np.median):
     """
     Compute a 95% bootstrap confidence interval for a given metric for the control group.
 
@@ -119,7 +119,7 @@ def compute_controls_bs_ci(data, metric, control_label, kdims):
     control_data = control_data.dropna(subset=[metric])
 
     # Compute the bootstrap confidence interval for the given metric
-    ci = Processing.draw_bs_ci(control_data[metric].values)
+    ci = Processing.draw_bs_ci(control_data[metric].values, func=func)
 
     return ci
 
@@ -141,7 +141,7 @@ def compute_group_bs_ci(data, metric, groupby):
 
     for group, group_data in grouped_data:
         group_data = group_data.dropna(subset=[metric])
-        ci = Processing.draw_bs_ci(group_data[metric].values)
+        ci = Processing.draw_bs_ci(group_data[metric].values, func=np.median)
         ci_dict[group] = ci
 
     return ci_dict

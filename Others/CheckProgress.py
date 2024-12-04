@@ -4,14 +4,16 @@ import yaml
 
 # Load the directory list from the YAML file
 def load_directories_from_yaml(yaml_file):
-    with open(yaml_file, 'r') as file:
-        directories = yaml.safe_load(file).get('directories', [])
+    with open(yaml_file, "r") as file:
+        directories = yaml.safe_load(file).get("directories", [])
         if directories:
             print(f"Loaded {len(directories)} directories from YAML file.")
             return [Path(d) for d in directories]
     return []
 
+
 # Find how many videos in the directories have _preprocessed in their name (preprocessed videos) and compute the ratio of preprocessed videos to (total videos - preprocessed videos)
+
 
 def count_preprocessed_videos(directories):
     total_videos = 0
@@ -21,19 +23,29 @@ def count_preprocessed_videos(directories):
             total_videos += 1
             if "_preprocessed" in video.stem:
                 preprocessed_videos += 1
-    return preprocessed_videos, total_videos, preprocessed_videos / (total_videos - preprocessed_videos) if total_videos - preprocessed_videos != 0 else 0
+    return (
+        preprocessed_videos,
+        total_videos,
+        (
+            preprocessed_videos / (total_videos - preprocessed_videos)
+            if total_videos - preprocessed_videos != 0
+            else 0
+        ),
+    )
+
 
 # Example usage
 yaml_file = Path("/home/durrieu/sleap_tools/folders_to_process.yaml")
 
-directories = load_directories_from_yaml(yaml_file)
-preprocessed_videos, total_videos, ratio = count_preprocessed_videos(directories)
+# directories = load_directories_from_yaml(yaml_file)
+# preprocessed_videos, total_videos, ratio = count_preprocessed_videos(directories)
 
-print(f"Total videos to process: {total_videos - preprocessed_videos}")
-print(f"Preprocessed videos: {preprocessed_videos}")
-print(f"Ratio of preprocessed videos : {ratio}")
+# print(f"Total videos to process: {total_videos - preprocessed_videos}")
+# print(f"Preprocessed videos: {preprocessed_videos}")
+# print(f"Ratio of preprocessed videos : {ratio}")
 
 # Also check how many slp files with _full_body in their name are in the directories
+
 
 def count_full_body_slp_files(directories):
     full_body_slp_files = 0
@@ -42,5 +54,60 @@ def count_full_body_slp_files(directories):
             full_body_slp_files += 1
     return full_body_slp_files
 
-full_body_slp_files = count_full_body_slp_files(directories)
-print(f"Full body slp files: {full_body_slp_files}")
+
+# full_body_slp_files = count_full_body_slp_files(directories)
+# print(f"Full body slp files: {full_body_slp_files}")
+
+
+def find_last_folders(directories):
+    last_folders = []
+    for directory in directories:
+        for subdir in directory.iterdir():
+            if subdir.is_dir():
+                # Check if the subdir contains any subdirectories
+                subdirs = [d for d in subdir.iterdir() if d.is_dir()]
+                if not subdirs:
+                    # If there are no subdirectories, check for video and SLP files
+                    video_files = list(subdir.glob("*.mp4"))
+                    slp_files = list(subdir.glob("*.slp"))
+                    if video_files or slp_files:
+                        last_folders.append(subdir)
+                else:
+                    # Recursively check the subdirectories
+                    last_folders.extend(find_last_folders([subdir]))
+    return last_folders
+
+
+# Find folders that contain more than one _preprocessed video
+def find_folders_with_multiple_preprocessed_videos(directories):
+    folders = []
+    for directory in directories:
+        preprocessed_videos = list(directory.glob("*_preprocessed*.mp4"))
+        if len(preprocessed_videos) > 1:
+            folders.append(directory)
+    return folders
+
+
+# Find folders that are missing a _full_body slp file
+def find_folders_missing_full_body_slp(directories):
+    folders = []
+    for directory in directories:
+        full_body_slp_files = list(directory.glob("*_full_body*.slp"))
+        if not full_body_slp_files:
+            folders.append(directory)
+    return folders
+
+
+# Find the last folders
+# last_folders = find_last_folders(directories)
+
+# # Perform the checks in the last folders
+# folders_with_multiple_preprocessed_videos = (
+#     find_folders_with_multiple_preprocessed_videos(last_folders)
+# )
+# folders_missing_full_body_slp = find_folders_missing_full_body_slp(last_folders)
+
+# print(
+#     f"Folders with multiple preprocessed videos: {folders_with_multiple_preprocessed_videos}"
+# )
+# print(f"Folders missing full body slp files: {folders_missing_full_body_slp}")

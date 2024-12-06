@@ -70,6 +70,14 @@ def find_folders_with_preprocessed_video_but_no_full_body_slp(directories):
                 preprocessed_videos = list(subdir.glob("*_preprocessed*.mp4"))
                 full_body_slp_files = list(subdir.glob("*_full*.slp"))
                 if preprocessed_videos and not full_body_slp_files:
+                    print(
+                        f"Found {subdir} with preprocessed video but no full body slp"
+                    )
+
+                    # Remove the preprocessed video
+                    for video in preprocessed_videos:
+                        print(f"Removing {video}")
+                        video.unlink()
                     folders.append(subdir)
     return folders
 

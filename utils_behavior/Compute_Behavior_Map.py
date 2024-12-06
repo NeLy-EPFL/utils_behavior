@@ -1,7 +1,5 @@
 import pandas as pd
-
-# from sklearn.manifold import TSNE
-from sklearn.decomposition import PCA
+from sklearn.decomposition import IncrementalPCA, PCA
 from openTSNE import TSNE
 from openTSNE.callbacks import Callback
 from tqdm.auto import tqdm
@@ -27,11 +25,12 @@ def compute_behavior_map(
     data,
     perplexity=30,
     n_iter=3000,
-    pca_components=50,
+    explained_variance_threshold=0.95,
+    batch_size=1000,
     savepath=None,
 ):
 
-    print("Applying PCA...")
+    print("Applying Incremental PCA...")
 
     # Extract features and metadata
     features = data.filter(regex="^(x|y)_").values
@@ -42,14 +41,27 @@ def compute_behavior_map(
         else pd.Series([None] * len(data))
     )
 
-    # Adjust PCA components if necessary
-    n_features = features.shape[1]
-    pca_components = min(pca_components, n_features)
+    # Compute the explained variance ratio using PCA
+    pca = PCA()
+    pca.fit(features)
+    explained_variance_ratio = pca.explained_variance_ratio_
 
-    pca = PCA(n_components=pca_components)
-    pca_results = pca.fit_transform(features)
+    # Determine the number of components to keep based on the explained variance threshold
+    cumulative_explained_variance = explained_variance_ratio.cumsum()
+    n_components = (
+        cumulative_explained_variance < explained_variance_threshold
+    ).sum() + 1
 
-    print("PCA completed. Starting t-SNE...")
+    print(f"Number of components to keep: {n_components}")
+
+    # Apply Incremental PCA with the determined number of components
+    ipca = IncrementalPCA(n_components=n_components, batch_size=batch_size)
+    for batch in range(0, features.shape[0], batch_size):
+        ipca.partial_fit(features[batch : batch + batch_size])
+
+    pca_results = ipca.transform(features)
+
+    print("Incremental PCA completed. Starting t-SNE...")
 
     # Create the progress callback
     progress_callback = ProgressCallback(n_iter)
@@ -96,14 +108,15 @@ if __name__ == "__main__":
 
     # Load your data
     print(f"Loading data from {data_path}...")
-    data = pd.read_csv(data_path)
+    data = pd.read_csv(data_path, low_memory=False, dtype={32: str, 33: str})
 
     # Compute the behavior map
     behavior_map = compute_behavior_map(
         data,
         perplexity=30,
         n_iter=3000,
-        pca_components=50,
+        explained_variance_threshold=0.95,
+        batch_size=1000,
         savepath="/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/TSNE/241206_behavior_map.csv",
     )
 

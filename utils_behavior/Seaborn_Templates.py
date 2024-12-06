@@ -16,7 +16,7 @@ from . import Processing
 styling_templates = {
     "default": {
         "general": {
-            "figure.figsize": (10, 6),
+            "figure.figsize": (20, 50),
             "axes.titlesize": 16,
             "axes.labelsize": 14,
             "xtick.labelsize": 12,
@@ -373,7 +373,7 @@ def sns_plot(
         # Apply boxplot-specific parameters
         boxplot_params = styling_templates[style_template].get("boxplot", {})
         ax = sns.boxplot(
-            data=data, x=kdims, y=metric, hue=colorby, **{**kwargs, **boxplot_params}
+            data=data, x=metric, y=kdims, hue=colorby, **{**kwargs, **boxplot_params}
         )
         if bs_notch:
             for i, artist in enumerate(ax.artists):
@@ -401,8 +401,8 @@ def sns_plot(
         stripplot_params = styling_templates[style_template].get("stripplot", {})
         sns.stripplot(
             data=data,
-            x=kdims,
-            y=metric,
+            x=metric,
+            y=kdims,
             hue=colorby,
             color="black",
             dodge=True if group_by else False,

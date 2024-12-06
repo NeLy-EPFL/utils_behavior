@@ -101,8 +101,11 @@ def load_object(filename):
         filename (Pathlib path): the path to the object. No need to add the .pkl extension.
     """
 
+    # Ensure filename is a Path object
+    filename = Path(filename)
+
     # If the filename does not end with .pkl, add it
-    if not filename.endswith(".pkl"):
+    if filename.suffix != ".pkl":
         filename = filename.with_suffix(".pkl")
 
     with open(filename, "rb") as input:
@@ -2232,6 +2235,7 @@ class Dataset:
         self,
         source,
         brain_regions_path="/mnt/upramdya_data/MD/Region_map_240312.csv",
+        dataset_type="coordinates",
     ):
         """
         A class to generate a Dataset from Experiments and Fly objects.
@@ -2291,6 +2295,10 @@ class Dataset:
         self.regions_map = pd.read_csv(self.brain_regions_path)
 
         self.metadata = []
+
+        self.data = None
+
+        self.generate_dataset(metrics=dataset_type)
 
     def __str__(self):
         # Look for recurring words in the experiment names
@@ -2382,6 +2390,12 @@ class Dataset:
                     )
                     Dataset.append(data)
 
+            elif metrics == "contact_data":
+                for fly in self.flies:
+                    data = self._prepare_dataset_contact_data(fly)
+                    if not data.empty:
+                        Dataset.append(data)
+
             elif metrics == "summary":
                 for fly in self.flies:
                     # print("Preparing dataset for", fly.name)
@@ -2408,12 +2422,15 @@ class Dataset:
                     data = self._prepare_dataset_skeleton_contacts(fly)
                     Dataset.append(data)
 
-            self.data = pd.concat(Dataset).reset_index()
+            if Dataset:
+                self.data = pd.concat(Dataset).reset_index()
+            else:
+                self.data = pd.DataFrame()  # Return an empty DataFrame if no data
 
         except Exception as e:
             print(f"An error occurred: {e}")
             traceback.print_exc()
-            self.data = {}
+            self.data = pd.DataFrame()  # Return an empty DataFrame in case of error
 
         return self.data
 
@@ -2483,6 +2500,40 @@ class Dataset:
     # TODO : Events should be reannotated if the dataset is subsetted
 
     # TODO: implement events durations
+
+    def _prepare_dataset_contact_data(self, fly, hidden_value=None):
+        if hidden_value is None:
+            hidden_value = self.config.hidden_value
+
+        all_contact_data = []
+        contact_indices = []
+
+        if fly.skeleton_metrics is None:
+            print(f"No skeleton metrics found for fly {fly.metadata.name}. Skipping...")
+            return pd.DataFrame()  # Return an empty DataFrame
+        else:
+            skeleton_data = fly.tracking_data.skeletontrack.objects[0].dataset
+            contact_events = fly.skeleton_metrics.find_contact_events()
+
+            for event_idx, event in enumerate(contact_events):
+                start_idx, end_idx = event[0], event[1]
+                contact_data = skeleton_data.iloc[start_idx:end_idx]
+                contact_data["contact_index"] = event_idx  # Add contact_index column
+                all_contact_data.append(contact_data)
+
+                contact_indices.append(event_idx)
+
+        if all_contact_data:
+            combined_data = pd.concat(all_contact_data, ignore_index=True)
+            combined_data.fillna(hidden_value, inplace=True)
+            combined_data = self._add_metadata(combined_data, fly)
+        else:
+            combined_data = (
+                pd.DataFrame()
+            )  # Return an empty DataFrame if no contact data
+
+        return combined_data
+
     def _prepare_dataset_summary_metrics(
         self,
         fly,

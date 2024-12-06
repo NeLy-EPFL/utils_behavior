@@ -37,12 +37,12 @@ def count_preprocessed_videos(directories):
 # Example usage
 yaml_file = Path("/home/durrieu/sleap_tools/folders_to_process.yaml")
 
-# directories = load_directories_from_yaml(yaml_file)
-# preprocessed_videos, total_videos, ratio = count_preprocessed_videos(directories)
+directories = load_directories_from_yaml(yaml_file)
+preprocessed_videos, total_videos, ratio = count_preprocessed_videos(directories)
 
-# print(f"Total videos to process: {total_videos - preprocessed_videos}")
-# print(f"Preprocessed videos: {preprocessed_videos}")
-# print(f"Ratio of preprocessed videos : {ratio}")
+print(f"Total videos to process: {total_videos - preprocessed_videos}")
+print(f"Preprocessed videos: {preprocessed_videos}")
+print(f"Ratio of preprocessed videos : {ratio}")
 
 # Also check how many slp files with _full_body in their name are in the directories
 
@@ -50,13 +50,37 @@ yaml_file = Path("/home/durrieu/sleap_tools/folders_to_process.yaml")
 def count_full_body_slp_files(directories):
     full_body_slp_files = 0
     for directory in directories:
-        for slp_file in directory.rglob("*_full_body*.slp"):
+        for slp_file in directory.rglob("*_full*.slp"):
             full_body_slp_files += 1
     return full_body_slp_files
 
 
-# full_body_slp_files = count_full_body_slp_files(directories)
-# print(f"Full body slp files: {full_body_slp_files}")
+full_body_slp_files = count_full_body_slp_files(directories)
+print(f"Full body slp files: {full_body_slp_files}")
+
+# Find folders that contain a _preprocessed video but no _full_body slp file
+
+
+# Find folders that contain a _preprocessed video but no _full_body slp file
+def find_folders_with_preprocessed_video_but_no_full_body_slp(directories):
+    folders = []
+    for directory in directories:
+        for subdir in directory.rglob("*"):
+            if subdir.is_dir():
+                preprocessed_videos = list(subdir.glob("*_preprocessed*.mp4"))
+                full_body_slp_files = list(subdir.glob("*_full*.slp"))
+                if preprocessed_videos and not full_body_slp_files:
+                    folders.append(subdir)
+    return folders
+
+
+folders_with_preprocessed_video_but_no_full_body_slp = (
+    find_folders_with_preprocessed_video_but_no_full_body_slp(directories)
+)
+
+print(
+    f"Folders missing a slp file but with preprocessed folder:{folders_with_preprocessed_video_but_no_full_body_slp}"
+)
 
 
 def find_last_folders(directories):
@@ -92,22 +116,78 @@ def find_folders_with_multiple_preprocessed_videos(directories):
 def find_folders_missing_full_body_slp(directories):
     folders = []
     for directory in directories:
-        full_body_slp_files = list(directory.glob("*_full_body*.slp"))
+        full_body_slp_files = list(directory.glob("*full*.slp"))
         if not full_body_slp_files:
             folders.append(directory)
     return folders
 
 
 # Find the last folders
-# last_folders = find_last_folders(directories)
+last_folders = find_last_folders(directories)
 
-# # Perform the checks in the last folders
-# folders_with_multiple_preprocessed_videos = (
-#     find_folders_with_multiple_preprocessed_videos(last_folders)
-# )
-# folders_missing_full_body_slp = find_folders_missing_full_body_slp(last_folders)
+# Perform the checks in the last folders
+folders_with_multiple_preprocessed_videos = (
+    find_folders_with_multiple_preprocessed_videos(last_folders)
+)
 
-# print(
-#     f"Folders with multiple preprocessed videos: {folders_with_multiple_preprocessed_videos}"
-# )
+# For each folder with multiple preprocessed videos, find the videos that have "annotated" in their name and remove them
+
+
+def remove_annotated_videos(folders):
+    for folder in folders:
+        annotated_videos = list(folder.glob("*annotated*.mp4"))
+        for video in annotated_videos:
+            print(f"Removing {video}")
+            video.unlink()
+
+
+# remove_annotated_videos(folders_with_multiple_preprocessed_videos)
+
+folders_missing_full_body_slp = find_folders_missing_full_body_slp(last_folders)
+
+print(
+    f"Folders with multiple preprocessed videos: {folders_with_multiple_preprocessed_videos}"
+)
 # print(f"Folders missing full body slp files: {folders_missing_full_body_slp}")
+
+# Find folders that contain more than one .slp file with "full" in their name
+
+
+# def find_folders_with_multiple_full_slp_files(directories):
+#     folders = []
+#     for directory in directories:
+#         full_slp_files = list(directory.rglob("*full*.slp"))
+#         if len(full_slp_files) > 1:
+#             folders.append(directory)
+#     return folders
+
+
+# folders_with_multiple_full_slp_files = find_folders_with_multiple_full_slp_files(
+#     directories
+# )
+
+# print(f"Folders with multiple full slp files: {folders_with_multiple_full_slp_files}")
+
+# Now find .h5 and .slp files that have "full" but not "preprocessed" in their name
+
+
+# def find_files_with_full_but_not_preprocessed(directories):
+#     files = []
+#     for directory in directories:
+#         for file in directory.rglob("*full*.h5"):
+#             if "preprocessed" not in file.stem:
+#                 # Remove the file
+#                 print(f"Removing {file}")
+#                 file.unlink()
+#         for file in directory.rglob("*full*.slp"):
+#             if "preprocessed" not in file.stem:
+#                 print(f"Removing {file}")
+#                 file.unlink()
+#     return files
+
+
+# files_with_full_but_not_preprocessed = find_files_with_full_but_not_preprocessed(
+#     directories
+# )
+
+# print(f"Files with full but not preprocessed: {files_with_full_but_not_preprocessed}")

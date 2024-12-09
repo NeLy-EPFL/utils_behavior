@@ -44,7 +44,8 @@ def run_pca_and_save(
 
     # Combine PCA results with metadata and contact indices
     pca_df = pd.DataFrame(pca_results, columns=[f"PCA Component {i+1}" for i in range(n_components)])
-    combined_df = pd.concat([pca_df, metadata.reset_index(drop=True), pd.DataFrame({"contact_index": contact_indices}).reset_index(drop=True)], axis=1)
+    combined_df = pd.concat([pca_df, metadata.reset_index(drop=True)], axis=1)
+    combined_df["contact_index"] = contact_indices.reset_index(drop=True)
 
     # Save the combined results to a Feather file
     if savepath:

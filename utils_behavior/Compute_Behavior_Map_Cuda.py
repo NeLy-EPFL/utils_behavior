@@ -4,6 +4,8 @@ import umap
 import pyarrow.feather as feather
 import time
 
+
+
 class ProgressCallback:
     def __init__(self, n_iter):
         self.n_iter = n_iter

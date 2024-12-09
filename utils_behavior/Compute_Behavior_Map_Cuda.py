@@ -3,8 +3,18 @@ from tsnecuda import TSNE
 import umap
 import pyarrow.feather as feather
 import time
+import numpy as np
+from sklearn.model_selection import train_test_split
 
-
+def stratified_subsample(data, target_size, stratify_column='contact_index'):
+    sampling_ratio = target_size / len(data)
+    stratified_sample, _ = train_test_split(
+        data, 
+        train_size=sampling_ratio, 
+        stratify=data[stratify_column],
+        random_state=42
+    )
+    return stratified_sample
 
 class ProgressCallback:
     def __init__(self, n_iter):
@@ -83,18 +93,22 @@ def run_tsne_or_umap(
 
     return combined_results_df
 
-# Example usage for Step 2
 if __name__ == "__main__":
-    pca_data_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/PCA/241206_pca_data.feather"
-    results_savepath = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/TSNE/241206_behavior_map.feather"
+    pca_data_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/PCA/241209_pca_data.feather"
+    results_savepath = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/TSNE/241209_behavior_map.feather"
 
     # Load PCA data
     print(f"Loading PCA data from {pca_data_path}...")
     combined_data = feather.read_feather(pca_data_path)
 
-    # Run t-SNE or UMAP on the PCA data
+    # Subsample the data
+    target_size = 100000  # Adjust this value based on your GPU capabilities
+    subsampled_data = stratified_subsample(combined_data, target_size)
+    print(f"Subsampled data size: {len(subsampled_data)}")
+
+    # Run t-SNE or UMAP on the subsampled PCA data
     results_df = run_tsne_or_umap(
-        combined_data,
+        subsampled_data,
         method="tsne",  # Change to "umap" if you want to use UMAP
         perplexity=30,
         n_iter=3000,

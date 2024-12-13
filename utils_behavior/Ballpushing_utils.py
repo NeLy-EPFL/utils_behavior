@@ -573,31 +573,44 @@ class FlyTrackingData:
                     )
 
                     if self.final_event_init:
-                        self.success_cutoff_time_range = (0, self.final_event_init[1])
+
+                        print(f"Final event: {self.final_event_init}")
+
+                        # Get the time associated with the event following the final if any
+
+                        final_time = (
+                            self.interaction_events[0][0][self.final_event_init[0]][1]
+                            + 1
+                        ) / self.fly.experiment.fps
+
+                        if self.final_event_init:
+                            # Include the final event by setting the cutoff time range to end just after the final event
+                            self.success_cutoff_time_range = (
+                                0,
+                                final_time,
+                            )
+                    else:
+                        self.success_cutoff_time_range = (0, None)
 
                 elif self.fly.config.success_cutoff_method == "max_event":
                     max_distance_event = BallpushingMetrics(self).get_max_event(0, 0)
 
-                    print(f"Max distance event: {max_distance_event}")
                     if max_distance_event:
-                        max_distance_time = max_distance_event[1]
-                        threshold = self.fly.config.max_event_threshold
-                        self.success_cutoff_time_range = (
-                            0,
-                            max_distance_time - threshold,
-                        )
+                        max_distance_time = (
+                            self.interaction_events[0][0][max_distance_event[0]][1] + 1
+                        ) / self.fly.experiment.fps
 
-                # print(f"Success cutoff time range: {self.success_cutoff_time_range}")
+                        self.success_cutoff_time_range = (0, max_distance_time)
+
+                    else:
+                        self.success_cutoff_time_range = (0, None)
+
+                print(f"Success cutoff time range: {self.success_cutoff_time_range}")
 
                 self.filter_tracking_data(self.success_cutoff_time_range)
 
                 # Recompute interaction events based on the filtered data
                 self.interaction_events = self.find_flyball_interactions()
-
-            # print(f"Tracking data loaded for {self.fly.metadata.name}.")
-            # print(f"Fly tracking data: {self.flytrack.objects[0].dataset}")
-            # print(f"Ball tracking data: {self.balltrack.objects[0].dataset}")
-            # print(f"Skeleton tracking data: {self.skeletontrack.objects[0].dataset}")
 
         else:
             print(f"Invalid data for: {self.fly.metadata.name}. Skipping.")
@@ -2116,7 +2129,14 @@ class Experiment:
     A class for an experiment. This represents a folder containing multiple flies, each of which is represented by a Fly object.
     """
 
-    def __init__(self, directory, metadata_only=False, experiment_type=None):
+    def __init__(
+        self,
+        directory,
+        metadata_only=False,
+        experiment_type=None,
+        success_cutoff=False,
+        success_cutoff_method="final_event",
+    ):
         """
         Parameters
         ----------

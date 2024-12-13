@@ -574,7 +574,7 @@ class FlyTrackingData:
 
                     if self.final_event_init:
 
-                        print(f"Final event: {self.final_event_init}")
+                        # print(f"Final event: {self.final_event_init}")
 
                         # Get the time associated with the event following the final if any
 
@@ -605,7 +605,7 @@ class FlyTrackingData:
                     else:
                         self.success_cutoff_time_range = (0, None)
 
-                print(f"Success cutoff time range: {self.success_cutoff_time_range}")
+                # print(f"Success cutoff time range: {self.success_cutoff_time_range}")
 
                 self.filter_tracking_data(self.success_cutoff_time_range)
 

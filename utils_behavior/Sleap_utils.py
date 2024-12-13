@@ -613,11 +613,15 @@ class Sleap_Tracks:
                 obj.dataset = obj.dataset[
                     (obj.dataset["time"] >= start_time)
                     & (obj.dataset["time"] <= end_time)
-                ]
+                ].reset_index(drop=True)
             elif start_time is not None:
-                obj.dataset = obj.dataset[obj.dataset["time"] >= start_time]
+                obj.dataset = obj.dataset[
+                    obj.dataset["time"] >= start_time
+                ].reset_index(drop=True)
             elif end_time is not None:
-                obj.dataset = obj.dataset[obj.dataset["time"] <= end_time]
+                obj.dataset = obj.dataset[obj.dataset["time"] <= end_time].reset_index(
+                    drop=True
+                )
 
         return self.objects
 

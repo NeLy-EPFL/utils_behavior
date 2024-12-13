@@ -304,6 +304,7 @@ class Config:
 
     time_range: tuple = None
     success_cutoff: bool = False
+    success_cutoff_method: str = "final_event"
     tracks_smoothing: bool = True
 
     # Events related thresholds
@@ -338,17 +339,32 @@ class Config:
 
     hidden_value: int = -1
 
-    def set_experiment_time_range(self, experiment_type):
+    def set_experiment_config(self, experiment_type):
         """
-        Set the time range for the experiment based on the experiment type.
+        Set the configuration for the experiment based on the experiment type.
 
         Args:
-            experiment_type (str): The type of experiment, either 'pretraining' or 'training'.
+            experiment_type (str): The type of experiment, e.g., 'MagnetBlock', 'Training', etc.
         """
         if experiment_type == "MagnetBlock":
             self.time_range = (3600, None)
+            self.final_event_threshold = 100
+            # Add other specific settings for MagnetBlock
         else:
-            print(f"{experiment_type} has no particular time range.")
+            print(f"{experiment_type} has no particular configuration.")
+
+    def set_property(self, property_name, value):
+        """
+        Set the value of a property in the configuration.
+
+        Args:
+            property_name (str): The name of the property to set.
+            value: The value to set for the property.
+        """
+        if hasattr(self, property_name):
+            setattr(self, property_name, value)
+        else:
+            raise AttributeError(f"Config has no attribute named '{property_name}'")
 
 
 # @dataclass
@@ -551,13 +567,50 @@ class FlyTrackingData:
             self.adjusted_time = self.compute_adjusted_time()
 
             if self.fly.config.success_cutoff:
+                if self.fly.config.success_cutoff_method == "final_event":
+                    self.final_event_init = BallpushingMetrics(self).get_final_event(
+                        0, 0
+                    )
 
-                self.final_event_init = BallpushingMetrics(self).get_final_event(0, 0)
+                    if self.final_event_init:
 
-                if self.final_event_init:
-                    self.success_cutoff_time_range = (0, self.final_event_init[1])
+                        print(f"Final event: {self.final_event_init}")
+
+                        # Get the time associated with the event following the final if any
+
+                        final_time = (
+                            self.interaction_events[0][0][self.final_event_init[0]][1]
+                            + 1
+                        ) / self.fly.experiment.fps
+
+                        if self.final_event_init:
+                            # Include the final event by setting the cutoff time range to end just after the final event
+                            self.success_cutoff_time_range = (
+                                0,
+                                final_time,
+                            )
+                    else:
+                        self.success_cutoff_time_range = (0, None)
+
+                elif self.fly.config.success_cutoff_method == "max_event":
+                    max_distance_event = BallpushingMetrics(self).get_max_event(0, 0)
+
+                    if max_distance_event:
+                        max_distance_time = (
+                            self.interaction_events[0][0][max_distance_event[0]][1] + 1
+                        ) / self.fly.experiment.fps
+
+                        self.success_cutoff_time_range = (0, max_distance_time)
+
+                    else:
+                        self.success_cutoff_time_range = (0, None)
+
+                print(f"Success cutoff time range: {self.success_cutoff_time_range}")
 
                 self.filter_tracking_data(self.success_cutoff_time_range)
+
+                # Recompute interaction events based on the filtered data
+                self.interaction_events = self.find_flyball_interactions()
 
         else:
             print(f"Invalid data for: {self.fly.metadata.name}. Skipping.")
@@ -990,6 +1043,10 @@ class BallpushingMetrics:
             (ball_data["x_centre"] - ball_data["x_centre"].iloc[0]) ** 2
             + (ball_data["y_centre"] - ball_data["y_centre"].iloc[0]) ** 2
         )
+
+        # print(
+        #     f"euclidean_distance for ball_{ball_idx}: {ball_data['euclidean_distance']}"
+        # )
 
         if distance_type == "max":
             max_distance = ball_data["euclidean_distance"].max() - threshold
@@ -1644,6 +1701,8 @@ class Fly:
         experiment_type=None,
         as_individual=False,
         time_range=None,
+        success_cutoff=False,
+        success_cutoff_method="final_event",
     ):
         """
         Initialize a Fly object.
@@ -1681,7 +1740,11 @@ class Fly:
         self.experiment_type = experiment_type
 
         if self.experiment_type:
-            self.config.set_experiment_time_range(self.experiment_type)
+            self.config.set_experiment_config(self.experiment_type)
+
+        if success_cutoff:
+            self.config.set_property("success_cutoff", success_cutoff)
+            self.config.set_property("success_cutoff_method", success_cutoff_method)
 
         self.metadata = FlyMetadata(self)
 
@@ -2066,7 +2129,14 @@ class Experiment:
     A class for an experiment. This represents a folder containing multiple flies, each of which is represented by a Fly object.
     """
 
-    def __init__(self, directory, metadata_only=False, experiment_type=None):
+    def __init__(
+        self,
+        directory,
+        metadata_only=False,
+        experiment_type=None,
+        success_cutoff=False,
+        success_cutoff_method="final_event",
+    ):
         """
         Parameters
         ----------
@@ -2386,7 +2456,7 @@ class Dataset:
             if metrics == "coordinates":
                 for fly in self.flies:
                     data = self._prepare_dataset_coordinates(
-                        fly, downslampling_factor=None
+                        fly, downslampling_factor=10
                     )
                     Dataset.append(data)
 
@@ -2513,12 +2583,20 @@ class Dataset:
             return pd.DataFrame()  # Return an empty DataFrame
         else:
             skeleton_data = fly.tracking_data.skeletontrack.objects[0].dataset
+            ball_data = fly.tracking_data.balltrack.objects[0].dataset
             contact_events = fly.skeleton_metrics.find_contact_events()
 
             for event_idx, event in enumerate(contact_events):
                 start_idx, end_idx = event[0], event[1]
                 contact_data = skeleton_data.iloc[start_idx:end_idx]
+                event_ball_data = ball_data.iloc[start_idx:end_idx]
                 contact_data["contact_index"] = event_idx  # Add contact_index column
+
+                # Add ball data to the contact data
+
+                for col in event_ball_data.columns:
+                    contact_data[col] = event_ball_data[col].values
+
                 all_contact_data.append(contact_data)
 
                 contact_indices.append(event_idx)
@@ -2570,22 +2648,23 @@ class Dataset:
         if fly.f1_metrics:
             dataset["direction_match"] = fly.f1_metrics["direction_match"]
 
+            # Assign summaries condition based on F1 condition
+
+            if dataset["F1_condition"].iloc[0] == "control":
+                for key in fly.events_metrics.keys():
+                    if key == "fly_0_ball_0":
+                        dataset.at[key, "ball_condition"] = "test"
+            else:
+                for key in fly.events_metrics.keys():
+                    if key == "fly_0_ball_0":
+                        dataset.at[key, "ball_condition"] = "training"
+                    elif key == "fly_0_ball_1":
+                        dataset.at[key, "ball_condition"] = "test"
+
         # Add metadata to the dataset
         dataset = self._add_metadata(dataset, fly)
 
         # print(dataset.columns)
-
-        # Assign summaries condition based on F1 condition
-        if dataset["F1_condition"].iloc[0] == "control":
-            for key in fly.events_metrics.keys():
-                if key == "fly_0_ball_0":
-                    dataset.at[key, "ball_condition"] = "test"
-        else:
-            for key in fly.events_metrics.keys():
-                if key == "fly_0_ball_0":
-                    dataset.at[key, "ball_condition"] = "training"
-                elif key == "fly_0_ball_1":
-                    dataset.at[key, "ball_condition"] = "test"
 
         return dataset
 

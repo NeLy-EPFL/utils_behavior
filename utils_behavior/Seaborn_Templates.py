@@ -16,7 +16,7 @@ from . import Processing
 styling_templates = {
     "default": {
         "general": {
-            "figure.figsize": (20, 50),
+            "figure.figsize": (10, 6),
             "axes.titlesize": 16,
             "axes.labelsize": 14,
             "xtick.labelsize": 12,
@@ -33,7 +33,7 @@ styling_templates = {
         "boxplot": {
             "linewidth": 2.5,
             "showfliers": False,
-            "notch": True,
+            "notch": False,
         },
         "violinplot": {
             "linewidth": 2.5,
@@ -42,7 +42,7 @@ styling_templates = {
             "jitter": 0.2,
             "alpha": 0.7,
         },
-        "bs_notch": True,
+        "bs_notch": False,
         # Add more plot-specific parameters as needed
     },
     "large": {
@@ -346,27 +346,27 @@ def sns_plot(
         ax = sns.stripplot(data=data, x=kdims, y=metric, hue=colorby, **kwargs)
     elif plot_type == "boxplot":
         ax = sns.boxplot(data=data, x=kdims, y=metric, hue=colorby, **kwargs)
-        if bs_notch:
-            for i, artist in enumerate(ax.artists):
-                group = artist.get_label()
-                if group in ci_dict:
-                    lower, upper = ci_dict[group]
-                    median = data[data[kdims] == group][metric].median()
-                    artist.set_edgecolor("black")
-                    artist.set_linewidth(2)
-                    ax.plot(
-                        [i - 0.2, i + 0.2],
-                        [lower, lower],
-                        color="black",
-                        linestyle="--",
-                    )
-                    ax.plot(
-                        [i - 0.2, i + 0.2],
-                        [upper, upper],
-                        color="black",
-                        linestyle="--",
-                    )
-                    ax.plot([i, i], [lower, upper], color="black", linestyle="--")
+        # if bs_notch:
+        #     for i, artist in enumerate(ax.artists):
+        #         group = artist.get_label()
+        #         if group in ci_dict:
+        #             lower, upper = ci_dict[group]
+        #             median = data[data[kdims] == group][metric].median()
+        #             artist.set_edgecolor("black")
+        #             artist.set_linewidth(2)
+        #             ax.plot(
+        #                 [i - 0.2, i + 0.2],
+        #                 [lower, lower],
+        #                 color="black",
+        #                 linestyle="--",
+        #             )
+        #             ax.plot(
+        #                 [i - 0.2, i + 0.2],
+        #                 [upper, upper],
+        #                 color="black",
+        #                 linestyle="--",
+        #             )
+        #             ax.plot([i, i], [lower, upper], color="black", linestyle="--")
     elif plot_type == "violinplot":
         ax = sns.violinplot(data=data, x=kdims, y=metric, hue=colorby, **kwargs)
     elif plot_type == "jitterboxplot":
@@ -375,27 +375,27 @@ def sns_plot(
         ax = sns.boxplot(
             data=data, x=metric, y=kdims, hue=colorby, **{**kwargs, **boxplot_params}
         )
-        if bs_notch:
-            for i, artist in enumerate(ax.artists):
-                group = artist.get_label()
-                if group in ci_dict:
-                    lower, upper = ci_dict[group]
-                    median = data[data[kdims] == group][metric].median()
-                    artist.set_edgecolor("black")
-                    artist.set_linewidth(2)
-                    ax.plot(
-                        [i - 0.2, i + 0.2],
-                        [lower, lower],
-                        color="black",
-                        linestyle="--",
-                    )
-                    ax.plot(
-                        [i - 0.2, i + 0.2],
-                        [upper, upper],
-                        color="black",
-                        linestyle="--",
-                    )
-                    ax.plot([i, i], [lower, upper], color="black", linestyle="--")
+        # if bs_notch:
+        #     for i, artist in enumerate(ax.artists):
+        #         group = artist.get_label()
+        #         if group in ci_dict:
+        #             lower, upper = ci_dict[group]
+        #             median = data[data[kdims] == group][metric].median()
+        #             artist.set_edgecolor("black")
+        #             artist.set_linewidth(2)
+        #             ax.plot(
+        #                 [i - 0.2, i + 0.2],
+        #                 [lower, lower],
+        #                 color="black",
+        #                 linestyle="--",
+        #             )
+        #             ax.plot(
+        #                 [i - 0.2, i + 0.2],
+        #                 [upper, upper],
+        #                 color="black",
+        #                 linestyle="--",
+        #             )
+        #             ax.plot([i, i], [lower, upper], color="black", linestyle="--")
 
         # Apply stripplot-specific parameters
         stripplot_params = styling_templates[style_template].get("stripplot", {})

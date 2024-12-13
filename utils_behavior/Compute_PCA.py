@@ -1,74 +1,64 @@
 import pandas as pd
-from sklearn.decomposition import IncrementalPCA, PCA
+import numpy as np
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 import pyarrow.feather as feather
+import logging
 
-def run_pca_and_save(
-    data,
-    explained_variance_threshold=0.95,
-    batch_size=1000,
-    savepath=None,
-):
+logging.basicConfig(level=logging.INFO)
 
-    print("Applying Incremental PCA...")
+def prepare_features(data):
+    # Assuming all columns except metadata are features
+    metadata_columns = ['experiment', 'Nickname', 'Brain region', 'Date', 'Genotype', 'Period', 'FeedingState', 'Orientation', 'Light', 'Crossing', 'contact_index', 'duration', 'fly']
+    feature_columns = data.columns.difference(metadata_columns)
+    return data[feature_columns].values
 
-    # Extract features and metadata
-    features = data.filter(regex="^(x|y)_").values
-    metadata = data.drop(columns=data.filter(regex="^(x|y)_").columns)
-    contact_indices = (
-        data["contact_index"]
-        if "contact_index" in data.columns
-        else pd.Series([None] * len(data))
-    )
+def run_pca_and_save(data, explained_variance_threshold=0.95, savepath=None):
+    logging.info("Preparing features...")
+    features = prepare_features(data)
+    metadata = data.drop(columns=features.columns)
 
-    # Compute the explained variance ratio using PCA
+    logging.info("Normalizing features...")
+    scaler = StandardScaler()
+    features_normalized = scaler.fit_transform(features)
+
+    logging.info("Applying PCA...")
     pca = PCA()
-    pca.fit(features)
-    explained_variance_ratio = pca.explained_variance_ratio_
+    pca_results = pca.fit_transform(features_normalized)
 
-    # Determine the number of components to keep based on the explained variance threshold
-    cumulative_explained_variance = explained_variance_ratio.cumsum()
-    n_components = (
-        cumulative_explained_variance < explained_variance_threshold
-    ).sum() + 1
+    # Determine the number of components to keep
+    cumulative_explained_variance = np.cumsum(pca.explained_variance_ratio_)
+    n_components = np.argmax(cumulative_explained_variance >= explained_variance_threshold) + 1
 
-    print(f"Number of components to keep: {n_components}")
+    logging.info(f"Number of components to keep: {n_components}")
 
-    # Apply Incremental PCA with the determined number of components
-    ipca = IncrementalPCA(n_components=n_components, batch_size=batch_size)
-    for batch in range(0, features.shape[0], batch_size):
-        ipca.partial_fit(features[batch : batch + batch_size])
+    # Truncate PCA results to keep only the required number of components
+    pca_results = pca_results[:, :n_components]
 
-    pca_results = ipca.transform(features)
+    logging.info("PCA completed.")
 
-    print("Incremental PCA completed.")
-
-    # Combine PCA results with metadata and contact indices
+    # Combine PCA results with metadata
     pca_df = pd.DataFrame(pca_results, columns=[f"PCA Component {i+1}" for i in range(n_components)])
     combined_df = pd.concat([pca_df, metadata.reset_index(drop=True)], axis=1)
-    combined_df["contact_index"] = contact_indices.reset_index(drop=True)
 
-    # Save the combined results to a Feather file
     if savepath:
         feather.write_feather(combined_df, savepath)
-        print(f"PCA results saved to {savepath}")
+        logging.info(f"PCA results saved to {savepath}")
 
     return combined_df
 
-# Example usage for Step 1
 if __name__ == "__main__":
-    data_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241209_ContactData/241209_Pooled_contact_data.feather"
-    pca_savepath = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/PCA/241209_pca_data.feather"
+    data_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241209_Transformed_contact_data.feather"
+    pca_savepath = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/PCA/241210_pca_data_transformed.feather"
 
-    # Load your data
-    print(f"Loading data from {data_path}...")
-    data = pd.read_feather(data_path)
+    logging.info(f"Loading transformed data from {data_path}...")
+    try:
+        data = pd.read_feather(data_path)
+    except Exception as e:
+        logging.error(f"Error loading data: {e}")
+        exit(1)
 
-    # Run PCA and save the results
-    combined_df = run_pca_and_save(
-        data,
-        explained_variance_threshold=0.95,
-        batch_size=1000,
-        savepath=pca_savepath,
-    )
+    combined_df = run_pca_and_save(data, explained_variance_threshold=0.95, savepath=pca_savepath)
 
-    print(combined_df)
+    logging.info(combined_df.head())
+    logging.info(combined_df.columns)

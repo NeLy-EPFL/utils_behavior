@@ -111,23 +111,28 @@ def run_tsne_or_umap(
 
 
 if __name__ == "__main__":
-    pca_data_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/PCA/241209_pca_data.feather"
-    results_savepath = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/TSNE/241209_behavior_map_umap.feather"
+    pca_data_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/PCA/241210_pca_data_transformed_New.feather"
+    results_savepath = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/TSNE/241210_behavior_map_tsne.feather"
+    subsample = False  # Set to False to disable subsampling
+    target_size = 1000000  # Adjust this value based on your GPU capabilities
 
     # Load PCA data
     print(f"Loading PCA data from {pca_data_path}...")
     combined_data = feather.read_feather(pca_data_path)
 
-    # Subsample the data
-    target_size = 1000000  # Adjust this value based on your GPU capabilities
-    subsampled_data = stratified_subsample(combined_data, target_size)
-    print(f"Subsampled data size: {len(subsampled_data)}")
+    if subsample:
+        # Subsample the data
+        subsampled_data = stratified_subsample(combined_data, target_size)
+        print(f"Subsampled data size: {len(subsampled_data)}")
+    else:
+        subsampled_data = combined_data
+        print(f"Using full dataset size: {len(subsampled_data)}")
 
     # Run t-SNE or UMAP on the subsampled PCA data
     results_df = run_tsne_or_umap(
         subsampled_data,
-        method="umap",  # Change to "umap" if you want to use UMAP
-        perplexity=10000,
+        method="tsne",  # Change to "umap" if you want to use UMAP
+        perplexity=30,
         n_iter=3000,
         n_neighbors=15,
         min_dist=0.1,

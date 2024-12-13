@@ -5,6 +5,7 @@ from scipy.fft import fft
 from tsfresh import extract_features
 from tsfresh.feature_extraction import ComprehensiveFCParameters
 from sklearn.feature_selection import VarianceThreshold
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 def calculate_derivatives(group, keypoint_columns):
     velocities = group[keypoint_columns].diff()
@@ -48,34 +49,46 @@ def calculate_fourier_features(group, keypoint_columns):
         fft_results[f"{col}_dom_freq_magnitude"] = np.abs(fft_vals[dominant_freq])
     return fft_results
 
-def calculate_tsfresh_features(group, keypoint_columns):
+def calculate_tsfresh_features(group, keypoint_columns, n_jobs=1):
     tsfresh_data = group[['frame'] + keypoint_columns.tolist()]
     tsfresh_data['id'] = 0  # Single id for the group
-    extracted_features = extract_features(tsfresh_data, column_id='id', column_sort='frame', default_fc_parameters=ComprehensiveFCParameters())
+    extracted_features = extract_features(tsfresh_data, column_id='id', column_sort='frame', default_fc_parameters=ComprehensiveFCParameters(), n_jobs=n_jobs)
     extracted_features.columns = [f"tsfresh_{col}" for col in extracted_features.columns]
     return extracted_features.iloc[0].to_dict()
 
-def transform_data(data, features):
+def process_group(fly, contact_index, group, features, keypoint_columns, metadata_columns, n_jobs):
+    duration = group["frame"].max() - group["frame"].min() + 1
+    metadata = group[metadata_columns].iloc[0]
+    row = {"duration": duration, "fly": fly}
+    if 'derivatives' in features:
+        row.update(calculate_derivatives(group, keypoint_columns))
+    if 'relative_positions' in features:
+        row.update(calculate_relative_positions(group, keypoint_columns))
+    if 'statistical_measures' in features:
+        row.update(calculate_statistical_measures(group, keypoint_columns))
+    if 'fourier' in features:
+        row.update(calculate_fourier_features(group, keypoint_columns))
+    if 'tsfresh' in features:
+        row.update(calculate_tsfresh_features(group, keypoint_columns, n_jobs=n_jobs))
+    row.update(metadata.to_dict())
+    return row
+
+def transform_data(data, features, n_jobs=1):
+    if n_jobs < 1 and n_jobs != -1:
+        n_jobs = 1  # Set to 1 if n_jobs is invalid
+    elif n_jobs == -1:
+        n_jobs = None  # Use all available CPU cores
+
     transformed_data = []
     keypoint_columns = data.filter(regex="^(x|y)_").columns
     metadata_columns = ['experiment', 'Nickname', 'Brain region', 'Date', 'Genotype', 'Period', 'FeedingState', 'Orientation', 'Light', 'Crossing', 'contact_index']
 
-    for (fly, contact_index), group in data.groupby(['fly', 'contact_index']):
-        duration = group["frame"].max() - group["frame"].min() + 1
-        metadata = group[metadata_columns].iloc[0]
-        row = {"duration": duration, "fly": fly}
-        if 'derivatives' in features:
-            row.update(calculate_derivatives(group, keypoint_columns))
-        if 'relative_positions' in features:
-            row.update(calculate_relative_positions(group, keypoint_columns))
-        if 'statistical_measures' in features:
-            row.update(calculate_statistical_measures(group, keypoint_columns))
-        if 'fourier' in features:
-            row.update(calculate_fourier_features(group, keypoint_columns))
-        if 'tsfresh' in features:
-            row.update(calculate_tsfresh_features(group, keypoint_columns))
-        row.update(metadata.to_dict())
-        transformed_data.append(row)
+    with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+        futures = [executor.submit(process_group, fly, contact_index, group, features, keypoint_columns, metadata_columns, n_jobs) 
+                   for (fly, contact_index), group in data.groupby(['fly', 'contact_index'])]
+        
+        for future in as_completed(futures):
+            transformed_data.append(future.result())
 
     return pd.DataFrame(transformed_data)
 
@@ -96,16 +109,17 @@ def feature_selection(data):
 
 def main():
     input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241209_ContactData/241209_Pooled_contact_data.feather"
-    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241210_Transformed_contact_data_New.feather"
+    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241210_Transformed_contact_data_Complete.feather"
     
     # List of features to include in the transformation
     features = ['derivatives', 'relative_positions', 'statistical_measures', 'fourier', 'tsfresh']
+    n_jobs = -1  # Use all available CPU cores
 
     print(f"Loading data from {input_path}...")
     data = pd.read_feather(input_path)
 
     print(f"Transforming data using features: {features}")
-    transformed_data = transform_data(data, features)
+    transformed_data = transform_data(data, features, n_jobs=n_jobs)
 
     print("Selecting features...")
     selected_data = feature_selection(transformed_data)

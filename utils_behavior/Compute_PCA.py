@@ -11,12 +11,12 @@ def prepare_features(data):
     # Assuming all columns except metadata are features
     metadata_columns = ['experiment', 'Nickname', 'Brain region', 'Date', 'Genotype', 'Period', 'FeedingState', 'Orientation', 'Light', 'Crossing', 'contact_index', 'duration', 'fly']
     feature_columns = data.columns.difference(metadata_columns)
-    return data[feature_columns].values
+    return data[feature_columns].values, feature_columns
 
 def run_pca_and_save(data, explained_variance_threshold=0.95, savepath=None):
     logging.info("Preparing features...")
-    features = prepare_features(data)
-    metadata = data.drop(columns=features.columns)
+    features, feature_columns = prepare_features(data)
+    metadata = data.drop(columns=feature_columns)
 
     logging.info("Normalizing features...")
     scaler = StandardScaler()
@@ -48,8 +48,8 @@ def run_pca_and_save(data, explained_variance_threshold=0.95, savepath=None):
     return combined_df
 
 if __name__ == "__main__":
-    data_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241209_Transformed_contact_data.feather"
-    pca_savepath = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/PCA/241210_pca_data_transformed.feather"
+    data_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241210_Transformed_contact_data_New.feather"
+    pca_savepath = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/PCA/241210_pca_data_transformed_New.feather"
 
     logging.info(f"Loading transformed data from {data_path}...")
     try:

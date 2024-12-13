@@ -107,8 +107,8 @@ if __name__ == "__main__":
 
     # Define hyperparameter sets
     hyperparameter_sets = [
-        {"perplexity": 30, "n_iter": 3000, "learning_rate": 200},
-        {"perplexity": 50, "n_iter": 5000, "learning_rate": 100},
+        {"perplexity": 100, "n_iter": 10000, "learning_rate": 200},
+        {"perplexity": 100, "n_iter": 10000, "learning_rate": 100},
         {"perplexity": 100, "n_iter": 10000, "learning_rate": 50},
         # Add more hyperparameter sets as needed
     ]

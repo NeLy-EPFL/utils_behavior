@@ -922,12 +922,14 @@ class BallpushingMetrics:
             for ball_idx, events in ball_dict.items():
                 key = f"fly_{fly_idx}_ball_{ball_idx}"
 
-                if self.fly.experiment_type == "F1":
-                    nb_events = self.get_adjusted_nb_events(
-                        fly_idx, ball_idx, signif=False
-                    )
-                else:
-                    nb_events = len(events)
+                # if self.fly.experiment_type == "F1":
+                #     nb_events = self.get_adjusted_nb_events(
+                #         fly_idx, ball_idx, signif=False
+                #     )
+                # else:
+                #     nb_events = len(events)
+
+                nb_events = self.get_adjusted_nb_events(fly_idx, ball_idx, signif=False)
 
                 max_event = self.get_max_event(fly_idx, ball_idx)
                 max_distance = self.get_max_distance(fly_idx, ball_idx)

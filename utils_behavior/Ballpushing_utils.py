@@ -1004,37 +1004,50 @@ class BallpushingMetrics:
 
         key = f"fly_{fly_idx}_ball_{ball_idx}"
 
-        if self.fly.metadata.F1_condition == "control":
-            if ball_idx == 0 and self.tracking_data.exit_time is not None:
-                adjusted_nb_events = (
-                    len(events)
-                    * self.fly.config.adjusted_events_normalisation
-                    / (self.tracking_data.duration - self.tracking_data.exit_time)
-                    if self.tracking_data.duration - self.tracking_data.exit_time > 0
-                    else 0
-                )
-        else:
-            if ball_idx == 1 and self.tracking_data.exit_time is not None:
-                adjusted_nb_events = (
-                    len(events)
-                    * self.fly.config.adjusted_events_normalisation
-                    / (self.tracking_data.duration - self.tracking_data.exit_time)
-                    if self.tracking_data.duration - self.tracking_data.exit_time > 0
-                    else 0
-                )
-            elif ball_idx == 0:
-                adjusted_nb_events = (
-                    len(events)
-                    * self.fly.config.adjusted_events_normalisation
-                    / self.tracking_data.exit_time
-                    if (
-                        self.tracking_data.exit_time
-                        and self.tracking_data.exit_time > 0
+        if hasattr(self.fly.metadata, "F1_condition"):
+
+            if self.fly.metadata.F1_condition == "control":
+                if ball_idx == 0 and self.tracking_data.exit_time is not None:
+                    adjusted_nb_events = (
+                        len(events)
+                        * self.fly.config.adjusted_events_normalisation
+                        / (self.tracking_data.duration - self.tracking_data.exit_time)
+                        if self.tracking_data.duration - self.tracking_data.exit_time
+                        > 0
+                        else 0
                     )
-                    else len(events)
-                    * self.fly.config.adjusted_events_normalisation
-                    / self.tracking_data.duration
-                )
+            else:
+                if ball_idx == 1 and self.tracking_data.exit_time is not None:
+                    adjusted_nb_events = (
+                        len(events)
+                        * self.fly.config.adjusted_events_normalisation
+                        / (self.tracking_data.duration - self.tracking_data.exit_time)
+                        if self.tracking_data.duration - self.tracking_data.exit_time
+                        > 0
+                        else 0
+                    )
+                elif ball_idx == 0:
+                    adjusted_nb_events = (
+                        len(events)
+                        * self.fly.config.adjusted_events_normalisation
+                        / self.tracking_data.exit_time
+                        if (
+                            self.tracking_data.exit_time
+                            and self.tracking_data.exit_time > 0
+                        )
+                        else len(events)
+                        * self.fly.config.adjusted_events_normalisation
+                        / self.tracking_data.duration
+                    )
+
+        else:
+            adjusted_nb_events = (
+                len(events)
+                * self.fly.config.adjusted_events_normalisation
+                / self.tracking_data.duration
+                if self.tracking_data.duration > 0
+                else 0
+            )
 
         return adjusted_nb_events
 
@@ -1621,19 +1634,27 @@ class SkeletonMetrics:
     def find_contact_events(
         self, threshold=None, gap_between_events=None, event_min_length=None
     ):
-
         if threshold is None:
             threshold = self.fly.experiment.config.contact_threshold
-
         if gap_between_events is None:
             gap_between_events = self.fly.experiment.config.gap_between_contacts
-
         if event_min_length is None:
             event_min_length = self.fly.experiment.config.contact_min_length
 
         fly_data = self.fly.tracking_data.skeletontrack.objects[0].dataset
-
         ball_data = self.ball.objects[0].dataset
+
+        # Apply success_cutoff if enabled
+        if (
+            self.fly.config.success_cutoff
+            and self.fly.tracking_data.success_cutoff_time_range
+        ):
+            end_frame = int(
+                self.fly.tracking_data.success_cutoff_time_range[1]
+                * self.fly.experiment.fps
+            )
+            fly_data = fly_data.iloc[:end_frame]
+            ball_data = ball_data.iloc[:end_frame]
 
         contact_events = find_interaction_events(
             fly_data,
@@ -1644,7 +1665,6 @@ class SkeletonMetrics:
             gap_between_events=gap_between_events,
             event_min_length=event_min_length,
         )
-
         return contact_events
 
     def compute_ball_displacements(self):
@@ -2586,6 +2606,18 @@ class Dataset:
         else:
             skeleton_data = fly.tracking_data.skeletontrack.objects[0].dataset
             ball_data = fly.tracking_data.balltrack.objects[0].dataset
+
+            # Apply success_cutoff if enabled
+            if (
+                fly.config.success_cutoff
+                and fly.tracking_data.success_cutoff_time_range
+            ):
+                end_frame = int(
+                    fly.tracking_data.success_cutoff_time_range[1] * fly.experiment.fps
+                )
+                skeleton_data = skeleton_data.iloc[:end_frame]
+                ball_data = ball_data.iloc[:end_frame]
+
             contact_events = fly.skeleton_metrics.find_contact_events()
 
             for event_idx, event in enumerate(contact_events):
@@ -2595,22 +2627,18 @@ class Dataset:
                 contact_data["contact_index"] = event_idx  # Add contact_index column
 
                 # Add ball data to the contact data
-
                 for col in event_ball_data.columns:
                     contact_data[col] = event_ball_data[col].values
 
                 all_contact_data.append(contact_data)
-
                 contact_indices.append(event_idx)
 
-        if all_contact_data:
-            combined_data = pd.concat(all_contact_data, ignore_index=True)
-            combined_data.fillna(hidden_value, inplace=True)
-            combined_data = self._add_metadata(combined_data, fly)
-        else:
-            combined_data = (
-                pd.DataFrame()
-            )  # Return an empty DataFrame if no contact data
+            if all_contact_data:
+                combined_data = pd.concat(all_contact_data, ignore_index=True)
+                combined_data.fillna(hidden_value, inplace=True)
+                combined_data = self._add_metadata(combined_data, fly)
+            else:
+                combined_data = pd.DataFrame()
 
         return combined_data
 

@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 
 num_cores = os.cpu_count()
-n_jobs = num_cores  # Use all available CPU cores
+n_jobs = min(num_cores, 10)  # Limit to 4 CPU cores to avoid crashing the computer
 
 
 def calculate_derivatives(group, keypoint_columns):
@@ -100,7 +100,7 @@ def process_group(
     return row
 
 
-def transform_data(data, features, n_jobs=num_cores):
+def transform_data(data, features, n_jobs=num_cores, chunk_size=100):
     transformed_data = []
     keypoint_columns = data.filter(regex="^(x|y)_").columns
     metadata_columns = [
@@ -122,27 +122,30 @@ def transform_data(data, features, n_jobs=num_cores):
     logging.info(f"Processing {total_groups} groups with {n_jobs} workers")
 
     start_time = time.time()
-    with ProcessPoolExecutor(max_workers=n_jobs) as executor:
-        futures = [
-            executor.submit(
-                process_group,
-                fly,
-                contact_index,
-                group,
-                features,
-                keypoint_columns,
-                metadata_columns,
-                n_jobs,
-            )
-            for (fly, contact_index), group in data.groupby(["fly", "contact_index"])
-        ]
-
-        for i, future in enumerate(as_completed(futures), 1):
-            transformed_data.append(future.result())
-            if i % 100 == 0 or i == total_groups:
-                logging.info(
-                    f"Processed {i}/{total_groups} groups ({i/total_groups:.2%})"
+    groups = list(data.groupby(["fly", "contact_index"]))
+    for i in range(0, total_groups, chunk_size):
+        chunk = groups[i : i + chunk_size]
+        with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+            futures = [
+                executor.submit(
+                    process_group,
+                    fly,
+                    contact_index,
+                    group,
+                    features,
+                    keypoint_columns,
+                    metadata_columns,
+                    n_jobs,
                 )
+                for (fly, contact_index), group in chunk
+            ]
+
+            for j, future in enumerate(as_completed(futures), 1):
+                transformed_data.append(future.result())
+                if (i + j) % 100 == 0 or (i + j) == total_groups:
+                    logging.info(
+                        f"Processed {i + j}/{total_groups} groups ({(i + j)/total_groups:.2%})"
+                    )
 
     end_time = time.time()
     logging.info(
@@ -196,7 +199,9 @@ def feature_selection(data):
     return final_data
 
 
-def main(input_path, output_path, features, n_jobs=num_cores, test_rows=None):
+def main(
+    input_path, output_path, features, n_jobs=num_cores, test_rows=None, chunk_size=100
+):
     logging.info(f"Loading data from {input_path}...")
     data = pd.read_feather(input_path)
     logging.info(f"Loaded data shape: {data.shape}")
@@ -208,7 +213,9 @@ def main(input_path, output_path, features, n_jobs=num_cores, test_rows=None):
         )
 
     logging.info(f"Transforming data using features: {features}")
-    transformed_data = transform_data(data, features, n_jobs=n_jobs)
+    transformed_data = transform_data(
+        data, features, n_jobs=n_jobs, chunk_size=chunk_size
+    )
     logging.info(f"Transformed data shape: {transformed_data.shape}")
 
     feather.write_feather(transformed_data, output_path)
@@ -239,8 +246,15 @@ if __name__ == "__main__":
     ]
 
     num_cores = os.cpu_count()
-    n_jobs = num_cores
+    n_jobs = min(num_cores, 10)  # Limit to 4 CPU cores to avoid crashing the computer
 
     test_rows = 100  # Use a small subset for testing
 
-    main(input_path, output_path, features, n_jobs=n_jobs, test_rows=None)
+    main(
+        input_path,
+        output_path,
+        features,
+        n_jobs=n_jobs,
+        test_rows=None,
+        chunk_size=1000,
+    )

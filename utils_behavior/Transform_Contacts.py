@@ -78,7 +78,14 @@ def process_group(
 ):
     duration = group["frame"].max() - group["frame"].min() + 1
     metadata = group[metadata_columns].iloc[0]
-    row = {"duration": duration, "fly": fly}
+    row = {
+        "duration": duration,
+        "fly": fly,
+        "start": group["time"].iloc[0],
+        "end": group["time"].iloc[-1],
+        "start_frame": group["frame"].iloc[0],
+        "end_frame": group["frame"].iloc[-1],
+    }
     if "derivatives" in features:
         row.update(calculate_derivatives(group, keypoint_columns))
     if "relative_positions" in features:
@@ -97,6 +104,7 @@ def transform_data(data, features, n_jobs=num_cores):
     transformed_data = []
     keypoint_columns = data.filter(regex="^(x|y)_").columns
     metadata_columns = [
+        "flypath",
         "experiment",
         "Nickname",
         "Brain region",
@@ -219,15 +227,15 @@ def main(input_path, output_path, features, n_jobs=num_cores, test_rows=None):
 
 
 if __name__ == "__main__":
-    input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241213_FinalEventCutoffData/241209_Pooled_contact_data.feather"
-    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241216_Transformed_contact_data_derivatives.feather"
+    input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241216_FinalEventCutoffData_norm/241209_Pooled_contact_data.feather"
+    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241217_Transformed_contact_data_full.feather"
 
     features = [
         "derivatives",
         "relative_positions",
-        # "statistical_measures",
-        # "fourier",
-        # "tsfresh",
+        "statistical_measures",
+        "fourier",
+        "tsfresh",
     ]
 
     num_cores = os.cpu_count()

@@ -234,15 +234,15 @@ def main(
 
 
 if __name__ == "__main__":
-    input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241216_FinalEventCutoffData_norm/241209_Pooled_contact_data.feather"
-    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241217_Transformed_contact_data_full.feather"
+    input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241217_FinalEventCutoffData_norm/contact_data/241209_Pooled_contact_data.feather"
+    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241218_Transformed_contact_data_derivative.feather"
 
     features = [
         "derivatives",
         "relative_positions",
-        "statistical_measures",
-        "fourier",
-        "tsfresh",
+        #"statistical_measures",
+        #"fourier",
+        #"tsfresh",
     ]
 
     num_cores = os.cpu_count()

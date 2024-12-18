@@ -1538,7 +1538,22 @@ class SkeletonMetrics:
         self.ball = self.fly.tracking_data.balltrack
         self.preprocess_ball()
 
-        self.contacts = self.find_contact_events()
+        # Find all contact events
+        self.all_contacts = self.find_contact_events()
+
+        # print(f"Number of contact events: {len(self.all_contacts)}")
+
+        # Determine the final contact if success_cutoff is enabled
+        if self.fly.config.success_cutoff:
+            final_contact_idx, _ = self.get_final_contact()
+            if final_contact_idx is not None:
+                self.contacts = self.all_contacts[: final_contact_idx + 1]
+            else:
+                self.contacts = self.all_contacts
+        else:
+            self.contacts = self.all_contacts
+
+        # print(f"Number of final contact events: {len(self.contacts)}")
 
         self.ball_displacements = self.compute_ball_displacements()
 
@@ -1644,18 +1659,7 @@ class SkeletonMetrics:
         fly_data = self.fly.tracking_data.skeletontrack.objects[0].dataset
         ball_data = self.ball.objects[0].dataset
 
-        # Apply success_cutoff if enabled
-        if (
-            self.fly.config.success_cutoff
-            and self.fly.tracking_data.success_cutoff_time_range
-        ):
-            end_frame = int(
-                self.fly.tracking_data.success_cutoff_time_range[1]
-                * self.fly.experiment.fps
-            )
-            fly_data = fly_data.iloc[:end_frame]
-            ball_data = ball_data.iloc[:end_frame]
-
+        # Find all contact events
         contact_events = find_interaction_events(
             fly_data,
             ball_data,
@@ -1665,7 +1669,70 @@ class SkeletonMetrics:
             gap_between_events=gap_between_events,
             event_min_length=event_min_length,
         )
+
+        # print(f"Number of contact events: {len(contact_events)}")
+        # print(f"Contact events: {contact_events}")
+
         return contact_events
+
+    def find_contact_by_distance(self, threshold, distance_type="max"):
+        ball_data = self.ball.objects[0].dataset
+
+        ball_data["euclidean_distance"] = np.sqrt(
+            (
+                ball_data["x_centre_preprocessed"]
+                - ball_data["x_centre_preprocessed"].iloc[0]
+            )
+            ** 2
+            + (
+                ball_data["y_centre_preprocessed"]
+                - ball_data["y_centre_preprocessed"].iloc[0]
+            )
+            ** 2
+        )
+
+        if distance_type == "max":
+            max_distance = ball_data["euclidean_distance"].max() - threshold
+            distance_check = (
+                lambda event: ball_data.loc[
+                    event[0] : event[1], "euclidean_distance"
+                ].max()
+                >= max_distance
+            )
+        elif distance_type == "threshold":
+            distance_check = (
+                lambda event: ball_data.loc[
+                    event[0] : event[1], "euclidean_distance"
+                ].max()
+                >= threshold
+            )
+        else:
+            raise ValueError("Invalid distance_type. Use 'max' or 'threshold'.")
+
+        try:
+            event, event_index = next(
+                (event, i)
+                for i, event in enumerate(self.all_contacts)
+                if distance_check(event)
+            )
+        except StopIteration:
+            event, event_index = None, None
+
+        return event, event_index
+
+    def get_final_contact(self, threshold=None, init=False):
+        if threshold is None:
+            threshold = self.fly.config.final_event_threshold
+
+        final_contact, final_contact_idx = self.find_contact_by_distance(
+            threshold, distance_type="threshold"
+        )
+
+        final_contact_time = (
+            final_contact[0] / self.fly.experiment.fps if final_contact else None
+        )
+
+        return final_contact_idx, final_contact_time
 
     def compute_ball_displacements(self):
         """
@@ -2607,18 +2674,13 @@ class Dataset:
             skeleton_data = fly.tracking_data.skeletontrack.objects[0].dataset
             ball_data = fly.tracking_data.balltrack.objects[0].dataset
 
-            # Apply success_cutoff if enabled
-            if (
-                fly.config.success_cutoff
-                and fly.tracking_data.success_cutoff_time_range
-            ):
-                end_frame = int(
-                    fly.tracking_data.success_cutoff_time_range[1] * fly.experiment.fps
-                )
-                skeleton_data = skeleton_data.iloc[:end_frame]
-                ball_data = ball_data.iloc[:end_frame]
+            contact_events = fly.skeleton_metrics.all_contacts
 
-            contact_events = fly.skeleton_metrics.find_contact_events()
+            # Apply success_cutoff if enabled
+            if fly.config.success_cutoff:
+                final_contact_idx, _ = fly.skeleton_metrics.get_final_contact()
+                if final_contact_idx is not None:
+                    contact_events = contact_events[: final_contact_idx + 1]
 
             for event_idx, event in enumerate(contact_events):
                 start_idx, end_idx = event[0], event[1]

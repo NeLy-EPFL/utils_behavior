@@ -360,6 +360,8 @@ def create_groupby_jitterboxplots(
 
     # Get the group value for the control group
     if control:
+        
+        print(f"Control data size: {len(control_data)}")  # Debug print
         control_group = control_data[groupby].unique()[0]
         if debug:
             print(f"Control group: {control_group}")  # Debug print

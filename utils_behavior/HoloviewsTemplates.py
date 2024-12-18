@@ -39,7 +39,7 @@ hv_main = {
         "invert_axes": True,
         "show_grid": True,
         "fontscale": 1.5,
-        "title": "",
+        # "title": "",
     },
     "hist": {
         "cmap": "Category10",
@@ -512,7 +512,11 @@ def create_groupby_jitterboxplots(
 
     # Use control argument to get control_data
     if control:
+
+        print(f"Control: {control}")
         control_data = data[data[kdims].isin(control)]
+
+        print(f"Control data size: {len(control_data)}")  # Debug print
         if debug:
             print(f"Control data size: {len(control_data)}")  # Debug print
     else:

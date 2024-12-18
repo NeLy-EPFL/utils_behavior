@@ -263,11 +263,21 @@ def filter_experiments(source, **criteria):
     return flies
 
 
-def load_fly(mp4_file, experiment, experiment_type):
+def load_fly(
+    mp4_file,
+    experiment,
+    experiment_type,
+    success_cutoff=False,
+    success_cutoff_method="final_event",
+):
     print(f"Loading fly from {mp4_file.parent}")
     try:
         fly = Fly(
-            mp4_file.parent, experiment=experiment, experiment_type=experiment_type
+            mp4_file.parent,
+            experiment=experiment,
+            experiment_type=experiment_type,
+            success_cutoff=success_cutoff,
+            success_cutoff_method=success_cutoff_method,
         )
         if fly.tracking_data and fly.tracking_data.valid_data:
             return fly
@@ -1732,6 +1742,8 @@ class SkeletonMetrics:
             final_contact[0] / self.fly.experiment.fps if final_contact else None
         )
 
+        # print(f"final_contact_idx from skeleton metric: {final_contact_idx}")
+
         return final_contact_idx, final_contact_time
 
     def compute_ball_displacements(self):
@@ -2249,6 +2261,9 @@ class Experiment:
 
         self.experiment_type = experiment_type
 
+        self.success_cutoff = success_cutoff
+        self.success_cutoff_method = success_cutoff_method
+
         # If metadata_only is True, don't load the flies
         if not metadata_only:
             self.flies = self.load_flies()
@@ -2352,7 +2367,14 @@ class Experiment:
             with Pool(processes=os.cpu_count()) as pool:
                 results = [
                     pool.apply_async(
-                        load_fly, args=(mp4_file, self, self.experiment_type)
+                        load_fly,
+                        args=(
+                            mp4_file,
+                            self,
+                            self.experiment_type,
+                            self.success_cutoff,
+                            self.success_cutoff_method,
+                        ),
                     )
                     for mp4_file in mp4_files
                 ]
@@ -2362,7 +2384,13 @@ class Experiment:
                         flies.append(fly)
         else:
             for mp4_file in mp4_files:
-                fly = load_fly(mp4_file, self, experiment_type=self.experiment_type)
+                fly = load_fly(
+                    mp4_file,
+                    self,
+                    experiment_type=self.experiment_type,
+                    success_cutoff=self.success_cutoff,
+                    success_cutoff_method=self.success_cutoff_method,
+                )
                 if fly is not None:
                     flies.append(fly)
 
@@ -2678,9 +2706,17 @@ class Dataset:
 
             # Apply success_cutoff if enabled
             if fly.config.success_cutoff:
+
+                # print("applying success cutoff to dataset")
+
                 final_contact_idx, _ = fly.skeleton_metrics.get_final_contact()
                 if final_contact_idx is not None:
                     contact_events = contact_events[: final_contact_idx + 1]
+
+                    # print(f"Final contact index in dataset: {final_contact_idx}")
+                    # print(
+                    #     f"Applying success cutoff. Number of contact events after cutoff: {len(contact_events)}"
+                    # )
 
             for event_idx, event in enumerate(contact_events):
                 start_idx, end_idx = event[0], event[1]
@@ -2701,6 +2737,9 @@ class Dataset:
                 combined_data = self._add_metadata(combined_data, fly)
             else:
                 combined_data = pd.DataFrame()
+
+            # nb_events = len(contact_indices)
+            # print(f"Number of contact events: {nb_events}")
 
         return combined_data
 

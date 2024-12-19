@@ -100,7 +100,7 @@ def process_group(
     return row
 
 
-def transform_data(data, features, n_jobs=num_cores, chunk_size=100):
+def transform_data(data, features, n_jobs=num_cores, chunk_size=None):
     transformed_data = []
     keypoint_columns = data.filter(regex="^(x|y)_").columns
     metadata_columns = [
@@ -118,13 +118,13 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=100):
         "contact_index",
     ]
 
-    total_groups = len(data.groupby(["fly", "contact_index"]))
-    logging.info(f"Processing {total_groups} groups with {n_jobs} workers")
-
-    start_time = time.time()
     groups = list(data.groupby(["fly", "contact_index"]))
-    for i in range(0, total_groups, chunk_size):
-        chunk = groups[i : i + chunk_size]
+    total_groups = len(groups)
+    logging.info(f"Processing {total_groups} groups with {n_jobs} workers")
+    start_time = time.time()
+
+    if chunk_size is None:
+        # Process all groups at once without chunking
         with ProcessPoolExecutor(max_workers=n_jobs) as executor:
             futures = [
                 executor.submit(
@@ -137,21 +137,43 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=100):
                     metadata_columns,
                     n_jobs,
                 )
-                for (fly, contact_index), group in chunk
+                for (fly, contact_index), group in groups
             ]
-
-            for j, future in enumerate(as_completed(futures), 1):
+            for i, future in enumerate(as_completed(futures), 1):
                 transformed_data.append(future.result())
-                if (i + j) % 100 == 0 or (i + j) == total_groups:
+                if i % 100 == 0 or i == total_groups:
                     logging.info(
-                        f"Processed {i + j}/{total_groups} groups ({(i + j)/total_groups:.2%})"
+                        f"Processed {i}/{total_groups} groups ({i/total_groups:.2%})"
                     )
+    else:
+        # Process groups in chunks
+        for i in range(0, total_groups, chunk_size):
+            chunk = groups[i : i + chunk_size]
+            with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+                futures = [
+                    executor.submit(
+                        process_group,
+                        fly,
+                        contact_index,
+                        group,
+                        features,
+                        keypoint_columns,
+                        metadata_columns,
+                        n_jobs,
+                    )
+                    for (fly, contact_index), group in chunk
+                ]
+                for j, future in enumerate(as_completed(futures), 1):
+                    transformed_data.append(future.result())
+                    if (i + j) % 100 == 0 or (i + j) == total_groups:
+                        logging.info(
+                            f"Processed {i + j}/{total_groups} groups ({(i + j)/total_groups:.2%})"
+                        )
 
     end_time = time.time()
     logging.info(
         f"Data transformation completed in {end_time - start_time:.2f} seconds"
     )
-
     return pd.DataFrame(transformed_data)
 
 
@@ -200,7 +222,7 @@ def feature_selection(data):
 
 
 def main(
-    input_path, output_path, features, n_jobs=num_cores, test_rows=None, chunk_size=100
+    input_path, output_path, features, n_jobs=num_cores, test_rows=None, chunk_size=None
 ):
     logging.info(f"Loading data from {input_path}...")
     data = pd.read_feather(input_path)
@@ -234,15 +256,15 @@ def main(
 
 
 if __name__ == "__main__":
-    input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241217_FinalEventCutoffData_norm/contact_data/241209_Pooled_contact_data.feather"
-    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241218_Transformed_contact_data_derivative.feather"
+    input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241218_FinalEventCutoffData_norm/contact_data/241209_Pooled_contact_data.feather"
+    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241219_Transformed_contact_data_derivative.feather"
 
     features = [
         "derivatives",
         "relative_positions",
-        #"statistical_measures",
-        #"fourier",
-        #"tsfresh",
+        # "statistical_measures",
+        # "fourier",
+        # "tsfresh",
     ]
 
     num_cores = os.cpu_count()
@@ -256,5 +278,5 @@ if __name__ == "__main__":
         features,
         n_jobs=n_jobs,
         test_rows=None,
-        chunk_size=1000,
+        chunk_size=None,
     )

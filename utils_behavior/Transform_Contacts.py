@@ -100,81 +100,60 @@ def process_group(
     return row
 
 
-def transform_data(data, features, n_jobs=num_cores, chunk_size=None):
-    transformed_data = []
+def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir=None):
     keypoint_columns = data.filter(regex="^(x|y)_").columns
     metadata_columns = [
-        "flypath",
-        "experiment",
-        "Nickname",
-        "Brain region",
-        "Date",
-        "Genotype",
-        "Period",
-        "FeedingState",
-        "Orientation",
-        "Light",
-        "Crossing",
-        "contact_index",
+        "flypath", "experiment", "Nickname", "Brain region", "Date", "Genotype",
+        "Period", "FeedingState", "Orientation", "Light", "Crossing", "contact_index",
     ]
-
     groups = list(data.groupby(["fly", "contact_index"]))
     total_groups = len(groups)
     logging.info(f"Processing {total_groups} groups with {n_jobs} workers")
     start_time = time.time()
 
     if chunk_size is None:
-        # Process all groups at once without chunking
+        chunk_size = total_groups
+
+    existing_chunks = set(int(f.split('_')[1].split('.')[0]) for f in os.listdir(output_dir) if f.startswith("chunk_"))
+    total_chunks = (total_groups + chunk_size - 1) // chunk_size
+
+    for chunk_index in range(0, total_groups, chunk_size):
+        chunk_number = chunk_index // chunk_size + 1
+        if chunk_number in existing_chunks:
+            logging.info(f"Skipping chunk {chunk_number} as it already exists")
+            continue
+
+        chunk = groups[chunk_index : chunk_index + chunk_size]
+        chunk_data = []
         with ProcessPoolExecutor(max_workers=n_jobs) as executor:
             futures = [
                 executor.submit(
-                    process_group,
-                    fly,
-                    contact_index,
-                    group,
-                    features,
-                    keypoint_columns,
-                    metadata_columns,
-                    n_jobs,
+                    process_group, fly, contact_index, group, features,
+                    keypoint_columns, metadata_columns, n_jobs,
                 )
-                for (fly, contact_index), group in groups
+                for (fly, contact_index), group in chunk
             ]
             for i, future in enumerate(as_completed(futures), 1):
-                transformed_data.append(future.result())
-                if i % 100 == 0 or i == total_groups:
-                    logging.info(
-                        f"Processed {i}/{total_groups} groups ({i/total_groups:.2%})"
-                    )
-    else:
-        # Process groups in chunks
-        for i in range(0, total_groups, chunk_size):
-            chunk = groups[i : i + chunk_size]
-            with ProcessPoolExecutor(max_workers=n_jobs) as executor:
-                futures = [
-                    executor.submit(
-                        process_group,
-                        fly,
-                        contact_index,
-                        group,
-                        features,
-                        keypoint_columns,
-                        metadata_columns,
-                        n_jobs,
-                    )
-                    for (fly, contact_index), group in chunk
-                ]
-                for j, future in enumerate(as_completed(futures), 1):
-                    transformed_data.append(future.result())
-                    if (i + j) % 100 == 0 or (i + j) == total_groups:
-                        logging.info(
-                            f"Processed {i + j}/{total_groups} groups ({(i + j)/total_groups:.2%})"
-                        )
+                chunk_data.append(future.result())
+                if i % 100 == 0 or i == len(chunk):
+                    logging.info(f"Processed {i}/{len(chunk)} groups in chunk {chunk_number}")
+
+        chunk_df = pd.DataFrame(chunk_data)
+        chunk_filename = os.path.join(output_dir, f"chunk_{chunk_number}.feather")
+        feather.write_feather(chunk_df, chunk_filename)
+        logging.info(f"Saved chunk {chunk_number} to {chunk_filename}")
 
     end_time = time.time()
-    logging.info(
-        f"Data transformation completed in {end_time - start_time:.2f} seconds"
-    )
-    return pd.DataFrame(transformed_data)
+    logging.info(f"Data transformation completed in {end_time - start_time:.2f} seconds")
+    logging.info(f"Processed {len(os.listdir(output_dir))} chunks out of {total_chunks} total chunks")
+
+
+def concatenate_chunks(output_dir, output_path):
+    chunk_files = [os.path.join(output_dir, f) for f in os.listdir(output_dir) if f.startswith("chunk_")]
+    chunk_dfs = [pd.read_feather(chunk_file) for chunk_file in chunk_files]
+    concatenated_df = pd.concat(chunk_dfs, ignore_index=True)
+    feather.write_feather(concatenated_df, output_path)
+    logging.info(f"Concatenated all chunks and saved to {output_path}")
 
 
 def feature_selection(data):
@@ -234,21 +213,23 @@ def main(
             f"Using a subset of {test_rows} rows for testing. New shape: {data.shape}"
         )
 
-    logging.info(f"Transforming data using features: {features}")
-    transformed_data = transform_data(
-        data, features, n_jobs=n_jobs, chunk_size=chunk_size
-    )
-    logging.info(f"Transformed data shape: {transformed_data.shape}")
+    output_dir = os.path.dirname(output_path)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
-    feather.write_feather(transformed_data, output_path)
+    logging.info(f"Transforming data using features: {features}")
+    transform_data(
+        data, features, n_jobs=n_jobs, chunk_size=chunk_size, output_dir=output_dir
+    )
+
+    logging.info("Concatenating chunks...")
+    concatenate_chunks(output_dir, output_path)
 
     logging.info("Selecting features...")
+    transformed_data = pd.read_feather(output_path)
     selected_data = feature_selection(transformed_data)
 
-    logging.info(f"Saving transformed data to {output_path}...")
-
     selected_path = output_path.replace(".feather", "_Selected.feather")
-
     feather.write_feather(selected_data, selected_path)
 
     logging.info("Transformation complete.")
@@ -257,14 +238,14 @@ def main(
 
 if __name__ == "__main__":
     input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241218_FinalEventCutoffData_norm/contact_data/241209_Pooled_contact_data.feather"
-    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241219_Transformed_contact_data_derivative.feather"
+    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241219_Transform/241219_Transformed_contact_data_full.feather"
 
     features = [
         "derivatives",
         "relative_positions",
-        # "statistical_measures",
-        # "fourier",
-        # "tsfresh",
+        "statistical_measures",
+        "fourier",
+        "tsfresh",
     ]
 
     num_cores = os.cpu_count()
@@ -278,5 +259,5 @@ if __name__ == "__main__":
         features,
         n_jobs=n_jobs,
         test_rows=None,
-        chunk_size=None,
+        chunk_size=1000,  # Adjust chunk size as needed
     )

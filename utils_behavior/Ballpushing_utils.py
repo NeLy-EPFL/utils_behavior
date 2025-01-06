@@ -41,10 +41,32 @@ import os
 import platform
 
 import cv2
-from moviepy.editor import VideoFileClip, clips_array, ColorClip
+import moviepy
+import moviepy.config as mpconfig
+
+moviepy.config.change_settings({"IMAGEMAGICK_BINARY": "magick"})
+mpconfig.change_settings(
+    {"IMAGEMAGICK_BINARY": "/home/durrieu/miniforge3/envs/tracking_analysis/bin/magick"}
+)
+
+os.environ["MAGICK_FONT_PATH"] = "/etc/ImageMagick-6"
+# os.environ['MAGICK_CONFIGURE_PATH'] = '/etc/ImageMagick-6'
+
+from moviepy.editor import (
+    VideoFileClip,
+    clips_array,
+    ColorClip,
+    concatenate_videoclips,
+    TextClip,
+    CompositeVideoClip,
+)
 from moviepy.editor import VideoClip
 from moviepy.editor import VideoFileClip
 from moviepy.video.fx import all as vfx
+
+
+# import moviepy as mpy
+
 import pygame
 
 import warnings
@@ -334,6 +356,8 @@ class Config:
 
     # Skeleton tracking configuration attributes
 
+    # skeleton_tracks_smoothing: bool = False
+    
     # Template size
     template_width: int = 96
     template_height: int = 516
@@ -341,11 +365,23 @@ class Config:
     padding: int = 20
     y_crop: tuple = (74, 0)
 
-    # Skeleton metrics
+    # # Skeleton metrics
 
-    contact_threshold: tuple = (0, 13)
-    gap_between_contacts: int = 1 / 2
-    contact_min_length: int = 1 / 2
+    # contact_nodes = (["Rfront", "Lfront"],)
+
+    # contact_threshold: tuple = (0, 13)
+    # gap_between_contacts: int = 1 / 2
+    # contact_min_length: int = 1 / 2
+
+    # Skeleton metrics: longer
+    
+    skeleton_tracks_smoothing: bool = False
+
+    contact_nodes = ["Thorax", "Head"]
+
+    contact_threshold: tuple = (0, 40)
+    gap_between_contacts: int = 3/2
+    contact_min_length: int = 2
 
     hidden_value: int = -1
 
@@ -533,7 +569,7 @@ class FlyTrackingData:
             self.balltrack = self.load_tracking_file("*ball*.h5", "ball")
             self.flytrack = self.load_tracking_file("*fly*.h5", "fly")
             self.skeletontrack = self.load_tracking_file(
-                "*full_body*.h5", "fly", smoothing=False
+                "*full_body*.h5", "fly", smoothing=self.fly.config.skeleton_tracks_smoothing
             )
 
             # Check if the balltrack file exists and either flytrack or skeletontrack exists
@@ -1673,7 +1709,7 @@ class SkeletonMetrics:
         contact_events = find_interaction_events(
             fly_data,
             ball_data,
-            nodes1=["Rfront", "Lfront"],
+            nodes1=self.fly.experiment.config.contact_nodes,
             nodes2=["centre_preprocessed"],
             threshold=threshold,
             gap_between_events=gap_between_events,
@@ -1788,6 +1824,49 @@ class SkeletonMetrics:
         plt.show()
 
         return annotated_frame
+
+    def generate_contacts_video(self, output_path):
+        """
+        Generate a video of all contact events concatenated with annotations.
+        """
+        video_clips = []
+        video = VideoFileClip(str(self.fly.tracking_data.skeletontrack.video))
+
+        for idx, event in enumerate(self.contacts):
+            start_frame, end_frame = event[0], event[1]
+            start_time = start_frame / self.fly.experiment.fps
+            end_time = end_frame / self.fly.experiment.fps
+            clip = video.subclip(start_time, end_time)
+
+            # Calculate the start time in seconds
+            start_time_seconds = start_frame / 29  # Assuming 29 fps
+
+            # Convert start time to mm:ss format
+            minutes, seconds = divmod(start_time_seconds, 60)
+            start_time_formatted = f"{int(minutes):02d}:{int(seconds):02d}"
+
+            # Create a text annotation with the contact index and start time
+            annotation_text = f"Contact {idx + 1}\nStart Time: {start_time_formatted}"
+            annotation = TextClip(
+                annotation_text,
+                fontsize=8,
+                color="white",
+                bg_color="black",
+                font="Arial",  # Specify a font that's definitely installed
+                method="label",
+            )
+            annotation = annotation.set_position(("center", "bottom")).set_duration(
+                clip.duration
+            )
+
+            # Overlay the annotation on the video clip
+            annotated_clip = CompositeVideoClip([clip, annotation])
+            video_clips.append(annotated_clip)
+
+        concatenated_clip = concatenate_videoclips(video_clips)
+        concatenated_clip.write_videofile(str(output_path), codec="libx264")
+
+        print(f"Contacts video saved to {output_path}")
 
 
 class Fly:

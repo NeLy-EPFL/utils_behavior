@@ -512,46 +512,34 @@ def create_groupby_jitterboxplots(
 
     # Use control argument to get control_data
     if control:
-
-        print(f"Control: {control}")
         control_data = data[data[kdims].isin(control)]
-
-        print(f"Control data size: {len(control_data)}")  # Debug print
         if debug:
-            print(f"Control data size: {len(control_data)}")  # Debug print
+            print(f"Control data size: {len(control_data)}")
     else:
         control_data = None
 
     # Get the group value for the control group
-    if control:
+    if control and not control_data.empty:
         control_group = control_data[groupby].unique()[0]
         if debug:
-            print(f"Control group: {control_group}")  # Debug print
+            print(f"Control group: {control_group}")
+    else:
+        control_group = None
 
-    hline_values = None  # Initialize hline_values
-    if control and hline:  # Changed hline_values to hline
-        hline_values = compute_hline_values(
-            control_data,
-            metric,
-            hline,
-        )
+    hline_values = None
+    if control and hline and control_group:
+        hline_values = compute_hline_values(control_data, metric, hline)
 
     plots = {}
     for group in data[groupby].unique():
         if debug:
-
-            print(f"Processing group: {group}")  # Debug print
-        # Use list comprehension for tooltips
-        tooltips = [
-            ("Fly", "@fly"),
-            (metric.capitalize(), f"@{metric}"),
-        ]
+            print(f"Processing group: {group}")
+        tooltips = [("Fly", "@fly"), (metric.capitalize(), f"@{metric}")]
         if metadata is not None:
             tooltips.extend([(var.capitalize(), f"@{var}") for var in metadata])
 
         hover = HoverTool(tooltips=tooltips)
         group_data = data[data[groupby] == group]
-
         group_data = sort_data(group_data, kdims, metric, sort_by)
 
         boxplot, scatterplot = create_jitterboxplot(
@@ -567,7 +555,7 @@ def create_groupby_jitterboxplots(
             scatter_color=kdims,
         )
 
-        if control and group != control_group:
+        if control and group != control_group and control_group:
             control_boxplot, control_scatterplot = create_jitterboxplot(
                 data=control_data,
                 metric=metric,
@@ -585,7 +573,7 @@ def create_groupby_jitterboxplots(
                 fill_alpha=0.2, color="red"
             )
 
-        if control and group != control_group:
+        if control and group != control_group and control_group:
             if hline_values is not None:
                 plot = (
                     hv_hline
@@ -609,8 +597,6 @@ def create_groupby_jitterboxplots(
                 )
 
         plots[group] = plot
-
-    # Create a Layout or a HoloMap with the jitter boxplots for each group
 
     if layout:
         jitter_boxplot = hv.Layout(plots.values()).cols(2).opts(shared_axes=False)

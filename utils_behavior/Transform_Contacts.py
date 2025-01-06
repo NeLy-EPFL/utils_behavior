@@ -33,9 +33,23 @@ def calculate_derivatives(group, keypoint_columns):
 def calculate_relative_positions(group, keypoint_columns):
     initial_positions = group[keypoint_columns].iloc[0]
     displacements = group[keypoint_columns] - initial_positions
-    return {
-        f"{col}_disp_mean": displacements[col].mean() for col in keypoint_columns
-    } | {f"{col}_disp_std": displacements[col].std() for col in keypoint_columns}
+
+    # Calculate median euclidean distance
+    median_euclidean_distance = group["euclidean_distance"].median()
+
+    # Calculate direction
+    initial_distance = group["euclidean_distance"].iloc[0]
+    final_distance = group["euclidean_distance"].iloc[-1]
+    direction = 1 if final_distance > initial_distance else -1
+
+    return (
+        {f"{col}_disp_mean": displacements[col].mean() for col in keypoint_columns}
+        | {f"{col}_disp_std": displacements[col].std() for col in keypoint_columns}
+        | {
+            "median_euclidean_distance": median_euclidean_distance,
+            "direction": direction,
+        }
+    )
 
 
 def calculate_statistical_measures(group, keypoint_columns):
@@ -103,8 +117,18 @@ def process_group(
 def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir=None):
     keypoint_columns = data.filter(regex="^(x|y)_").columns
     metadata_columns = [
-        "flypath", "experiment", "Nickname", "Brain region", "Date", "Genotype",
-        "Period", "FeedingState", "Orientation", "Light", "Crossing", "contact_index",
+        "flypath",
+        "experiment",
+        "Nickname",
+        "Brain region",
+        "Date",
+        "Genotype",
+        "Period",
+        "FeedingState",
+        "Orientation",
+        "Light",
+        "Crossing",
+        "contact_index",
     ]
     groups = list(data.groupby(["fly", "contact_index"]))
     total_groups = len(groups)
@@ -114,7 +138,11 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
     if chunk_size is None:
         chunk_size = total_groups
 
-    existing_chunks = set(int(f.split('_')[1].split('.')[0]) for f in os.listdir(output_dir) if f.startswith("chunk_"))
+    existing_chunks = set(
+        int(f.split("_")[1].split(".")[0])
+        for f in os.listdir(output_dir)
+        if f.startswith("chunk_")
+    )
     total_chunks = (total_groups + chunk_size - 1) // chunk_size
 
     for chunk_index in range(0, total_groups, chunk_size):
@@ -128,15 +156,23 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
         with ProcessPoolExecutor(max_workers=n_jobs) as executor:
             futures = [
                 executor.submit(
-                    process_group, fly, contact_index, group, features,
-                    keypoint_columns, metadata_columns, n_jobs,
+                    process_group,
+                    fly,
+                    contact_index,
+                    group,
+                    features,
+                    keypoint_columns,
+                    metadata_columns,
+                    n_jobs,
                 )
                 for (fly, contact_index), group in chunk
             ]
             for i, future in enumerate(as_completed(futures), 1):
                 chunk_data.append(future.result())
                 if i % 100 == 0 or i == len(chunk):
-                    logging.info(f"Processed {i}/{len(chunk)} groups in chunk {chunk_number}")
+                    logging.info(
+                        f"Processed {i}/{len(chunk)} groups in chunk {chunk_number}"
+                    )
 
         chunk_df = pd.DataFrame(chunk_data)
         chunk_filename = os.path.join(output_dir, f"chunk_{chunk_number}.feather")
@@ -144,12 +180,20 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
         logging.info(f"Saved chunk {chunk_number} to {chunk_filename}")
 
     end_time = time.time()
-    logging.info(f"Data transformation completed in {end_time - start_time:.2f} seconds")
-    logging.info(f"Processed {len(os.listdir(output_dir))} chunks out of {total_chunks} total chunks")
+    logging.info(
+        f"Data transformation completed in {end_time - start_time:.2f} seconds"
+    )
+    logging.info(
+        f"Processed {len(os.listdir(output_dir))} chunks out of {total_chunks} total chunks"
+    )
 
 
 def concatenate_chunks(output_dir, output_path):
-    chunk_files = [os.path.join(output_dir, f) for f in os.listdir(output_dir) if f.startswith("chunk_")]
+    chunk_files = [
+        os.path.join(output_dir, f)
+        for f in os.listdir(output_dir)
+        if f.startswith("chunk_")
+    ]
     chunk_dfs = [pd.read_feather(chunk_file) for chunk_file in chunk_files]
     concatenated_df = pd.concat(chunk_dfs, ignore_index=True)
     feather.write_feather(concatenated_df, output_path)
@@ -238,14 +282,14 @@ def main(
 
 if __name__ == "__main__":
     input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241218_FinalEventCutoffData_norm/contact_data/241209_Pooled_contact_data.feather"
-    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241219_Transform/241219_Transformed_contact_data_full.feather"
+    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241220_Transform/241220_Transformed_contact_data_mintsfresh.feather"
 
     features = [
         "derivatives",
         "relative_positions",
         "statistical_measures",
         "fourier",
-        "tsfresh",
+        # "tsfresh",
     ]
 
     num_cores = os.cpu_count()
@@ -259,5 +303,5 @@ if __name__ == "__main__":
         features,
         n_jobs=n_jobs,
         test_rows=None,
-        chunk_size=1000,  # Adjust chunk size as needed
+        chunk_size=None,  # Adjust chunk size as needed
     )

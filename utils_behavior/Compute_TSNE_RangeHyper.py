@@ -5,10 +5,12 @@ import pyarrow.feather as feather
 import time
 import numpy as np
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import silhouette_score
+from itertools import product
 
 
 def stratified_subsample(data, target_size, stratify_column="contact_index"):
-    sampling_ratio = target_size / len(data)
+    sampling_ratio = min(target_size / len(data), 1.0)
     stratified_sample, _ = train_test_split(
         data, train_size=sampling_ratio, stratify=data[stratify_column], random_state=42
     )
@@ -82,21 +84,25 @@ def run_tsne(
         feather.write_feather(combined_results_df, savepath)
         print(f"Results saved to {savepath}")
 
-    return combined_results_df
+    return combined_results_df, results
 
 
 if __name__ == "__main__":
-    pca_data_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/PCA/241209_pca_data.feather"
-    results_savepath_template = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/TSNE/241209_behavior_map_perplexity_{perplexity}_niter_{n_iter}_lr_{learning_rate}.feather"
+    pca_data_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/PCA/241220_pca_data_transformed_New.feather"
+    results_savepath_template = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/TSNE/241220_behavior_map_perplexity_{perplexity}_niter_{n_iter}_lr_{learning_rate}.feather"
 
     # Load PCA data
     print(f"Loading PCA data from {pca_data_path}...")
     combined_data = feather.read_feather(pca_data_path)
 
-    # Subsample the data
-    target_size = 1000000  # Adjust this value based on your GPU capabilities
-    subsampled_data = stratified_subsample(combined_data, target_size)
-    print(f"Subsampled data size: {len(subsampled_data)}")
+    # Subsample the data (optional)
+    subsample = False
+    if subsample:
+        target_size = 1000000  # Adjust this value based on your GPU capabilities
+        subsampled_data = stratified_subsample(combined_data, target_size)
+        print(f"Subsampled data size: {len(subsampled_data)}")
+    else:
+        subsampled_data = combined_data
 
     # Extract PCA data, metadata, and contact indices
     pca_data = subsampled_data.filter(regex="^PCA Component").values
@@ -105,24 +111,23 @@ if __name__ == "__main__":
     )
     contact_indices = subsampled_data["contact_index"]
 
-    # Define hyperparameter sets
-    hyperparameter_sets = [
-        {"perplexity": 100, "n_iter": 10000, "learning_rate": 200},
-        {"perplexity": 100, "n_iter": 10000, "learning_rate": 100},
-        {"perplexity": 100, "n_iter": 10000, "learning_rate": 50},
-        # Add more hyperparameter sets as needed
-    ]
+    # Define hyperparameter ranges
+    perplexities = [30, 50, 100, 200]
+    n_iters = [1000, 5000, 10000]
+    learning_rates = [10, 50, 100, 200]
+
+    # Create a grid of hyperparameter sets
+    hyperparameter_sets = list(product(perplexities, n_iters, learning_rates))
+
+    results_list = []
 
     # Run t-SNE with different hyperparameters
-    for params in hyperparameter_sets:
-        perplexity = params["perplexity"]
-        n_iter = params["n_iter"]
-        learning_rate = params["learning_rate"]
+    for perplexity, n_iter, learning_rate in hyperparameter_sets:
         results_savepath = results_savepath_template.format(
             perplexity=perplexity, n_iter=n_iter, learning_rate=learning_rate
         )
 
-        results_df = run_tsne(
+        results_df, tsne_results = run_tsne(
             pca_data,
             metadata,
             contact_indices,
@@ -132,4 +137,30 @@ if __name__ == "__main__":
             savepath=results_savepath,
         )
 
-        print(results_df)
+        # Calculate silhouette score
+        score = silhouette_score(tsne_results, contact_indices)
+        print(
+            f"Silhouette score for perplexity={perplexity}, n_iter={n_iter}, learning_rate={learning_rate}: {score}"
+        )
+
+        results_list.append(
+            {
+                "perplexity": perplexity,
+                "n_iter": n_iter,
+                "learning_rate": learning_rate,
+                "silhouette_score": score,
+                "results_df": results_df,
+            }
+        )
+
+    # Sort results by silhouette score and select the top N sets
+    top_n = 5
+    sorted_results = sorted(
+        results_list, key=lambda x: x["silhouette_score"], reverse=True
+    )[:top_n]
+
+    for i, result in enumerate(sorted_results):
+        print(
+            f"Top {i+1} hyperparameters: perplexity={result['perplexity']}, n_iter={result['n_iter']}, learning_rate={result['learning_rate']} with silhouette score: {result['silhouette_score']}"
+        )
+        print(result["results_df"].head())

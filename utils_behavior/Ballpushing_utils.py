@@ -83,6 +83,8 @@ sys.modules["Ballpushing_utils"] = sys.modules[
     __name__
 ]  # This line creates an alias for utils_behavior.Ballpushing_utils to utils_behavior.__init__ so that the previously made pkl files can be loaded.
 
+print("Loading BallPushing utils version 05 Jan 2025")
+
 brain_regions_path = "/mnt/upramdya_data/MD/Region_map_240122.csv"
 
 
@@ -357,7 +359,7 @@ class Config:
     # Skeleton tracking configuration attributes
 
     # skeleton_tracks_smoothing: bool = False
-    
+
     # Template size
     template_width: int = 96
     template_height: int = 516
@@ -374,13 +376,13 @@ class Config:
     # contact_min_length: int = 1 / 2
 
     # Skeleton metrics: longer
-    
+
     skeleton_tracks_smoothing: bool = False
 
     contact_nodes = ["Thorax", "Head"]
 
     contact_threshold: tuple = (0, 40)
-    gap_between_contacts: int = 3/2
+    gap_between_contacts: int = 3 / 2
     contact_min_length: int = 2
 
     hidden_value: int = -1
@@ -569,7 +571,9 @@ class FlyTrackingData:
             self.balltrack = self.load_tracking_file("*ball*.h5", "ball")
             self.flytrack = self.load_tracking_file("*fly*.h5", "fly")
             self.skeletontrack = self.load_tracking_file(
-                "*full_body*.h5", "fly", smoothing=self.fly.config.skeleton_tracks_smoothing
+                "*full_body*.h5",
+                "fly",
+                smoothing=self.fly.config.skeleton_tracks_smoothing,
             )
 
             # Check if the balltrack file exists and either flytrack or skeletontrack exists
@@ -1357,7 +1361,6 @@ class BallpushingMetrics:
         return ball_data["euclidean_distance"].sum()
 
     def get_aha_moment(self, fly_idx, ball_idx, distance=None):
-
         if distance is None:
             distance = self.fly.config.aha_moment_threshold
 
@@ -1372,7 +1375,14 @@ class BallpushingMetrics:
         ]
 
         if aha_moment:
+            # Select the event right before the event at which the ball was moved more than the threshold
             aha_moment_event, aha_moment_idx = aha_moment[0]
+            if aha_moment_idx > 0:
+                previous_event = self.tracking_data.interaction_events[fly_idx][
+                    ball_idx
+                ][aha_moment_idx - 1]
+                aha_moment_event = previous_event
+                aha_moment_idx -= 1
 
             if abs(ball_data["x_centre"].iloc[0] - self.tracking_data.start_x) < 100:
                 aha_moment_time = aha_moment_event[0] / self.fly.experiment.fps
@@ -1391,22 +1401,31 @@ class BallpushingMetrics:
             for significant_event in self.get_significant_events(fly_idx, ball_idx)
         ]
         aha_moment_index = self.get_aha_moment(fly_idx, ball_idx)[0]
-        before_aha_moment = significant_events[:aha_moment_index]
-        after_aha_moment = significant_events[aha_moment_index:]
 
-        before_distances = self.get_distance_moved(
-            fly_idx, ball_idx, subset=before_aha_moment
-        ) / len(before_aha_moment)
+        # Include the aha moment in the "before" segment
+        before_aha_moment = significant_events[: aha_moment_index + 1]
+        after_aha_moment = significant_events[aha_moment_index + 1 :]
 
-        avg_distance_before = np.mean(before_distances)
+        if before_aha_moment:
+            before_distances = self.get_distance_moved(
+                fly_idx, ball_idx, subset=before_aha_moment
+            ) / len(before_aha_moment)
+            avg_distance_before = np.mean(before_distances)
+        else:
+            avg_distance_before = 0
 
-        after_distances = self.get_distance_moved(
-            fly_idx, ball_idx, subset=after_aha_moment
-        ) / len(after_aha_moment)
+        if after_aha_moment:
+            after_distances = self.get_distance_moved(
+                fly_idx, ball_idx, subset=after_aha_moment
+            ) / len(after_aha_moment)
+            avg_distance_after = np.mean(after_distances)
+        else:
+            avg_distance_after = 0
 
-        avg_distance_after = np.mean(after_distances)
-
-        insight_effect = avg_distance_after / avg_distance_before
+        if avg_distance_before == 0:
+            insight_effect = float("inf") if avg_distance_after > 0 else 0
+        else:
+            insight_effect = avg_distance_after / avg_distance_before
 
         return insight_effect
 

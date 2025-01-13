@@ -139,6 +139,22 @@ def get_labserver():
         raise ValueError("Unsupported platform")
 
 
+def get_data_server():
+    """
+    Returns the appropriate data path based on the platform.
+
+    Returns:
+    Path: The data path.
+    """
+
+    if platform.system() == "Darwin":
+        return Path("/Volumes/upramdya/data")
+    elif platform.system() == "Linux":
+        return Path("/mnt/upramdya_data")
+    else:
+        raise ValueError("Unsupported platform")
+
+
 def get_data_path(setup="mazerecorder"):
     """
     Returns the data path for the specified setup.

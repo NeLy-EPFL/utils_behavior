@@ -92,7 +92,7 @@ def draw_bs_rep(data, func, rg):
     return func(bs_sample)
 
 
-def draw_bs_ci(data, func=np.mean, rg=rg, n_reps=300):
+def draw_bs_ci(data, func=np.mean, rg=rg, n_reps=300, show_progress=False):
     """
     Sample bootstrap multiple times and compute confidence interval.
 
@@ -101,18 +101,24 @@ def draw_bs_ci(data, func=np.mean, rg=rg, n_reps=300):
         func (callable, optional): The function to apply to the bootstrap samples. Defaults to np.mean.
         rg (np.random.Generator): The random number generator.
         n_reps (int, optional): The number of bootstrap replicates. Defaults to 300.
+        show_progress (bool, optional): Whether to show the progress bar. Defaults to True.
 
     Returns:
         np.ndarray: The lower and upper confidence interval bounds.
     """
 
     with ThreadPoolExecutor() as executor:
-        bs_reps = list(
-            tqdm(
-                executor.map(lambda _: draw_bs_rep(data, func, rg), range(n_reps)),
-                total=n_reps,
+        if show_progress:
+            bs_reps = list(
+                tqdm(
+                    executor.map(lambda _: draw_bs_rep(data, func, rg), range(n_reps)),
+                    total=n_reps,
+                )
             )
-        )
+        else:
+            bs_reps = list(
+                executor.map(lambda _: draw_bs_rep(data, func, rg), range(n_reps))
+            )
     conf_int = np.percentile(bs_reps, [2.5, 97.5])
     return conf_int
 

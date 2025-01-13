@@ -83,7 +83,7 @@ sys.modules["Ballpushing_utils"] = sys.modules[
     __name__
 ]  # This line creates an alias for utils_behavior.Ballpushing_utils to utils_behavior.__init__ so that the previously made pkl files can be loaded.
 
-print("Loading BallPushing utils version 05 Jan 2025")
+print("Loading BallPushing utils version 09 Jan 2025")
 
 brain_regions_path = "/mnt/upramdya_data/MD/Region_map_240122.csv"
 
@@ -413,7 +413,6 @@ class Config:
             setattr(self, property_name, value)
         else:
             raise AttributeError(f"Config has no attribute named '{property_name}'")
-
 
 # @dataclass
 class FlyMetadata:
@@ -972,34 +971,90 @@ class BallpushingMetrics:
             for ball_idx, events in ball_dict.items():
                 key = f"fly_{fly_idx}_ball_{ball_idx}"
 
-                # if self.fly.experiment_type == "F1":
-                #     nb_events = self.get_adjusted_nb_events(
-                #         fly_idx, ball_idx, signif=False
-                #     )
-                # else:
-                #     nb_events = len(events)
-
-                nb_events = self.get_adjusted_nb_events(fly_idx, ball_idx, signif=False)
-
-                max_event = self.get_max_event(fly_idx, ball_idx)
-                max_distance = self.get_max_distance(fly_idx, ball_idx)
-                significant_events = self.get_significant_events(fly_idx, ball_idx)
-
-                if self.fly.experiment_type == "F1":
-                    nb_significant_events = self.get_adjusted_nb_events(
-                        fly_idx, ball_idx, signif=True
+                try:
+                    nb_events = self.get_adjusted_nb_events(
+                        fly_idx, ball_idx, signif=False
                     )
-                else:
-                    nb_significant_events = len(significant_events)
+                except Exception as e:
+                    nb_events = np.nan
 
-                first_significant_event = self.get_first_significant_event(
-                    fly_idx, ball_idx
-                )
-                aha_moment = self.get_aha_moment(fly_idx, ball_idx)
-                breaks = self.find_breaks(fly_idx, ball_idx)
-                events_direction = self.find_events_direction(fly_idx, ball_idx)
-                final_event = self.get_final_event(fly_idx, ball_idx)
-                success_direction = self.get_success_direction(fly_idx, ball_idx)
+                try:
+                    max_event = self.get_max_event(fly_idx, ball_idx)
+                except Exception as e:
+                    max_event = (np.nan, np.nan)
+
+                try:
+                    max_distance = self.get_max_distance(fly_idx, ball_idx)
+                except Exception as e:
+                    max_distance = np.nan
+
+                try:
+                    significant_events = self.get_significant_events(fly_idx, ball_idx)
+                except Exception as e:
+                    significant_events = []
+
+                try:
+                    if self.fly.experiment_type == "F1":
+                        nb_significant_events = self.get_adjusted_nb_events(
+                            fly_idx, ball_idx, signif=True
+                        )
+                    else:
+                        nb_significant_events = len(significant_events)
+                except Exception as e:
+                    nb_significant_events = np.nan
+
+                try:
+                    first_significant_event = self.get_first_significant_event(
+                        fly_idx, ball_idx
+                    )
+                except Exception as e:
+                    first_significant_event = (np.nan, np.nan)
+
+                try:
+                    aha_moment = self.get_aha_moment(fly_idx, ball_idx)
+                except Exception as e:
+                    aha_moment = (np.nan, np.nan)
+
+                try:
+                    breaks = self.find_breaks(fly_idx, ball_idx)
+                except Exception as e:
+                    breaks = []
+
+                try:
+                    events_direction = self.find_events_direction(fly_idx, ball_idx)
+                except Exception as e:
+                    events_direction = ([], [])
+
+                try:
+                    final_event = self.get_final_event(fly_idx, ball_idx)
+                except Exception as e:
+                    final_event = (np.nan, np.nan)
+
+                try:
+                    success_direction = self.get_success_direction(fly_idx, ball_idx)
+                except Exception as e:
+                    success_direction = np.nan
+
+                try:
+                    cumulated_breaks_duration = self.get_cumulated_breaks_duration(
+                        fly_idx, ball_idx
+                    )
+                except Exception as e:
+                    cumulated_breaks_duration = np.nan
+
+                try:
+                    distance_moved = self.get_distance_moved(fly_idx, ball_idx)
+                except Exception as e:
+                    distance_moved = np.nan
+
+                try:
+                    insight_effect = (
+                        self.get_insight_effect(fly_idx, ball_idx)
+                        if aha_moment
+                        else np.nan
+                    )
+                except Exception as e:
+                    insight_effect = np.nan
 
                 self.metrics[key] = {
                     "nb_events": nb_events,
@@ -1010,41 +1065,54 @@ class BallpushingMetrics:
                     "final_event_time": final_event[1],
                     "nb_significant_events": nb_significant_events,
                     "significant_ratio": (
-                        nb_significant_events / nb_events if nb_events > 0 else None
+                        nb_significant_events / nb_events if nb_events > 0 else np.nan
                     ),
                     "first_significant_event": first_significant_event[0],
                     "first_significant_event_time": first_significant_event[1],
                     "aha_moment": aha_moment[0],
                     "aha_moment_time": aha_moment[1],
-                    "insight_effect": (
-                        self.get_insight_effect(fly_idx, ball_idx)
-                        if aha_moment
-                        else None
-                    ),
-                    "cumulated_breaks_duration": self.get_cumulated_breaks_duration(
-                        fly_idx, ball_idx
-                    ),
+                    "insight_effect": insight_effect,
+                    "cumulated_breaks_duration": cumulated_breaks_duration,
                     "pushed": len(events_direction[0]),
                     "pulled": len(events_direction[1]),
                     "pulling_ratio": (
                         len(events_direction[1])
                         / (len(events_direction[0]) + len(events_direction[1]))
                         if (len(events_direction[0]) + len(events_direction[1])) > 0
-                        else None
+                        else np.nan
                     ),
                     "success_direction": success_direction,
                     "interaction_proportion": (
                         sum([event[2] for event in events])
                         / (
                             sum([event[2] for event in events])
-                            + self.get_cumulated_breaks_duration(fly_idx, ball_idx)
+                            + cumulated_breaks_duration
                         )
+                        if cumulated_breaks_duration > 0
+                        else np.nan
                     ),
-                    "distance_moved": self.get_distance_moved(fly_idx, ball_idx),
+                    "distance_moved": distance_moved,
                     "exit_time": self.tracking_data.exit_time,
                 }
 
     def get_adjusted_nb_events(self, fly_idx, ball_idx, signif=False):
+        """
+        Calculate the adjusted number of events for a given fly and ball. adjustment is based on the duration of the experiment.
+
+        Parameters
+        ----------
+        fly_idx : int
+            Index of the fly.
+        ball_idx : int
+            Index of the ball.
+        signif : bool, optional
+            Whether to use significant events only (default is False).
+
+        Returns
+        -------
+        float
+            Adjusted number of events.
+        """
         if signif:
             events = self.get_significant_events(fly_idx, ball_idx)
         else:
@@ -1102,16 +1170,32 @@ class BallpushingMetrics:
         return adjusted_nb_events
 
     def find_event_by_distance(self, fly_idx, ball_idx, threshold, distance_type="max"):
+        """
+        Find the event at which the ball has been moved a given amount of pixels for a given fly and ball.
+        Threshold is the distance threshold to check, whereas max is the maximum distance reached by the ball for this particular fly and ball.
+
+        Parameters
+        ----------
+        fly_idx : int
+            Index of the fly.
+        ball_idx : int
+            Index of the ball.
+        threshold : float
+            Distance threshold.
+        distance_type : str, optional
+            Type of distance to check ("max" or "threshold", default is "max").
+
+        Returns
+        -------
+        tuple
+            Event and event index.
+        """
         ball_data = self.tracking_data.balltrack.objects[ball_idx].dataset
 
         ball_data["euclidean_distance"] = np.sqrt(
             (ball_data["x_centre"] - ball_data["x_centre"].iloc[0]) ** 2
             + (ball_data["y_centre"] - ball_data["y_centre"].iloc[0]) ** 2
         )
-
-        # print(
-        #     f"euclidean_distance for ball_{ball_idx}: {ball_data['euclidean_distance']}"
-        # )
 
         if distance_type == "max":
             max_distance = ball_data["euclidean_distance"].max() - threshold
@@ -1145,7 +1229,23 @@ class BallpushingMetrics:
         return event, event_index
 
     def get_max_event(self, fly_idx, ball_idx, threshold=None):
+        """
+        Get the event at which the ball was moved at its maximum distance for a given fly and ball. Maximum here doesn't mean the ball has reached the end of the corridor.
 
+        Parameters
+        ----------
+        fly_idx : int
+            Index of the fly.
+        ball_idx : int
+            Index of the ball.
+        threshold : float, optional
+            Distance threshold (default is None).
+
+        Returns
+        -------
+        tuple
+            Maximum event index and maximum event time.
+        """
         if threshold is None:
             threshold = self.fly.config.max_event_threshold
 
@@ -1169,6 +1269,21 @@ class BallpushingMetrics:
         return max_event_idx, max_event_time
 
     def get_max_distance(self, fly_idx, ball_idx):
+        """
+        Get the maximum distance moved by the ball for a given fly and ball.
+
+        Parameters
+        ----------
+        fly_idx : int
+            Index of the fly.
+        ball_idx : int
+            Index of the ball.
+
+        Returns
+        -------
+        float
+            Maximum distance moved by the ball.
+        """
         ball_data = self.tracking_data.balltrack.objects[ball_idx].dataset
 
         max_distance = np.sqrt(
@@ -1361,6 +1476,23 @@ class BallpushingMetrics:
         return ball_data["euclidean_distance"].sum()
 
     def get_aha_moment(self, fly_idx, ball_idx, distance=None):
+        """
+        Identify the aha moment for a given fly and ball.
+
+        Parameters
+        ----------
+        fly_idx : int
+            Index of the fly.
+        ball_idx : int
+            Index of the ball.
+        distance : float, optional
+            Distance threshold for the aha moment (default is None).
+
+        Returns
+        -------
+        tuple
+            Aha moment index and aha moment time.
+        """
         if distance is None:
             distance = self.fly.config.aha_moment_threshold
 
@@ -1396,11 +1528,29 @@ class BallpushingMetrics:
             return None, None
 
     def get_insight_effect(self, fly_idx, ball_idx):
+        """
+        Calculate the insight effect for a given fly and ball.
+
+        Parameters
+        ----------
+        fly_idx : int
+            Index of the fly.
+        ball_idx : int
+            Index of the ball.
+
+        Returns
+        -------
+        float
+            Normalized insight effect.
+        """
         significant_events = [
             significant_event[0]
             for significant_event in self.get_significant_events(fly_idx, ball_idx)
         ]
-        aha_moment_index = self.get_aha_moment(fly_idx, ball_idx)[0]
+        aha_moment_index, _ = self.get_aha_moment(fly_idx, ball_idx)
+
+        if aha_moment_index is None:
+            return 0  # No aha moment
 
         # Include the aha moment in the "before" segment
         before_aha_moment = significant_events[: aha_moment_index + 1]
@@ -1423,9 +1573,17 @@ class BallpushingMetrics:
             avg_distance_after = 0
 
         if avg_distance_before == 0:
-            insight_effect = float("inf") if avg_distance_after > 0 else 0
+            insight_effect = 1 if avg_distance_after > 0 else 0
         else:
-            insight_effect = avg_distance_after / avg_distance_before
+            insight_effect = (avg_distance_after - avg_distance_before) / (
+                avg_distance_before + avg_distance_after
+            )
+
+        # Normalize the insight effect
+        if aha_moment_index == 0:
+            insight_effect = 1  # Aha moment is the very first event
+        elif aha_moment_index is None:
+            insight_effect = 0  # No aha moment
 
         return insight_effect
 

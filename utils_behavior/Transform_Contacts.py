@@ -31,7 +31,16 @@ def calculate_derivatives(group, keypoint_columns):
 
 
 def calculate_relative_positions(group, keypoint_columns):
+    # Calculate the Euclidean distance between each frame and the initial frame
+    initial_x = group["x_centre_preprocessed"].iloc[0]
+    initial_y = group["y_centre_preprocessed"].iloc[0]
+    group["euclidean_distance"] = np.sqrt(
+        (group["x_centre_preprocessed"] - initial_x) ** 2
+        + (group["y_centre_preprocessed"] - initial_y) ** 2
+    )
+
     initial_positions = group[keypoint_columns].iloc[0]
+    final_positions = group[keypoint_columns].iloc[-1]
     displacements = group[keypoint_columns] - initial_positions
 
     # Calculate median euclidean distance
@@ -42,12 +51,16 @@ def calculate_relative_positions(group, keypoint_columns):
     final_distance = group["euclidean_distance"].iloc[-1]
     direction = 1 if final_distance > initial_distance else -1
 
+    # Calculate raw displacement
+    raw_displacement = np.sqrt(((final_positions - initial_positions) ** 2).sum())
+
     return (
         {f"{col}_disp_mean": displacements[col].mean() for col in keypoint_columns}
         | {f"{col}_disp_std": displacements[col].std() for col in keypoint_columns}
         | {
             "median_euclidean_distance": median_euclidean_distance,
             "direction": direction,
+            "raw_displacement": raw_displacement,
         }
     )
 
@@ -281,14 +294,16 @@ def main(
 
 
 if __name__ == "__main__":
-    input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241218_FinalEventCutoffData_norm/contact_data/241209_Pooled_contact_data.feather"
-    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/241220_Transform/241220_Transformed_contact_data_mintsfresh.feather"
+    input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Coordinates/240110_coordinates_Data/contact_data/250106_Pooled_contact_data.feather"
+    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Coordinates/250106_Transformed_contact_data.feather"
 
+    # input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/250106_FinalEventCutoffData_norm/contact_data/250106_Pooled_contact_data.feather"
+    # output_path = ""/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/250107_Transform/250107_Transformed_contact_data_rawdisp.feather""
     features = [
         "derivatives",
         "relative_positions",
-        "statistical_measures",
-        "fourier",
+        # "statistical_measures",
+        # "fourier",
         # "tsfresh",
     ]
 

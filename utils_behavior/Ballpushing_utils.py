@@ -83,9 +83,9 @@ sys.modules["Ballpushing_utils"] = sys.modules[
     __name__
 ]  # This line creates an alias for utils_behavior.Ballpushing_utils to utils_behavior.__init__ so that the previously made pkl files can be loaded.
 
-print("Loading BallPushing utils version 09 Jan 2025")
+print("Loading BallPushing utils version 16 Jan 2025")
 
-brain_regions_path = "/mnt/upramdya_data/MD/Region_map_240122.csv"
+brain_regions_path = "/mnt/upramdya_data/MD/Region_map_250116.csv"
 
 
 class ProgressCallback(Callback):
@@ -369,23 +369,28 @@ class Config:
 
     # # Skeleton metrics
 
-    # contact_nodes = (["Rfront", "Lfront"],)
+    contact_nodes = ["Rfront", "Lfront"]
 
-    # contact_threshold: tuple = (0, 13)
-    # gap_between_contacts: int = 1 / 2
-    # contact_min_length: int = 1 / 2
+    contact_threshold: tuple = (0, 13)
+    gap_between_contacts: int = 1 / 2
+    contact_min_length: int = 1 / 2
 
     # Skeleton metrics: longer
 
     skeleton_tracks_smoothing: bool = False
 
-    contact_nodes = ["Thorax", "Head"]
+    # contact_nodes = ["Thorax", "Head"]
 
-    contact_threshold: tuple = (0, 40)
-    gap_between_contacts: int = 3 / 2
-    contact_min_length: int = 2
+    # contact_threshold: tuple = (0, 40)
+    # gap_between_contacts: int = 3 / 2
+    # contact_min_length: int = 2
 
     hidden_value: int = -1
+
+    def __post_init__(self):
+        print("Config loaded with the following parameters:")
+        for field_name, field_value in self.__dict__.items():
+            print(f"{field_name}: {field_value}")
 
     def set_experiment_config(self, experiment_type):
         """
@@ -413,6 +418,7 @@ class Config:
             setattr(self, property_name, value)
         else:
             raise AttributeError(f"Config has no attribute named '{property_name}'")
+
 
 # @dataclass
 class FlyMetadata:
@@ -480,12 +486,18 @@ class FlyMetadata:
                 self.brain_region = brain_regions.iloc[matched_index][
                     "Simplified region"
                 ]
+                self.simplified_nickname = brain_regions.iloc[matched_index][
+                    "Simplified Nickname"
+                ]
+                self.split = brain_regions.iloc[matched_index]["Split"]
             except KeyError:
                 print(
                     f"Genotype {genotype} not found in brain regions table for {self.name}. Defaulting to PR"
                 )
                 self.nickname = "PR"
                 self.brain_region = "Control"
+                self.simplified_nickname = "PR"
+                self.split = "m"
 
         return self.nickname, self.brain_region
 
@@ -3199,6 +3211,14 @@ class Dataset:
                 if fly.metadata.brain_region is not None
                 else "Unknown"
             )
+            dataset["Simplified Nickname"] = (
+                fly.metadata.simplified_nickname
+                if fly.metadata.simplified_nickname is not None
+                else "Unknown"
+            )
+            dataset["Split"] = (
+                fly.metadata.split if fly.metadata.split is not None else "Unknown"
+            )
 
             # Add the metadata for the fly's arena as columns
             for var, data in fly.metadata.arena_metadata.items():
@@ -3265,6 +3285,16 @@ class Dataset:
                             "Brain region": (
                                 fly.metadata.brain_region
                                 if fly.metadata.brain_region is not None
+                                else "Unknown"
+                            ),
+                            "Simplified Nickname": (
+                                fly.metadata.simplified_nickname
+                                if fly.metadata.simplified_nickname is not None
+                                else "Unknown"
+                            ),
+                            "Split": (
+                                fly.metadata.split
+                                if fly.metadata.split is not None
                                 else "Unknown"
                             ),
                             **{

@@ -40,7 +40,6 @@ def calculate_relative_positions(group, keypoint_columns):
     )
 
     initial_positions = group[keypoint_columns].iloc[0]
-    final_positions = group[keypoint_columns].iloc[-1]
     displacements = group[keypoint_columns] - initial_positions
 
     # Calculate median euclidean distance
@@ -51,8 +50,10 @@ def calculate_relative_positions(group, keypoint_columns):
     final_distance = group["euclidean_distance"].iloc[-1]
     direction = 1 if final_distance > initial_distance else -1
 
-    # Calculate raw displacement
-    raw_displacement = np.sqrt(((final_positions - initial_positions) ** 2).sum())
+    # Calculate raw displacement for centre_preprocessed keypoint
+    final_x = group["x_centre_preprocessed"].iloc[-1]
+    final_y = group["y_centre_preprocessed"].iloc[-1]
+    raw_displacement = np.sqrt((final_x - initial_x) ** 2 + (final_y - initial_y) ** 2)
 
     return (
         {f"{col}_disp_mean": displacements[col].mean() for col in keypoint_columns}
@@ -294,8 +295,8 @@ def main(
 
 
 if __name__ == "__main__":
-    input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Coordinates/240110_coordinates_Data/contact_data/250106_Pooled_contact_data.feather"
-    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Coordinates/250106_Transformed_contact_data.feather"
+    input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/240115_short_contacts_no_cutoff_Data/contact_data/250106_Pooled_contact_data.feather"
+    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/240115_short_contacts_no_cutoff_Data/Transformed_contacts_nocutoff.feather"
 
     # input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/250106_FinalEventCutoffData_norm/contact_data/250106_Pooled_contact_data.feather"
     # output_path = ""/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/250107_Transform/250107_Transformed_contact_data_rawdisp.feather""

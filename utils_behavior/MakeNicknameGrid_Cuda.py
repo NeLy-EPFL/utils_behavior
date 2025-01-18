@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 import os
+from tqdm import tqdm
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -38,6 +39,19 @@ NICKNAME_LIST = [
     "MB247-Gal4",
     "854 (OK107-Gal4)",
     "MBON-11-GaL4 (MBON-γ1pedc>α/β)",
+    "LC25",
+    "LC4",
+    "86666 (LH1139)",
+    "86637 (LH2220)",
+    "86705 (LH1668)",
+    "86699 (LH123)",
+    "SS52577-gal4 (PBG2‐9.s‐FBℓ3.b‐NO2V.b (PB))",
+    "SS00078-gal4 (PBG2‐9.s‐FBℓ3.b‐NO2D.b (PB))",
+    "SS02239-gal4 (P-F3LC patch line)",
+    "MB312B (PAM-07)",
+    "MB043B (PAM-11)",
+    "PAM-01 (MB315C)",
+    "MB063B (PAM-10)",
 ]
 
 METADATA_COLUMNS = [
@@ -158,6 +172,11 @@ def create_video_grid_with_features(
         )
         fps = videos[0].get(cv2.CAP_PROP_FPS)
 
+        # Determine total number of frames to process
+        total_frames = min(int(v.get(cv2.CAP_PROP_FRAME_COUNT)) for v in videos)
+        if test:
+            total_frames = min(total_frames, int(CONFIG["test_duration"] * fps))
+
         max_width, max_height = max(widths), max(heights)
         new_width = max_width * len(videos) + CONFIG["horizontal_padding"] * (
             len(videos) + 1
@@ -175,25 +194,24 @@ def create_video_grid_with_features(
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         out = cv2.VideoWriter(str(output_path), fourcc, fps, (new_width, new_height))
 
-        frame_count = 0
-        max_frames = int(CONFIG["test_duration"] * fps) if test else float("inf")
+        with tqdm(total=total_frames, desc="Processing frames") as pbar:
+            for frame_count in range(total_frames):
+                grid_frame = create_grid_frame(new_height, new_width, grid_text)
 
-        while frame_count < max_frames:
-            grid_frame = create_grid_frame(new_height, new_width, grid_text)
+                for i, (video, identifier) in enumerate(zip(videos, identifiers)):
+                    frame = read_and_process_frame(video, max_width, max_height)
+                    if frame is None:
+                        logger.warning(
+                            f"End of video {i} reached before expected frame count."
+                        )
+                        continue
 
-            for i, (video, identifier) in enumerate(zip(videos, identifiers)):
-                frame = read_and_process_frame(video, max_width, max_height)
-                if frame is None:
-                    continue
+                    place_frame_in_grid(
+                        grid_frame, frame, i, max_width, max_height, identifier
+                    )
 
-                place_frame_in_grid(
-                    grid_frame, frame, i, max_width, max_height, identifier
-                )
-
-            out.write(grid_frame)
-            frame_count += 1
-            if frame_count % 100 == 0:
-                logger.info(f"Processed {frame_count} frames")
+                out.write(grid_frame)
+                pbar.update(1)
 
         return out
 
@@ -291,12 +309,20 @@ def generate_metadata(data: pd.DataFrame) -> str:
     return title
 
 
-def main(test=False):
+def main(test=False, full_screen=False):
     transformed_data = load_dataset(DATA_PATH)
     if transformed_data.empty:
         return
 
     ensure_output_directory_exists(CONFIG["output_dir"])
+
+    # If full screen, get all unique nicknames in the dataset, else use the NICKNAME_LIST
+
+    if full_screen:
+        NICKNAME_LIST = transformed_data["Nickname"].unique()
+
+    else:
+        NICKNAME_LIST = NICKNAME_LIST
 
     for nickname in NICKNAME_LIST:
         nickname_data = filter_by_nickname(transformed_data, nickname)
@@ -315,6 +341,12 @@ def main(test=False):
 
         title = generate_metadata(nickname_data)
         output_filename = f"{nickname}_grid.mp4"
+
+        # Check if the video grid already exists and if so, skip to the next nickname
+
+        if os.path.exists(CONFIG["output_dir"] + output_filename):
+            logger.info(f"Video grid already exists: {output_filename}")
+            continue
 
         identifiers = generate_identifiers(nickname_data, video_paths)
         video_grid = create_video_grid_with_features(

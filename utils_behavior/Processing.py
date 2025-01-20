@@ -29,7 +29,7 @@ def butter_lowpass_filter(data, cutoff, order):
     return y
 
 
-def savgol_lowpass_filter(data, window_length, polyorder):
+def savgol_lowpass_filter(data, window_length=221, polyorder=1):
     """
     Apply a Savitzky-Golay low-pass filter to the data. This is useful for removing high-frequency noise from data while
     preserving sharp edges in the data.

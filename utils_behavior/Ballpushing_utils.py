@@ -341,6 +341,11 @@ class Config:
     success_cutoff_method: str = "final_event"
     tracks_smoothing: bool = True
 
+    log_missing = True
+    log_path = get_data_server / "MD/MultiMazeRecorder"
+
+    keep_idle = True
+
     # Coordinates dataset attributes
 
     downsampling_factor: int = None  # Classic values used are 5 or 10.
@@ -574,12 +579,15 @@ class FlyMetadata:
 
 
 class FlyTrackingData:
-    def __init__(self, fly, time_range=None):
-
+    def __init__(self, fly, time_range=None, log_missing=False, keep_idle=False):
         self.fly = fly
         self.flytrack = None
         self.balltrack = None
         self.skeletontrack = None
+        self.valid_data = True  # Initialize valid_data
+
+        self.log_missing = log_missing
+        self.keep_idle = keep_idle
 
         # Load the tracking files
         try:
@@ -600,6 +608,8 @@ class FlyTrackingData:
                 self.balltrack = None
                 self.skeletontrack = None
                 self.valid_data = False
+                if self.log_missing:
+                    self.log_missing_fly()
                 return
 
         except (FileNotFoundError, OSError, IOError, Exception) as e:
@@ -608,6 +618,8 @@ class FlyTrackingData:
             self.balltrack = None
             self.skeletontrack = None
             self.valid_data = False
+            if self.log_missing:
+                self.log_missing_fly()
             return
 
         if self.fly.config.time_range is not None:
@@ -619,8 +631,7 @@ class FlyTrackingData:
 
         self.check_dying()
 
-        if self.valid_data:
-
+        if self.valid_data or self.keep_idle:
             self.duration = self.balltrack.objects[0].dataset["time"].iloc[-1]
 
             self.start_x, self.start_y = self.get_initial_position()
@@ -638,18 +649,12 @@ class FlyTrackingData:
                     )
 
                     if self.final_event_init:
-
-                        # print(f"Final event: {self.final_event_init}")
-
-                        # Get the time associated with the event following the final if any
-
                         final_time = (
                             self.interaction_events[0][0][self.final_event_init[0]][1]
                             + 1
                         ) / self.fly.experiment.fps
 
                         if self.final_event_init:
-                            # Include the final event by setting the cutoff time range to end just after the final event
                             self.success_cutoff_time_range = (
                                 0,
                                 final_time,
@@ -670,15 +675,14 @@ class FlyTrackingData:
                     else:
                         self.success_cutoff_time_range = (0, None)
 
-                # print(f"Success cutoff time range: {self.success_cutoff_time_range}")
-
                 self.filter_tracking_data(self.success_cutoff_time_range)
 
-                # Recompute interaction events based on the filtered data
                 self.interaction_events = self.find_flyball_interactions()
 
         else:
             print(f"Invalid data for: {self.fly.metadata.name}. Skipping.")
+            if self.log_missing:
+                self.log_missing_fly()
             return
 
     def load_tracking_file(
@@ -738,15 +742,7 @@ class FlyTrackingData:
             fly_data = self.flytrack.objects[fly_idx].dataset
 
             for ball_idx in range(0, len(self.balltrack.objects)):
-                # print(f"Fly data for fly_{fly_idx}:")
-                # print(fly_data)
-                # print(f"Fly data columns: {fly_data.columns}")
-
                 ball_data = self.balltrack.objects[ball_idx].dataset
-                # print(self.balltrack.dataset[self.balltrack.dataset["object"] == f"ball_{ball_idx}"])
-                # print(f"Ball data for ball_{ball_idx}:")
-                # print(f"Ball data columns: {ball_data.columns}")
-                # print(ball_data)
 
                 interaction_events = find_interaction_events(
                     fly_data,
@@ -758,8 +754,6 @@ class FlyTrackingData:
                     event_min_length=event_min_length,
                     fps=self.fly.experiment.fps,
                 )
-
-                # print(f"Interaction events for fly {fly_idx} and ball {ball_idx}: {interaction_events}")
 
                 if fly_idx not in fly_interactions:
                     fly_interactions[fly_idx] = {}
@@ -801,9 +795,10 @@ class FlyTrackingData:
         # Check if the interaction events dictionary is empty
         if not self.interaction_events or not any(self.interaction_events.values()):
             print(f"{self.fly.metadata.name} did not interact with the ball.")
-            return False
 
-        # print(f"{self.fly.metadata.name} is alive and interacted with the ball.")
+            if not self.keep_idle:
+                return False
+
         return True
 
     def check_dying(self):
@@ -813,9 +808,6 @@ class FlyTrackingData:
             return False
 
         fly_data = self.flytrack.objects[0].dataset
-
-        # Check if the fly has a continuous period of 15 min where it doesn't move more than 30 pixels,
-        # which means its velocity is less than 2 px/s for 15 min in a row
 
         # Get the velocity of the fly
         velocity = np.sqrt(
@@ -965,6 +957,20 @@ class FlyTrackingData:
             self.balltrack.filter_data(time_range)
         if self.skeletontrack is not None:
             self.skeletontrack.filter_data(time_range)
+
+    def log_missing_fly(self):
+        """Log the metadata of flies that do not pass the validity test."""
+        log_path = self.fly.config.log_path
+
+        # Get the metadata from the fly.FlyMetadata and write it to a log file
+
+        # Get the fly's metadata
+        name = self.fly.metadata.name
+        metadata = self.fly.metadata.get_arena_metadata()
+
+        # Write the metadata to a log file
+        with open(f"{log_path}/missing_flies.log", "a") as f:
+            f.write(f"{name}: {metadata}\n")
 
 
 # TODO : Test the valid_data function in conditions where I know the fly is dead or the arena is empty or not to check success

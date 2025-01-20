@@ -341,6 +341,10 @@ class Config:
     success_cutoff_method: str = "final_event"
     tracks_smoothing: bool = True
 
+    # Coordinates dataset attributes
+
+    downsampling_factor: int = None  # Classic values used are 5 or 10.
+
     # Events related thresholds
 
     interaction_threshold: tuple = (0, 70)
@@ -2840,9 +2844,7 @@ class Dataset:
         try:
             if metrics == "coordinates":
                 for fly in self.flies:
-                    data = self._prepare_dataset_coordinates(
-                        fly, downslampling_factor=10
-                    )
+                    data = self._prepare_dataset_coordinates(fly)
                     Dataset.append(data)
 
             elif metrics == "contact_data":
@@ -2889,7 +2891,7 @@ class Dataset:
 
         return self.data
 
-    def _prepare_dataset_coordinates(self, fly, downslampling_factor=None):
+    def _prepare_dataset_coordinates(self, fly, downsampling_factor=None):
         """
         Helper function to prepare individual fly dataset with fly and ball coordinates. It also adds the fly name, experiment name and arena metadata as categorical data.
 
@@ -2897,11 +2899,13 @@ class Dataset:
             fly (Fly): A Fly object.
             success_cutoff (bool): Whether to apply the success cutoff. Defaults to True.
             time_range (list): A list containing the start and end times for the dataset. Defaults to None.
-            downslampling_factor (int): The factor (in seconds) by which to downsample the dataset. Defaults to 5.
+            downsampling_factor (int): The factor (in seconds) by which to downsample the dataset. Defaults to 5.
 
         Returns:
             pandas.DataFrame: A DataFrame containing the fly's coordinates and associated metadata.
         """
+
+        downsampling_factor = fly.config.downsampling_factor
 
         # Get the fly and ball tracking for each fly and ball objects in flytrack and balltrack
         flydata = [
@@ -2945,8 +2949,8 @@ class Dataset:
                 + (dataset[f"y_ball_{i}"] - dataset[f"y_ball_{i}"].iloc[0]) ** 2
             )
 
-        if downslampling_factor:
-            dataset = dataset.iloc[:: downslampling_factor * fly.experiment.fps]
+        if downsampling_factor:
+            dataset = dataset.iloc[:: downsampling_factor * fly.experiment.fps]
 
         dataset = self._add_metadata(dataset, fly)
 
@@ -3067,11 +3071,13 @@ class Dataset:
 
         return dataset
 
-    def _prepare_dataset_F1_coordinates(self, fly, downsampling_factor=5):
+    def _prepare_dataset_F1_coordinates(self, fly, downsampling_factor=None):
         # Check if the fly ever exits the corridor
         if fly.tracking_data.exit_time is None:
             print(f"Fly {fly.metadata.name} never exits the corridor")
             return
+
+        downsampling_factor = fly.config.downsampling_factor
 
         dataset = pd.DataFrame()
 

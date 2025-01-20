@@ -362,4 +362,4 @@ def main(test=False, full_screen=False):
 
 
 if __name__ == "__main__":
-    main(test=False)
+    main(test=False, full_screen=True)

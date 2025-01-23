@@ -83,7 +83,7 @@ sys.modules["Ballpushing_utils"] = sys.modules[
     __name__
 ]  # This line creates an alias for utils_behavior.Ballpushing_utils to utils_behavior.__init__ so that the previously made pkl files can be loaded.
 
-print("Loading BallPushing utils version 16 Jan 2025")
+print("Loading BallPushing utils version 20 Jan 2025")
 
 brain_regions_path = "/mnt/upramdya_data/MD/Region_map_250116.csv"
 
@@ -342,7 +342,7 @@ class Config:
     tracks_smoothing: bool = True
 
     log_missing = True
-    log_path = get_data_server / "MD/MultiMazeRecorder"
+    log_path = get_data_server() / "MD/MultiMazeRecorder"
 
     keep_idle = True
 

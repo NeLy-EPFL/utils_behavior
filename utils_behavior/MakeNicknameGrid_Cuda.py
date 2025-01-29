@@ -7,6 +7,7 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 import os
 from tqdm import tqdm
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -26,32 +27,35 @@ CONFIG = {
 }
 
 # Constants
-DATA_PATH = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Coordinates/250106_Transformed_contact_data.feather"
+DATA_PATH = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Coordinates/240110_coordinates_Data/coordinates/250106_Pooled_coordinates.feather"
 NICKNAME_LIST = [
-    "34497 (MZ19-GAL4)",
-    "DDC-gal4",
-    "Ple-Gal4.F a.k.a TH-Gal4",
-    "MB504B (All PPL1)",
-    "VT43924 (MB-APL)",
-    "474 (MB-APL)",
-    "41744 (IR8a mutant)",
-    "50742 (MB247-GAL4)",
-    "MB247-Gal4",
-    "854 (OK107-Gal4)",
+    # "34497 (MZ19-GAL4)",
+    # "DDC-gal4",
+    # "Ple-Gal4.F a.k.a TH-Gal4",
+    # "MB504B (All PPL1)",
+    # "VT43924 (MB-APL)",
+    # "474 (MB-APL)",
+    # "41744 (IR8a mutant)",
+    # "50742 (MB247-GAL4)",
+    # "MB247-Gal4",
+    # "854 (OK107-Gal4)",
     "MBON-11-GaL4 (MBON-γ1pedc>α/β)",
-    "LC25",
-    "LC4",
-    "86666 (LH1139)",
-    "86637 (LH2220)",
-    "86705 (LH1668)",
-    "86699 (LH123)",
-    "SS52577-gal4 (PBG2‐9.s‐FBℓ3.b‐NO2V.b (PB))",
-    "SS00078-gal4 (PBG2‐9.s‐FBℓ3.b‐NO2D.b (PB))",
-    "SS02239-gal4 (P-F3LC patch line)",
-    "MB312B (PAM-07)",
-    "MB043B (PAM-11)",
-    "PAM-01 (MB315C)",
-    "MB063B (PAM-10)",
+    # "LC25",
+    # "LC4",
+    # "86666 (LH1139)",
+    # "86637 (LH2220)",
+    # "86705 (LH1668)",
+    # "86699 (LH123)",
+    # "SS52577-gal4 (PBG2‐9.s‐FBℓ3.b‐NO2V.b (PB))",
+    # "SS00078-gal4 (PBG2‐9.s‐FBℓ3.b‐NO2D.b (PB))",
+    # "SS02239-gal4 (P-F3LC patch line)",
+    # "MB312B (PAM-07)",
+    # "MB043B (PAM-11)",
+    # "PAM-01 (MB315C)",
+    # "MB063B (PAM-10)",
+    "R15B07-gal4 (R1/R3/R4d (EB))",
+    "R15B07-gal4 ",
+    "MBON-11-GaL4",
 ]
 
 METADATA_COLUMNS = [
@@ -250,7 +254,7 @@ def read_and_process_frame(video, max_width, max_height):
     frame = frame[: CONFIG["max_height"], :, :]  # Crop if needed
 
     # Use GPU for resizing
-    gpu_frame = cv2.cuda_GpuMat()
+    gpu_frame = cv2.cuda.GpuMat()
     gpu_frame.upload(frame)
     gpu_frame = cv2.cuda.resize(gpu_frame, (max_width, max_height))
     return gpu_frame.download()
@@ -309,6 +313,11 @@ def generate_metadata(data: pd.DataFrame) -> str:
     return title
 
 
+def sanitize_filename(filename: str) -> str:
+    # Remove or replace problematic characters
+    return re.sub(r'[<>:"/\\|?*]', "_", filename)
+
+
 def main(test=False, full_screen=False):
     transformed_data = load_dataset(DATA_PATH)
     if transformed_data.empty:
@@ -319,12 +328,11 @@ def main(test=False, full_screen=False):
     # If full screen, get all unique nicknames in the dataset, else use the NICKNAME_LIST
 
     if full_screen:
-        NICKNAME_LIST = transformed_data["Nickname"].unique()
-
+        nickname_list = transformed_data["Nickname"].unique()
     else:
-        NICKNAME_LIST = NICKNAME_LIST
+        nickname_list = NICKNAME_LIST
 
-    for nickname in NICKNAME_LIST:
+    for nickname in nickname_list:
         nickname_data = filter_by_nickname(transformed_data, nickname)
         if nickname_data.empty:
             continue
@@ -340,11 +348,11 @@ def main(test=False, full_screen=False):
             continue
 
         title = generate_metadata(nickname_data)
-        output_filename = f"{nickname}_grid.mp4"
+        output_filename = sanitize_filename(f"{nickname}_grid.mp4")
 
         # Check if the video grid already exists and if so, skip to the next nickname
 
-        if os.path.exists(CONFIG["output_dir"] + output_filename):
+        if os.path.exists(os.path.join(CONFIG["output_dir"], output_filename)):
             logger.info(f"Video grid already exists: {output_filename}")
             continue
 
@@ -362,4 +370,4 @@ def main(test=False, full_screen=False):
 
 
 if __name__ == "__main__":
-    main(test=False, full_screen=True)
+    main(test=False, full_screen=False)

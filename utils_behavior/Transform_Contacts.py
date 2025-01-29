@@ -295,8 +295,8 @@ def main(
 
 
 if __name__ == "__main__":
-    input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/240115_short_contacts_no_cutoff_Data/contact_data/250106_Pooled_contact_data.feather"
-    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/240115_short_contacts_no_cutoff_Data/Transformed_contacts_nocutoff.feather"
+    input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/240120_short_contacts_no_cutoff_no_downsample_Data/contact_data/250106_Pooled_contact_data.feather"
+    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/240120_short_contacts_no_cutoff_no_downsample_Data/Transformed_contacts_nocutoff_flexible_rule.feather"
 
     # input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/250106_FinalEventCutoffData_norm/contact_data/250106_Pooled_contact_data.feather"
     # output_path = ""/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/250107_Transform/250107_Transformed_contact_data_rawdisp.feather""

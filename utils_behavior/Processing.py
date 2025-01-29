@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 import h5py
 import warnings
+import pandas as pd
 
 # Compute low-pass filtered data
 
@@ -189,3 +190,54 @@ def replace_nans_with_previous_value(arr):
     for i in range(1, len(arr)):
         if np.isnan(arr[i]):
             arr[i] = arr[i - 1]
+
+
+def permutation_test(observed, random, n_permutations=1000):
+    """
+    Perform a permutation test to compare the means of two groups.
+
+    This function calculates the observed mean difference between two groups and performs a permutation test to determine the significance of the observed difference. The permutation test involves shuffling the combined data and recalculating the mean difference for a specified number of permutations.
+
+    Args:
+        observed (pd.DataFrame): A DataFrame containing the observed data.
+        random (pd.DataFrame): A DataFrame containing the random data.
+        n_permutations (int, optional): The number of permutations to perform. Default is 1000.
+
+    Returns:
+        tuple: A tuple containing:
+            - observed_diff (pd.Series): The observed mean difference between the two groups at each time point.
+            - p_values (np.ndarray): The p-values for each time point, representing the proportion of permuted mean differences that are as extreme as the observed difference.
+
+    Example:
+        >>> observed = pd.DataFrame([[1, 2, 3], [4, 5, 6]])
+        >>> random = pd.DataFrame([[7, 8, 9], [10, 11, 12]])
+        >>> observed_diff, p_values = permutation_test(observed, random, n_permutations=1000)
+    """
+    combined = pd.concat([observed, random], axis=1)
+    observed_diff = observed.mean(axis=1, skipna=True) - random.mean(
+        axis=1, skipna=True
+    )
+    perm_diffs = []
+
+    for i in range(n_permutations):
+        # Shuffle columns and split back into two groups
+        permuted_df = combined.sample(frac=1, axis=1, replace=False, random_state=i)
+        perm_group1 = permuted_df.iloc[:, : observed.shape[1]]
+        perm_group2 = permuted_df.iloc[:, observed.shape[1] :]
+
+        # Calculate mean difference of permuted groups at each time point
+        perm_diff = perm_group1.mean(axis=1, skipna=True) - perm_group2.mean(
+            axis=1, skipna=True
+        )
+        perm_diffs.append(perm_diff.values)
+
+    # Calculate p-values: proportion of permuted mean differences that are as extreme as observed
+    perm_diffs = np.array(perm_diffs)
+    p_values = np.array(
+        [
+            np.mean(np.abs(perm_diffs[:, i]) >= np.abs(observed_diff[i]))
+            for i in range(len(observed_diff))
+        ]
+    )
+
+    return observed_diff, p_values

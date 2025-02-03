@@ -26,6 +26,8 @@ CONFIG = {
     "test_duration": 10,  # seconds
 }
 
+MIN_DURATION = 1800  # 30 minutes
+
 # Constants
 DATA_PATH = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Coordinates/240110_coordinates_Data/coordinates/250106_Pooled_coordinates.feather"
 NICKNAME_LIST = [
@@ -39,7 +41,7 @@ NICKNAME_LIST = [
     # "50742 (MB247-GAL4)",
     # "MB247-Gal4",
     # "854 (OK107-Gal4)",
-    "MBON-11-GaL4 (MBON-γ1pedc>α/β)",
+    # "MBON-11-GaL4 (MBON-γ1pedc>α/β)",
     # "LC25",
     # "LC4",
     # "86666 (LH1139)",
@@ -53,9 +55,10 @@ NICKNAME_LIST = [
     # "MB043B (PAM-11)",
     # "PAM-01 (MB315C)",
     # "MB063B (PAM-10)",
-    "R15B07-gal4 (R1/R3/R4d (EB))",
-    "R15B07-gal4 ",
-    "MBON-11-GaL4",
+    # "R15B07-gal4 (R1/R3/R4d (EB))",
+    # "R15B07-gal4 ",
+    # "MBON-11-GaL4",
+    "MB543B",
 ]
 
 METADATA_COLUMNS = [
@@ -123,10 +126,12 @@ def load_video(path: Path) -> Optional[cv2.VideoCapture]:
     return None
 
 
-def load_videos(video_paths: List[Path]) -> List[cv2.VideoCapture]:
+def load_videos(video_paths: List[Path]) -> List[tuple[cv2.VideoCapture, Path]]:
     with ThreadPoolExecutor() as executor:
         videos = list(executor.map(load_video, video_paths))
-    return [video for video in videos if video is not None]
+    return [
+        (video, path) for video, path in zip(videos, video_paths) if video is not None
+    ]
 
 
 def add_identifier(frame: np.ndarray, identifier: str, position="bottom") -> np.ndarray:
@@ -339,11 +344,53 @@ def main(test=False, full_screen=False):
 
         flypaths = nickname_data["flypath"].unique()
         video_paths = get_video_paths(flypaths)
-        videos = load_videos(video_paths)
 
-        logger.info(f"Number of valid videos loaded: {len(videos)}")
+        # Load videos with their original paths
+        video_entries = load_videos(video_paths)
 
-        if not videos:
+        # Filter videos and track exclusions
+        valid_videos = []
+        valid_paths = []
+        excluded_count = 0
+
+        for idx, (video, path) in enumerate(video_entries, 1):
+            fps = video.get(cv2.CAP_PROP_FPS)
+            frame_count = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+            duration = frame_count / fps if fps > 0 else 0
+
+            if duration < MIN_DURATION:
+                mins = duration // 60
+                secs = duration % 60
+                logger.warning(
+                    f"Excluding video {idx}/{len(video_entries)}: "
+                    f"'{path.name}' ({int(mins):02d}:{int(secs):02d})"
+                )
+                excluded_count += 1
+                video.release()  # Explicitly release excluded video
+                continue
+
+            valid_videos.append(video)
+            valid_paths.append(path)
+
+        # Handle exclusion scenarios
+        if excluded_count:
+            logger.info(
+                f"Filtered out {excluded_count} video(s) below {MIN_DURATION//60} minutes. "
+                f"Remaining: {len(valid_videos)}"
+            )
+
+        if not valid_videos:
+            logger.error("All videos excluded due to duration constraints")
+            return None  # Or raise specific exception
+
+        # Proceed with valid videos
+        logger.debug(
+            f"Valid video durations: {[v.get(cv2.CAP_PROP_FRAME_COUNT)/v.get(cv2.CAP_PROP_FPS) for v in valid_videos]}"
+        )
+
+        logger.info(f"Number of valid videos loaded: {len(valid_videos)}")
+
+        if not valid_videos:
             logger.error("No valid videos were loaded. Skipping.")
             continue
 
@@ -356,9 +403,9 @@ def main(test=False, full_screen=False):
             logger.info(f"Video grid already exists: {output_filename}")
             continue
 
-        identifiers = generate_identifiers(nickname_data, video_paths)
+        identifiers = generate_identifiers(nickname_data, valid_paths)
         video_grid = create_video_grid_with_features(
-            videos,
+            valid_videos,
             grid_text=title,
             identifiers=identifiers,
             output_filename=output_filename,

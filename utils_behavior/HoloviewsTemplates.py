@@ -263,58 +263,86 @@ def compute_hline_values(data, metric, hline_method):
         )
 
 
-def sort_data(data, group_by, metric, sort_by="median"):
+def sort_data(data, group_by, metric, sort_by="median", sort_order=None):
     """
-    Sort the data by the median of the metric for each group in group_by.
+    Sort the data by the median of the metric for each group in group_by or by a specified order.
 
     Args:
         data (pandas DataFrame): The dataset to sort.
         group_by (str or list): The column(s) to group by.
         metric (str): The metric to sort by.
         sort_by (str): The method to sort the data. Either 'median' or 'original'.
+        sort_order (list): The specified order for the groups.
     """
-    if isinstance(group_by, list):
-        # Calculate the median for each group
-        median_values = data.groupby(group_by)[metric].median()
+    if sort_order is not None:
+        if isinstance(group_by, list):
+            # Ensure sort_order is a dictionary with keys for each group_by level
+            if not isinstance(sort_order, dict):
+                raise ValueError(
+                    "sort_order must be a dictionary with keys for each group_by level"
+                )
 
-        # Sort the groups by their median
-        group_order = median_values.groupby(group_by[0]).median().sort_values().index
+            for level in group_by:
+                if level in sort_order:
+                    data[level] = pd.Categorical(
+                        data[level], categories=sort_order[level], ordered=True
+                    )
+                else:
+                    raise ValueError(f"sort_order must contain an order for {level}")
 
-        # Within each group, sort the subgroups by their median
-        subgroup_order_within_group = median_values.groupby(group_by[0]).apply(
-            lambda x: x.sort_values().index.get_level_values(group_by[1])
-        )
+            data.sort_values(by=group_by, inplace=True)
 
-        # Create a new category type for the groups with the calculated order
-        data[group_by[0]] = pd.Categorical(
-            data[group_by[0]], categories=group_order, ordered=True
-        )
-
-        # Create a list to hold the correct order of subgroups across all groups
-        correct_order_global = []
-
-        # For each group, add the subgroup order to the global list
-        for group in group_order:
-            correct_order_global.extend(subgroup_order_within_group[group])
-
-        # Convert the subgroups to a categorical type with the global order
-        data[group_by[1]] = pd.Categorical(
-            data[group_by[1]], categories=correct_order_global, ordered=True
-        )
-
-        # Now you can sort
-        data.sort_values(by=group_by, inplace=True)
-
-    elif isinstance(group_by, str):
-        if sort_by == "median":
-            median_values = data.groupby(group_by)[metric].median().sort_values()
-            data["median"] = data[group_by].map(median_values)
-            data = data.sort_values("median")
-        else:
-            # Return the original order with a warning message
-            print(
-                "Invalid sort_by option. No sorting applied. The data will be displayed in the original order."
+        elif isinstance(group_by, str):
+            data[group_by] = pd.Categorical(
+                data[group_by], categories=sort_order, ordered=True
             )
+            data.sort_values(by=group_by, inplace=True)
+
+    else:
+        if isinstance(group_by, list):
+            # Calculate the median for each group
+            median_values = data.groupby(group_by)[metric].median()
+
+            # Sort the groups by their median
+            group_order = (
+                median_values.groupby(group_by[0]).median().sort_values().index
+            )
+
+            # Within each group, sort the subgroups by their median
+            subgroup_order_within_group = median_values.groupby(group_by[0]).apply(
+                lambda x: x.sort_values().index.get_level_values(group_by[1])
+            )
+
+            # Create a new category type for the groups with the calculated order
+            data[group_by[0]] = pd.Categorical(
+                data[group_by[0]], categories=group_order, ordered=True
+            )
+
+            # Create a list to hold the correct order of subgroups across all groups
+            correct_order_global = []
+
+            # For each group, add the subgroup order to the global list
+            for group in group_order:
+                correct_order_global.extend(subgroup_order_within_group[group])
+
+            # Convert the subgroups to a categorical type with the global order
+            data[group_by[1]] = pd.Categorical(
+                data[group_by[1]], categories=correct_order_global, ordered=True
+            )
+
+            # Now you can sort
+            data.sort_values(by=group_by, inplace=True)
+
+        elif isinstance(group_by, str):
+            if sort_by == "median":
+                median_values = data.groupby(group_by)[metric].median().sort_values()
+                data["median"] = data[group_by].map(median_values)
+                data = data.sort_values("median")
+            else:
+                # Return the original order with a warning message
+                print(
+                    "Invalid sort_by option. No sorting applied. The data will be displayed in the original order."
+                )
 
     return data
 

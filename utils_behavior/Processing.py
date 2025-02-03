@@ -5,6 +5,8 @@ from tqdm import tqdm
 import h5py
 import warnings
 import pandas as pd
+from typing import Dict, List, Union
+from statsmodels.stats.multitest import multipletests
 
 # Compute low-pass filtered data
 
@@ -192,52 +194,140 @@ def replace_nans_with_previous_value(arr):
             arr[i] = arr[i - 1]
 
 
-def permutation_test(observed, random, n_permutations=1000):
+def preprocess_data(
+    data: pd.DataFrame,
+    time_col: str = "time",
+    value_col: str = "distance_ball_0",
+    group_col: str = "Brain region",
+    subject_col: str = "fly",
+    bins: Union[int, List[float], None] = 10,
+) -> pd.DataFrame:
     """
-    Perform a permutation test to compare the means of two groups.
-
-    This function calculates the observed mean difference between two groups and performs a permutation test to determine the significance of the observed difference. The permutation test involves shuffling the combined data and recalculating the mean difference for a specified number of permutations.
+    Prepares a simplified dataset by aggregating time-series data into bins or using raw time values.
 
     Args:
-        observed (pd.DataFrame): A DataFrame containing the observed data.
-        random (pd.DataFrame): A DataFrame containing the random data.
-        n_permutations (int, optional): The number of permutations to perform. Default is 1000.
+        data: Input DataFrame containing time-series data
+        time_col: Name of the time column (default: 'time')
+        value_col: Name of the value column to aggregate (default: 'distance_ball_0')
+        group_col: Name of the grouping column (e.g. experimental groups) (default: 'Brain region')
+        subject_col: Name of the subject ID column (default: 'fly')
+        bins: Number of bins, bin edges, or None to use raw time values (default: 10)
 
     Returns:
-        tuple: A tuple containing:
-            - observed_diff (pd.Series): The observed mean difference between the two groups at each time point.
-            - p_values (np.ndarray): The p-values for each time point, representing the proportion of permuted mean differences that are as extreme as the observed difference.
+        DataFrame with aggregated statistics per time bin/point, group, and subject
 
     Example:
-        >>> observed = pd.DataFrame([[1, 2, 3], [4, 5, 6]])
-        >>> random = pd.DataFrame([[7, 8, 9], [10, 11, 12]])
-        >>> observed_diff, p_values = permutation_test(observed, random, n_permutations=1000)
+        >>> preprocess_data(df, time_col='timestamp', value_col='velocity', bins=20)
     """
-    combined = pd.concat([observed, random], axis=1)
-    observed_diff = observed.mean(axis=1, skipna=True) - random.mean(
-        axis=1, skipna=True
-    )
-    perm_diffs = []
+    df = data.copy()
 
-    for i in range(n_permutations):
-        # Shuffle columns and split back into two groups
-        permuted_df = combined.sample(frac=1, axis=1, replace=False, random_state=i)
-        perm_group1 = permuted_df.iloc[:, : observed.shape[1]]
-        perm_group2 = permuted_df.iloc[:, observed.shape[1] :]
+    if bins is None:
+        # Use raw time values without binning
+        time_bins = df[time_col]
+    else:
+        # Create time bins using pandas cut
+        time_bins = pd.cut(df[time_col], bins=bins, labels=False)
 
-        # Calculate mean difference of permuted groups at each time point
-        perm_diff = perm_group1.mean(axis=1, skipna=True) - perm_group2.mean(
-            axis=1, skipna=True
-        )
-        perm_diffs.append(perm_diff.values)
+    df["time_bin"] = time_bins
 
-    # Calculate p-values: proportion of permuted mean differences that are as extreme as observed
-    perm_diffs = np.array(perm_diffs)
-    p_values = np.array(
-        [
-            np.mean(np.abs(perm_diffs[:, i]) >= np.abs(observed_diff[i]))
-            for i in range(len(observed_diff))
-        ]
+    agg_funcs = {
+        "avg": ("mean", f"avg_{value_col}"),
+        "median": ("median", f"median_{value_col}"),
+    }
+
+    processed = (
+        df.groupby(["time_bin", group_col, subject_col], observed=True)[value_col]
+        .agg([agg_funcs[k][0] for k in agg_funcs])
+        .rename(columns={v[0]: v[1] for k, v in agg_funcs.items()})
+        .reset_index()
     )
 
-    return observed_diff, p_values
+    return processed
+
+
+def compute_permutation_test(
+    data: pd.DataFrame,
+    metric: str,
+    group_col: str = "Brain region",
+    control_group: str = "Control",
+    n_permutations: int = 1000,
+    progress: bool = False,
+) -> Dict[str, np.ndarray]:
+    """
+    Performs permutation testing between experimental groups and control group.
+
+    Args:
+        data: Input DataFrame containing preprocessed data
+        metric: Name of the metric column to compare (e.g. 'avg_distance_ball_0')
+        group_col: Name of the grouping column (default: 'Brain region')
+        control_group: Name of the control group (default: 'Control')
+        n_permutations: Number of permutations to perform (default: 1000)
+        progress: Show progress bar (default: False)
+
+    Returns:
+        Dictionary containing:
+        - observed_diff: Array of observed differences
+        - p_values: Array of raw p-values
+        - p_values_corrected: FDR-corrected p-values
+        - significant_timepoints: Indices of significant timepoints
+        - time_bins: Array of time bins
+
+    Example:
+        >>> results = compute_permutation_test(df, metric='avg_velocity', control_group='Placebo')
+    """
+    # Input validation
+    required_cols = ["time_bin", group_col, metric]
+    missing = [col for col in required_cols if col not in data]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    # Split data
+    focal_mask = data[group_col] != control_group
+    focal_data = data[focal_mask]
+    control_data = data[~focal_mask]
+
+    # Initialize results storage
+    time_bins = np.sort(data["time_bin"].unique())
+    results = {
+        "observed_diff": np.zeros(len(time_bins)),
+        "p_values": np.ones(len(time_bins)),
+        "p_values_corrected": np.ones(len(time_bins)),
+        "significant_timepoints": np.array([]),
+        "time_bins": time_bins,
+    }
+
+    # Main permutation loop
+    iterator = enumerate(time_bins)
+    if progress:
+        iterator = tqdm(iterator, total=len(time_bins), desc="Processing time bins")
+
+    for i, tb in iterator:
+        focal = focal_data[focal_data["time_bin"] == tb][metric].dropna()
+        control = control_data[control_data["time_bin"] == tb][metric].dropna()
+
+        if focal.empty or control.empty:
+            continue
+
+        # Calculate observed difference
+        obs_diff = np.mean(focal) - np.mean(control)
+        results["observed_diff"][i] = obs_diff
+
+        # Permutation test
+        combined = np.concatenate([focal, control])
+        n_focal = len(focal)
+        extreme_count = 0
+
+        perm_diffs = np.empty(n_permutations)
+        for p in range(n_permutations):
+            np.random.shuffle(combined)
+            perm_diffs[p] = np.mean(combined[:n_focal]) - np.mean(combined[n_focal:])
+
+        pval = (np.abs(perm_diffs) >= np.abs(obs_diff)).mean()
+        results["p_values"][i] = pval
+
+    # Multiple testing correction
+    _, pvals_corrected, _, _ = multipletests(results["p_values"], method="fdr_bh")
+    results["p_values_corrected"] = pvals_corrected
+    results["significant_timepoints"] = np.where(pvals_corrected < 0.05)[0]
+
+    return results

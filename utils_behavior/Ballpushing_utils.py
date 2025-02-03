@@ -1093,7 +1093,9 @@ class BallpushingMetrics:
                     "first_significant_event_time": first_significant_event[1],
                     "aha_moment": aha_moment[0],
                     "aha_moment_time": aha_moment[1],
-                    "insight_effect": insight_effect,
+                    "aha_moment_first": insight_effect["first_event"],
+                    "insight_effect": insight_effect["raw_effect"],
+                    "insight_effect_log": insight_effect["log_effect"],
                     "cumulated_breaks_duration": cumulated_breaks_duration,
                     "pushed": len(events_direction[0]),
                     "pulled": len(events_direction[1]),
@@ -1549,9 +1551,9 @@ class BallpushingMetrics:
         else:
             return None, None
 
-    def get_insight_effect(self, fly_idx, ball_idx):
+    def get_insight_effect(self, fly_idx, ball_idx, epsilon=1e-6, strength_threshold=2):
         """
-        Calculate the insight effect for a given fly and ball.
+        Calculate enhanced insight effect with performance analytics.
 
         Parameters
         ----------
@@ -1559,55 +1561,78 @@ class BallpushingMetrics:
             Index of the fly.
         ball_idx : int
             Index of the ball.
+        epsilon : float, optional
+            Smoothing factor to prevent division by zero.
+        strength_threshold : float, optional
+            Threshold for strong/weak classification.
 
         Returns
         -------
-        float
-            Normalized insight effect.
+        dict
+            Dictionary containing multiple insight metrics:
+            - raw_effect: Base ratio of post/pre aha performance
+            - log_effect: Log-transformed effect for normal distribution
+            - classification: Strong/weak based on threshold
+            - first_event: Flag for aha moment as first interaction
+            - post_aha_count: Number of post-aha events
         """
         significant_events = [
-            significant_event[0]
-            for significant_event in self.get_significant_events(fly_idx, ball_idx)
+            event[0] for event in self.get_significant_events(fly_idx, ball_idx)
         ]
         aha_moment_index, _ = self.get_aha_moment(fly_idx, ball_idx)
 
+        # Handle no aha moment case early
         if aha_moment_index is None:
-            return 0  # No aha moment
+            return {
+                "raw_effect": 0.0,
+                "log_effect": 0.0,
+                "classification": "none",
+                "first_event": False,
+                "post_aha_count": 0,
+            }
 
-        # Include the aha moment in the "before" segment
-        before_aha_moment = significant_events[: aha_moment_index + 1]
-        after_aha_moment = significant_events[aha_moment_index + 1 :]
+        # Segment events with aha moment in before period
+        before_aha = significant_events[: aha_moment_index + 1]
+        after_aha = significant_events[aha_moment_index + 1 :]
 
-        if before_aha_moment:
-            before_distances = self.get_distance_moved(
-                fly_idx, ball_idx, subset=before_aha_moment
-            ) / len(before_aha_moment)
-            avg_distance_before = np.mean(before_distances)
+        # Calculate average distances with safety checks
+        avg_before = self._calculate_avg_distance(fly_idx, ball_idx, before_aha)
+        avg_after = self._calculate_avg_distance(fly_idx, ball_idx, after_aha)
+
+        # Core insight calculation
+        if avg_before + epsilon == 0:
+            insight_effect = 0.0
         else:
-            avg_distance_before = 0
+            insight_effect = avg_after / (avg_before + epsilon)
 
-        if after_aha_moment:
-            after_distances = self.get_distance_moved(
-                fly_idx, ball_idx, subset=after_aha_moment
-            ) / len(after_aha_moment)
-            avg_distance_after = np.mean(after_distances)
-        else:
-            avg_distance_after = 0
-
-        if avg_distance_before == 0:
-            insight_effect = 1 if avg_distance_after > 0 else 0
-        else:
-            insight_effect = (avg_distance_after - avg_distance_before) / (
-                avg_distance_before + avg_distance_after
-            )
-
-        # Normalize the insight effect
+        # Special handling for first-event aha moments
         if aha_moment_index == 0:
-            insight_effect = 1  # Aha moment is the very first event
-        elif aha_moment_index is None:
-            insight_effect = 0  # No aha moment
+            if not after_aha:  # No post-aha events
+                insight_effect = 0.0
+            # Else use standard ratio calculation
 
-        return insight_effect
+        # Transformations and classifications
+        log_effect = np.log(insight_effect + 1) if insight_effect > 0 else 0.0
+        classification = "strong" if insight_effect > strength_threshold else "weak"
+
+        return {
+            "raw_effect": insight_effect,
+            "log_effect": log_effect,
+            "classification": classification,
+            "first_event": (aha_moment_index == 0),
+            "post_aha_count": len(after_aha),
+        }
+
+    def _calculate_avg_distance(self, fly_idx, ball_idx, events):
+        """Helper method to safely calculate average distances"""
+        if not events:
+            return 0.0
+
+        try:
+            distances = self.get_distance_moved(fly_idx, ball_idx, subset=events)
+            return np.mean(distances) / len(events)
+        except (ValueError, ZeroDivisionError):
+            return 0.0
 
     def get_success_direction(self, fly_idx, ball_idx, threshold=None):
 
@@ -3058,6 +3083,8 @@ class Dataset:
             dataset["direction_match"] = fly.f1_metrics["direction_match"]
 
             # Assign summaries condition based on F1 condition
+
+            dataset["F1_condition"] = fly.metadata.F1_condition
 
             if dataset["F1_condition"].iloc[0] == "control":
                 for key in fly.events_metrics.keys():

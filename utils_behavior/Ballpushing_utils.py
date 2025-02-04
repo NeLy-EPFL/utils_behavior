@@ -1493,8 +1493,16 @@ class BallpushingMetrics:
 
         for event in subset:
             ball_data.loc[event[0] : event[1], "euclidean_distance"] = np.sqrt(
-                (ball_data["x_centre"] - ball_data["x_centre"].iloc[event[0]]) ** 2
-                + (ball_data["y_centre"] - ball_data["y_centre"].iloc[event[0]]) ** 2
+                (
+                    ball_data["x_centre"].iloc[event[1]]
+                    - ball_data["x_centre"].iloc[event[0]]
+                )
+                ** 2
+                + (
+                    ball_data["y_centre"].iloc[event[1]]
+                    - ball_data["y_centre"].iloc[event[0]]
+                )
+                ** 2
             )
 
         return ball_data["euclidean_distance"].sum()
@@ -1584,8 +1592,8 @@ class BallpushingMetrics:
         # Handle no aha moment case early
         if aha_moment_index is None:
             return {
-                "raw_effect": 0.0,
-                "log_effect": 0.0,
+                "raw_effect": 1.0,
+                "log_effect": 1.0,
                 "classification": "none",
                 "first_event": False,
                 "post_aha_count": 0,
@@ -1601,14 +1609,14 @@ class BallpushingMetrics:
 
         # Core insight calculation
         if avg_before + epsilon == 0:
-            insight_effect = 0.0
+            insight_effect = 1.0
         else:
             insight_effect = avg_after / (avg_before + epsilon)
 
         # Special handling for first-event aha moments
         if aha_moment_index == 0:
             if not after_aha:  # No post-aha events
-                insight_effect = 0.0
+                insight_effect = 1.0
             # Else use standard ratio calculation
 
         # Transformations and classifications

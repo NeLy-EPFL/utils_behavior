@@ -2930,15 +2930,16 @@ class Dataset:
 
         return self.data
 
-    def _prepare_dataset_coordinates(self, fly, downsampling_factor=None):
+    def _prepare_dataset_coordinates(
+        self, fly, downsampling_factor=None, annotate_events=True
+    ):
         """
         Helper function to prepare individual fly dataset with fly and ball coordinates. It also adds the fly name, experiment name and arena metadata as categorical data.
 
         Args:
             fly (Fly): A Fly object.
-            success_cutoff (bool): Whether to apply the success cutoff. Defaults to True.
-            time_range (list): A list containing the start and end times for the dataset. Defaults to None.
-            downsampling_factor (int): The factor (in seconds) by which to downsample the dataset. Defaults to 5.
+            downsampling_factor (int): The factor (in seconds) by which to downsample the dataset. Defaults to None.
+            annotate_events (bool): Whether to annotate the dataset with interaction events. Defaults to False.
 
         Returns:
             pandas.DataFrame: A DataFrame containing the fly's coordinates and associated metadata.
@@ -2990,6 +2991,17 @@ class Dataset:
 
         if downsampling_factor:
             dataset = dataset.iloc[:: downsampling_factor * fly.experiment.fps]
+
+        if annotate_events:
+            interaction_events = fly.tracking_data.find_flyball_interactions()
+            event_frames = np.full(len(dataset), np.nan)
+            event_index = 0
+            for fly_idx, ball_events in interaction_events.items():
+                for ball_idx, events in ball_events.items():
+                    for event in events:
+                        event_frames[event[0] : event[1]] = event_index
+                        event_index += 1
+            dataset["interaction_event"] = event_frames
 
         dataset = self._add_metadata(dataset, fly)
 

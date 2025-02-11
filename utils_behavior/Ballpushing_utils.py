@@ -1589,11 +1589,21 @@ class BallpushingMetrics:
         ]
         aha_moment_index, _ = self.get_aha_moment(fly_idx, ball_idx)
 
+        # Handle no significant events case early
+        if not significant_events:
+            return {
+                "raw_effect": np.nan,
+                "log_effect": np.nan,
+                "classification": "none",
+                "first_event": False,
+                "post_aha_count": 0,
+            }
+
         # Handle no aha moment case early
         if aha_moment_index is None:
             return {
-                "raw_effect": 1.0,
-                "log_effect": 1.0,
+                "raw_effect": np.nan,
+                "log_effect": np.nan,
                 "classification": "none",
                 "first_event": False,
                 "post_aha_count": 0,
@@ -1608,19 +1618,15 @@ class BallpushingMetrics:
         avg_after = self._calculate_avg_distance(fly_idx, ball_idx, after_aha)
 
         # Core insight calculation
-        if avg_before + epsilon == 0:
-            insight_effect = 1.0
-        else:
-            insight_effect = avg_after / (avg_before + epsilon)
-
-        # Special handling for first-event aha moments
         if aha_moment_index == 0:
-            if not after_aha:  # No post-aha events
-                insight_effect = 1.0
-            # Else use standard ratio calculation
+            insight_effect = 1.0
+        elif avg_before == 0:
+            insight_effect = np.nan
+        else:
+            insight_effect = avg_after / avg_before
 
         # Transformations and classifications
-        log_effect = np.log(insight_effect + 1) if insight_effect > 0 else 0.0
+        log_effect = np.log(insight_effect + 1) if insight_effect > 0 else np.nan
         classification = "strong" if insight_effect > strength_threshold else "weak"
 
         return {
@@ -1634,13 +1640,13 @@ class BallpushingMetrics:
     def _calculate_avg_distance(self, fly_idx, ball_idx, events):
         """Helper method to safely calculate average distances"""
         if not events:
-            return 0.0
+            return np.nan
 
         try:
             distances = self.get_distance_moved(fly_idx, ball_idx, subset=events)
             return np.mean(distances) / len(events)
         except (ValueError, ZeroDivisionError):
-            return 0.0
+            return np.nan
 
     def get_success_direction(self, fly_idx, ball_idx, threshold=None):
 
@@ -1676,6 +1682,37 @@ class BallpushingMetrics:
             return "pull"
         else:
             return None
+
+    def get_time_chamber(self):
+        """
+        Get the time spent by the fly in the chamber, meaning within a 50 px radius of the fly start position.
+
+        Returns
+        -------
+        float
+            Time spent in the chamber in seconds.
+        """
+        # Get the tracking data for the fly
+        tracking_data = self.tracking_data
+
+        # Determine the start position by averaging the first 10-20 frames
+        num_frames_to_average = 20
+        start_position_x = np.mean(tracking_data.x[:num_frames_to_average])
+        start_position_y = np.mean(tracking_data.y[:num_frames_to_average])
+
+        # Calculate the distance from the start position for each frame
+        distances = np.sqrt(
+            (tracking_data.x - start_position_x) ** 2
+            + (tracking_data.y - start_position_y) ** 2
+        )
+
+        # Determine the frames where the fly is within a 50 px radius of the start position
+        in_chamber = distances <= 50
+
+        # Calculate the time spent in the chamber
+        time_in_chamber = np.sum(in_chamber) / self.fly.experiment.fps
+
+        return time_in_chamber
 
 
 class F1Metrics:

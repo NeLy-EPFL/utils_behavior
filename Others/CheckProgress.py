@@ -22,6 +22,7 @@ def count_preprocessed_videos(directories):
         for video in directory.rglob("*.mp4"):
             total_videos += 1
             if "_preprocessed" in video.stem:
+                print(f"Found preprocessed video: {video}")
                 preprocessed_videos += 1
     return (
         preprocessed_videos,
@@ -35,7 +36,7 @@ def count_preprocessed_videos(directories):
 
 
 # Example usage
-yaml_file = Path("/home/durrieu/sleap_tools/folders_to_process.yaml")
+yaml_file = Path("/home/durrieu/sleap_tools/control_folders.yaml")
 
 directories = load_directories_from_yaml(yaml_file)
 preprocessed_videos, total_videos, ratio = count_preprocessed_videos(directories)
@@ -51,6 +52,7 @@ def count_full_body_slp_files(directories):
     full_body_slp_files = 0
     for directory in directories:
         for slp_file in directory.rglob("*_full*.slp"):
+            print(f"Found full body slp file: {slp_file}")
             full_body_slp_files += 1
     return full_body_slp_files
 
@@ -82,13 +84,13 @@ def find_folders_with_preprocessed_video_but_no_full_body_slp(directories):
     return folders
 
 
-folders_with_preprocessed_video_but_no_full_body_slp = (
-    find_folders_with_preprocessed_video_but_no_full_body_slp(directories)
-)
+# folders_with_preprocessed_video_but_no_full_body_slp = (
+#     find_folders_with_preprocessed_video_but_no_full_body_slp(directories)
+# )
 
-print(
-    f"Folders missing a slp file but with preprocessed folder:{folders_with_preprocessed_video_but_no_full_body_slp}"
-)
+# print(
+#     f"Folders missing a slp file but with preprocessed folder:{folders_with_preprocessed_video_but_no_full_body_slp}"
+# )
 
 
 def find_last_folders(directories):

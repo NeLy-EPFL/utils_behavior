@@ -30,7 +30,11 @@ def calculate_derivatives(group, keypoint_columns):
     )
 
 
-def calculate_relative_positions(group, keypoint_columns):
+def calculate_relative_positions(group, keypoint_columns, fly_start_map):
+
+    fly = group["fly"].iloc[0]
+    overall_start = fly_start_map[fly]
+
     # Calculate the Euclidean distance between each frame and the initial frame
     initial_x = group["x_centre_preprocessed"].iloc[0]
     initial_y = group["y_centre_preprocessed"].iloc[0]
@@ -55,6 +59,23 @@ def calculate_relative_positions(group, keypoint_columns):
     final_y = group["y_centre_preprocessed"].iloc[-1]
     raw_displacement = np.sqrt((final_x - initial_x) ** 2 + (final_y - initial_y) ** 2)
 
+    # Contact positions
+    contact_start_x = group["x_centre_preprocessed"].iloc[0]
+    contact_start_y = group["y_centre_preprocessed"].iloc[0]
+    contact_end_x = group["x_centre_preprocessed"].iloc[-1]
+    contact_end_y = group["y_centre_preprocessed"].iloc[-1]
+
+    # Calculate distances
+    start_distance = np.sqrt(
+        (contact_start_x - overall_start["overall_x_start"]) ** 2
+        + (contact_start_y - overall_start["overall_y_start"]) ** 2
+    )
+
+    end_distance = np.sqrt(
+        (contact_end_x - overall_start["overall_x_start"]) ** 2
+        + (contact_end_y - overall_start["overall_y_start"]) ** 2
+    )
+
     return (
         {f"{col}_disp_mean": displacements[col].mean() for col in keypoint_columns}
         | {f"{col}_disp_std": displacements[col].std() for col in keypoint_columns}
@@ -62,6 +83,8 @@ def calculate_relative_positions(group, keypoint_columns):
             "median_euclidean_distance": median_euclidean_distance,
             "direction": direction,
             "raw_displacement": raw_displacement,
+            "start_distance": start_distance,
+            "end_distance": end_distance,
         }
     )
 
@@ -101,8 +124,30 @@ def calculate_tsfresh_features(group, keypoint_columns, n_jobs):
     return extracted_features.iloc[0].to_dict()
 
 
+def get_fly_initial_positions(data):
+    """Get first recorded position for each fly in entire dataset"""
+    return (
+        data.groupby("fly")[["x_centre_preprocessed", "y_centre_preprocessed"]]
+        .first()
+        .rename(
+            columns={
+                "x_centre_preprocessed": "overall_x_start",
+                "y_centre_preprocessed": "overall_y_start",
+            }
+        )
+        .reset_index()
+    )
+
+
 def process_group(
-    fly, contact_index, group, features, keypoint_columns, metadata_columns, n_jobs
+    fly,
+    contact_index,
+    group,
+    features,
+    keypoint_columns,
+    metadata_columns,
+    fly_start_map,
+    n_jobs,
 ):
     duration = group["frame"].max() - group["frame"].min() + 1
     metadata = group[metadata_columns].iloc[0]
@@ -117,7 +162,7 @@ def process_group(
     if "derivatives" in features:
         row.update(calculate_derivatives(group, keypoint_columns))
     if "relative_positions" in features:
-        row.update(calculate_relative_positions(group, keypoint_columns))
+        row.update(calculate_relative_positions(group, keypoint_columns, fly_start_map))
     if "statistical_measures" in features:
         row.update(calculate_statistical_measures(group, keypoint_columns))
     if "fourier" in features:
@@ -144,6 +189,14 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
         "Crossing",
         "contact_index",
     ]
+    # Precompute fly initial positions
+    fly_initial_positions = get_fly_initial_positions(data)
+
+    # Create dictionary for faster lookups
+    fly_start_map = fly_initial_positions.set_index("fly")[
+        ["overall_x_start", "overall_y_start"]
+    ].to_dict("index")
+
     groups = list(data.groupby(["fly", "contact_index"]))
     total_groups = len(groups)
     logging.info(f"Processing {total_groups} groups with {n_jobs} workers")
@@ -177,10 +230,12 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
                     features,
                     keypoint_columns,
                     metadata_columns,
+                    fly_start_map,  # Pass the precomputed map
                     n_jobs,
                 )
                 for (fly, contact_index), group in chunk
             ]
+
             for i, future in enumerate(as_completed(futures), 1):
                 chunk_data.append(future.result())
                 if i % 100 == 0 or i == len(chunk):
@@ -296,7 +351,7 @@ def main(
 
 if __name__ == "__main__":
     input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/240120_short_contacts_no_cutoff_no_downsample_Data/contact_data/250106_Pooled_contact_data.feather"
-    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/240120_short_contacts_no_cutoff_no_downsample_Data/Transformed_contacts_nocutoff_flexible_rule.feather"
+    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/240204_short_contacts_no_cutoff_no_downsample_Data/Transformed_contacts_nocutoff_flexible_rule.feather"
 
     # input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/250106_FinalEventCutoffData_norm/contact_data/250106_Pooled_contact_data.feather"
     # output_path = ""/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/250107_Transform/250107_Transformed_contact_data_rawdisp.feather""

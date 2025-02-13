@@ -25,7 +25,7 @@ CONFIG = {
     "bottom_padding": 50,
     "rotate_videos": True,
     "rotation_angle": cv2.ROTATE_90_CLOCKWISE,
-    "output_dir": "/mnt/upramdya_data/MD/F1_Tracks/Grids/",
+    "output_dir": "/mnt/upramdya_data/MD/MagnetBlock/Grids",
     "max_grid_width": 3840,
     "max_grid_height": 2160,
     "min_cell_width": 320,
@@ -37,11 +37,11 @@ CONFIG = {
 MIN_DURATION = 1800  # 30 minutes
 
 # Constants
-DATA_PATH = "/mnt/upramdya_data/MD/F1_Tracks/Datasets/F1_coordinates.feather"
+DATA_PATH = "/mnt/upramdya_data/MD/MagnetBlock/Datasets/250213_coordinates.feather"
 
-groupby = "F1_condition"
+groupby = "label"
 
-METADATA_COLUMNS = ["F1_condition"]
+METADATA_COLUMNS = ["label"]
 
 
 def ensure_output_directory_exists(output_dir: str):

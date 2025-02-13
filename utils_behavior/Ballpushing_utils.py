@@ -4,10 +4,10 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from sklearn.manifold import TSNE
-from sklearn.decomposition import PCA
-from openTSNE import TSNE
-from openTSNE.callbacks import Callback
+#from sklearn.manifold import TSNE
+#from sklearn.decomposition import PCA
+#from openTSNE import TSNE
+#from openTSNE.callbacks import Callback
 from tqdm.auto import tqdm
 
 import itertools
@@ -88,16 +88,16 @@ print("Loading BallPushing utils version 20 Jan 2025")
 brain_regions_path = "/mnt/upramdya_data/MD/Region_map_250116.csv"
 
 
-class ProgressCallback(Callback):
-    def __init__(self, n_iter):
-        self.pbar = tqdm(total=n_iter, desc="t-SNE progress")
+# class ProgressCallback(Callback):
+#     def __init__(self, n_iter):
+#         self.pbar = tqdm(total=n_iter, desc="t-SNE progress")
 
-    def __call__(self, iteration, error, embedding):
-        self.pbar.update(1)
-        return False
+#     def __call__(self, iteration, error, embedding):
+#         self.pbar.update(1)
+#         return False
 
-    def close(self):
-        self.pbar.close()
+#     def close(self):
+#         self.pbar.close()
 
 
 def save_object(obj, filename):

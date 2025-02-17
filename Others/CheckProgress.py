@@ -22,7 +22,7 @@ def count_preprocessed_videos(directories):
         for video in directory.rglob("*.mp4"):
             total_videos += 1
             if "_preprocessed" in video.stem:
-                print(f"Found preprocessed video: {video}")
+                # print(f"Found preprocessed video: {video}")
                 preprocessed_videos += 1
     return (
         preprocessed_videos,

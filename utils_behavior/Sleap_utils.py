@@ -6,7 +6,7 @@ import pandas as pd
 
 import cv2
 
-from Processing import *
+from .Processing import *
 
 # import matplotlib.pyplot as plt
 import numpy as np

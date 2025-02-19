@@ -4,10 +4,11 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-#from sklearn.manifold import TSNE
-#from sklearn.decomposition import PCA
-#from openTSNE import TSNE
-#from openTSNE.callbacks import Callback
+
+# from sklearn.manifold import TSNE
+# from sklearn.decomposition import PCA
+# from openTSNE import TSNE
+# from openTSNE.callbacks import Callback
 from tqdm.auto import tqdm
 
 import itertools
@@ -352,9 +353,9 @@ class Config:
 
     # Events related thresholds
 
-    interaction_threshold: tuple = (0, 70)
-    gap_between_events: int = 4
-    events_min_length: int = 2
+    interaction_threshold: tuple = (0, 45)  # Default was 70
+    gap_between_events: int = 1  # Default was 2
+    events_min_length: int = 1  # Default was 2
 
     dead_threshold: int = 30
     adjusted_events_normalisation: int = 1000

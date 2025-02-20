@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import pyarrow.feather as feather
 from scipy.fft import fft
+from scipy.signal import find_peaks
 from tsfresh import extract_features
 from tsfresh.feature_extraction import ComprehensiveFCParameters
 from sklearn.feature_selection import VarianceThreshold
@@ -18,6 +19,53 @@ logging.basicConfig(
 num_cores = os.cpu_count()
 n_jobs = min(num_cores, 10)  # Limit to 4 CPU cores to avoid crashing the computer
 
+
+def transpose_keypoints(data):
+    """
+    Transpose keypoints so that each keypoint from each frame is a separate column
+    """
+    
+    # Extract fly relative keypoints, that are called x and y_keypointname_fly"
+    fly_relative_keypoints = data.filter(regex="^(x|y)_.*_fly$").columns
+    
+    # For each keypoint, transform the data so that each keypoint x and y from each frame is a separate column
+    
+    # Build a dictionary to store the transformed data
+    keypoints_dataset = {}
+    
+    for keypoint in fly_relative_keypoints:
+        keypoint_name = keypoint.split("_")[1]
+        keypoint_data = data.pivot(index="frame", columns="fly", values=keypoint)
+        keypoint_data.columns = keypoint_data.columns.droplevel()
+        keypoint_data.columns.name = None
+        keypoint_data = keypoint_data.add_prefix(f"{keypoint_name}_")
+        keypoints_dataset[keypoint_name] = keypoint_data
+   
+        
+    return keypoints_dataset
+
+def calculate_instantaneous_features(group, keypoint_columns):
+    velocities = group[keypoint_columns].diff()
+    accelerations = velocities.diff()
+    
+    features = {}
+    for col in keypoint_columns:
+        # Raw time series values
+        features.update({
+            f"{col}_velocity_ts": velocities[col].values,
+            f"{col}_acceleration_ts": accelerations[col].values
+        })
+        
+        # Time-series statistics
+        features.update({
+            f"{col}_vel_max": velocities[col].max(),
+            f"{col}_vel_min": velocities[col].min(),
+            f"{col}_vel_peak_freq": len(find_peaks(velocities[col])[0])/len(velocities),
+            f"{col}_acc_jerk": accelerations[col].diff().abs().mean()
+        })
+        
+    return features
+    
 
 def calculate_derivatives(group, keypoint_columns):
     velocities = group[keypoint_columns].diff()

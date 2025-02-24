@@ -3538,14 +3538,9 @@ class Dataset:
             
         events_df = fly.skeleton_metrics.events_based_contacts
         
-        # Add essential metadata columns
-        events_df['fly_id'] = fly.metadata.name
-        events_df['genotype'] = fly.metadata.arena_metadata.get('Genotype', 'unknown')
-        events_df['brain_region'] = fly.metadata.brain_region
-        events_df['fps'] = fly.experiment.fps
+        # add metadata
+        events_df = self._add_metadata(events_df, fly)
         
-        # Standardize temporal axis 
-        events_df['time_normalized'] = events_df['time_rel_onset'] / fly.config.frames_after_onset
         
         return events_df
 

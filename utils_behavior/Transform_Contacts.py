@@ -3,8 +3,8 @@ import numpy as np
 import pyarrow.feather as feather
 from scipy.fft import fft
 from scipy.signal import find_peaks
-from tsfresh import extract_features
-from tsfresh.feature_extraction import ComprehensiveFCParameters
+# from tsfresh import extract_features
+# from tsfresh.feature_extraction import ComprehensiveFCParameters
 from sklearn.feature_selection import VarianceThreshold
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
@@ -19,52 +19,94 @@ logging.basicConfig(
 num_cores = os.cpu_count()
 n_jobs = min(num_cores, 10)  # Limit to 4 CPU cores to avoid crashing the computer
 
-
 def transpose_keypoints(data):
-    """
-    Transpose keypoints so that each keypoint from each frame is a separate column
-    """
-    
-    # Extract fly relative keypoints, that are called x and y_keypointname_fly"
-    fly_relative_keypoints = data.filter(regex="^(x|y)_.*_fly$").columns
-    
-    # For each keypoint, transform the data so that each keypoint x and y from each frame is a separate column
-    
-    # Build a dictionary to store the transformed data
-    keypoints_dataset = {}
-    
-    for keypoint in fly_relative_keypoints:
-        keypoint_name = keypoint.split("_")[1]
-        keypoint_data = data.pivot(index="frame", columns="fly", values=keypoint)
-        keypoint_data.columns = keypoint_data.columns.droplevel()
-        keypoint_data.columns.name = None
-        keypoint_data = keypoint_data.add_prefix(f"{keypoint_name}_")
-        keypoints_dataset[keypoint_name] = keypoint_data
-   
-        
-    return keypoints_dataset
+    """Transpose keypoints with proper X/Y coordinate pairing"""
+    # Get all fly-relative keypoints (both X and Y)
+    x_fly_pattern = r"^x_.*_fly$"
+    y_body_pattern = r"^y_(Head|Thorax|Abdomen|Rfront|Lfront|Rmid|Lmid|Rhind|Lhind|Rwing|Lwing)$"
+    centre_pattern = r"^[xy]_centre_preprocessed$"
 
-def calculate_instantaneous_features(group, keypoint_columns):
-    velocities = group[keypoint_columns].diff()
-    accelerations = velocities.diff()
-    
+    # Combine patterns using regex OR
+    keypoint_columns = data.filter(regex=f"({x_fly_pattern}|{y_body_pattern}|{centre_pattern})").columns
+    transposed = {}
+
+    # Create unique frame identifiers
+    data = data.assign(
+        frame_count=data.groupby(["fly", "adjusted_frame"]).cumcount()
+    )
+
+    for keypoint in keypoint_columns:
+        # Split into components
+        parts = keypoint.split("_")
+        axis = parts[0]
+        
+        # Handle different naming conventions
+        if "fly" in parts:
+            # X-coordinate pattern: x_Head_fly -> Head
+            keypoint_name = "_".join(parts[1:-1])
+        elif "preprocessed" in parts:
+            # Centre coordinates: x_centre_preprocessed -> centre
+            keypoint_name = "_".join(parts[1:-1])
+        else:
+            # Y body coordinates: y_Head -> Head
+            keypoint_name = "_".join(parts[1:])
+
+        # Pivot with multi-index columns
+        keypoint_df = data.pivot(
+            index="fly",
+            columns=["adjusted_frame", "frame_count"],
+            values=keypoint
+        )
+        
+        # Clean column names: frame{number}_x/y
+        keypoint_df.columns = [
+            f"{keypoint_name}_frame{frame}_{axis}"  # Remove count reference
+            for (frame, _) in keypoint_df.columns    # Ignore count in name
+        ]
+
+        transposed.update(keypoint_df.iloc[0].to_dict())
+
+    return transposed
+
+
+def calculate_frame_features(group):
+    """Calculate per-frame velocity and angles using original coordinates"""
     features = {}
-    for col in keypoint_columns:
-        # Raw time series values
-        features.update({
-            f"{col}_velocity_ts": velocities[col].values,
-            f"{col}_acceleration_ts": accelerations[col].values
-        })
+    group = group.sort_values('adjusted_frame').reset_index(drop=True)
+    
+    # Base keypoints to process (from original columns)
+    base_keypoints = {
+        'Head', 'Thorax', 'Abdomen', 'Rfront', 'Lfront',
+        'Rmid', 'Lmid', 'Rhind', 'Lhind', 'Rwing', 'Lwing', 'centre'
+    }
+    
+    for kp in base_keypoints:
+        x_col = f'x_{kp}'
+        y_col = f'y_{kp}'
         
-        # Time-series statistics
-        features.update({
-            f"{col}_vel_max": velocities[col].max(),
-            f"{col}_vel_min": velocities[col].min(),
-            f"{col}_vel_peak_freq": len(find_peaks(velocities[col])[0])/len(velocities),
-            f"{col}_acc_jerk": accelerations[col].diff().abs().mean()
-        })
+        if x_col not in group.columns or y_col not in group.columns:
+            continue
+            
+        x_vals = group[x_col].values
+        y_vals = group[y_col].values
         
+        # Calculate velocity components
+        dx = np.diff(x_vals, prepend=x_vals[0])
+        dy = np.diff(y_vals, prepend=y_vals[0])
+        
+        # Calculate velocity magnitude and angles
+        velocities = np.hypot(dx, dy)
+        angles = np.degrees(np.arctan2(dx, dy)) % 360
+        
+        # Store per-frame features
+        for i, frame in enumerate(group['adjusted_frame']):
+            features[f"{kp}_frame{frame}_velocity"] = velocities[i]
+            features[f"{kp}_frame{frame}_angle"] = angles[i]
+    
     return features
+
+
+
     
 
 def calculate_derivatives(group, keypoint_columns):
@@ -189,7 +231,8 @@ def get_fly_initial_positions(data):
 
 def process_group(
     fly,
-    contact_index,
+    event_id,
+    #contact_index,
     group,
     features,
     keypoint_columns,
@@ -215,6 +258,10 @@ def process_group(
         row.update(calculate_statistical_measures(group, keypoint_columns))
     if "fourier" in features:
         row.update(calculate_fourier_features(group, keypoint_columns))
+    if "frame_features" in features:
+        row.update(calculate_frame_features(group))
+    if "keypoints" in features:
+        row.update(transpose_keypoints(group))
     if "tsfresh" in features:
         row.update(calculate_tsfresh_features(group, keypoint_columns, n_jobs=n_jobs))
     row.update(metadata.to_dict())
@@ -235,7 +282,8 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
         "Orientation",
         "Light",
         "Crossing",
-        "contact_index",
+        "event_id",
+        #"contact_index",
     ]
     # Precompute fly initial positions
     fly_initial_positions = get_fly_initial_positions(data)
@@ -245,7 +293,7 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
         ["overall_x_start", "overall_y_start"]
     ].to_dict("index")
 
-    groups = list(data.groupby(["fly", "contact_index"]))
+    groups = list(data.groupby(["fly", "event_id"]))
     total_groups = len(groups)
     logging.info(f"Processing {total_groups} groups with {n_jobs} workers")
     start_time = time.time()
@@ -273,7 +321,7 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
                 executor.submit(
                     process_group,
                     fly,
-                    contact_index,
+                    event_id,
                     group,
                     features,
                     keypoint_columns,
@@ -281,7 +329,7 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
                     fly_start_map,  # Pass the precomputed map
                     n_jobs,
                 )
-                for (fly, contact_index), group in chunk
+                for (fly, event_id), group in chunk
             ]
 
             for i, future in enumerate(as_completed(futures), 1):
@@ -398,16 +446,18 @@ def main(
 
 
 if __name__ == "__main__":
-    input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/240120_short_contacts_no_cutoff_no_downsample_Data/contact_data/250106_Pooled_contact_data.feather"
-    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/240204_short_contacts_no_cutoff_no_downsample_Data/Transformed_contacts_nocutoff_flexible_rule.feather"
+    input_path = "/mnt/upramdya_data/MD/Test_Datasets/StandardizedContacts.feather"
+    output_path = "/mnt/upramdya_data/MD/Test_Datasets/StandardizedContacts_Transformed_Keys.feather"
 
     # input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/250106_FinalEventCutoffData_norm/contact_data/250106_Pooled_contact_data.feather"
     # output_path = ""/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/250107_Transform/250107_Transformed_contact_data_rawdisp.feather""
     features = [
-        "derivatives",
-        "relative_positions",
-        # "statistical_measures",
-        # "fourier",
+        #"derivatives",
+        #"relative_positions",
+        #"statistical_measures",
+        #"fourier",
+        "frame_features",
+        "keypoints",
         # "tsfresh",
     ]
 

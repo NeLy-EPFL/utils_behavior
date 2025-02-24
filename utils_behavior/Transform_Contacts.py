@@ -40,6 +40,8 @@ def transpose_keypoints(data):
         parts = keypoint.split("_")
         axis = parts[0]
         
+        event_type = data["event_type"].iloc[0]
+        
         # Handle different naming conventions
         if "fly" in parts:
             # X-coordinate pattern: x_Head_fly -> Head
@@ -51,17 +53,17 @@ def transpose_keypoints(data):
             # Y body coordinates: y_Head -> Head
             keypoint_name = "_".join(parts[1:])
 
-        # Pivot with multi-index columns
+        # Add event_type to the pivot index
         keypoint_df = data.pivot(
-            index="fly",
+            index=["fly", "event_type"],  # Modified index
             columns=["adjusted_frame", "frame_count"],
             values=keypoint
         )
         
-        # Clean column names: frame{number}_x/y
+        # Update column naming to include event type
         keypoint_df.columns = [
-            f"{keypoint_name}_frame{frame}_{axis}"  # Remove count reference
-            for (frame, _) in keypoint_df.columns    # Ignore count in name
+            f"{event_type}_{keypoint_name}_frame{frame}_{axis}"
+            for (frame, _) in keypoint_df.columns
         ]
 
         transposed.update(keypoint_df.iloc[0].to_dict())
@@ -98,10 +100,10 @@ def calculate_frame_features(group):
         velocities = np.hypot(dx, dy)
         angles = np.degrees(np.arctan2(dx, dy)) % 360
         
-        # Store per-frame features
+        # Store event type in features
         for i, frame in enumerate(group['adjusted_frame']):
-            features[f"{kp}_frame{frame}_velocity"] = velocities[i]
-            features[f"{kp}_frame{frame}_angle"] = angles[i]
+            features[f"{group['event_type'].iloc[0]}_{kp}_frame{frame}_velocity"] = velocities[i]
+            features[f"{group['event_type'].iloc[0]}_{kp}_frame{frame}_angle"] = angles[i]
     
     return features
 
@@ -232,6 +234,7 @@ def get_fly_initial_positions(data):
 def process_group(
     fly,
     event_id,
+    event_type,
     #contact_index,
     group,
     features,
@@ -245,6 +248,7 @@ def process_group(
     row = {
         "duration": duration,
         "fly": fly,
+        "event_type": event_type if 'event_type' in group.columns else None,
         "start": group["time"].iloc[0],
         "end": group["time"].iloc[-1],
         "start_frame": group["frame"].iloc[0],
@@ -273,6 +277,7 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
     metadata_columns = [
         "flypath",
         "experiment",
+        "event_type",
         "Nickname",
         "Brain region",
         "Date",
@@ -293,7 +298,8 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
         ["overall_x_start", "overall_y_start"]
     ].to_dict("index")
 
-    groups = list(data.groupby(["fly", "event_id"]))
+    groups = list(data.groupby(["fly", "event_id", "event_type"])) if 'event_type' in data.columns else list(data.groupby(["fly", "event_id"]))
+    
     total_groups = len(groups)
     logging.info(f"Processing {total_groups} groups with {n_jobs} workers")
     start_time = time.time()
@@ -322,6 +328,7 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
                     process_group,
                     fly,
                     event_id,
+                    event_type,
                     group,
                     features,
                     keypoint_columns,
@@ -329,7 +336,7 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
                     fly_start_map,  # Pass the precomputed map
                     n_jobs,
                 )
-                for (fly, event_id), group in chunk
+                for (fly, event_id, event_type), group in chunk
             ]
 
             for i, future in enumerate(as_completed(futures), 1):

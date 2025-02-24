@@ -2144,49 +2144,99 @@ class SkeletonMetrics:
 
         return event, event_index
     
-    def compute_events_based_contacts(self):
+    def compute_events_based_contacts(self, generate_random=True):
         """
-        List fly relative tracking data associated with interaction events. First get interactions based on the interaction onsets in FlyTracking data, then take n frames before and after the event onset and return associated tracking data.
+        List fly relative tracking data associated with interaction events with optional random negative examples.
         """
-        
         events = []
-    
-        # Check if interactions_onsets exists and has data
-        if not hasattr(self.fly.tracking_data, 'interactions_onsets') or not self.fly.tracking_data.interactions_onsets:
-            return pd.DataFrame()
-
-        # Create unique event IDs across all fly-ball pairs
-        event_counter = 0
+        all_event_intervals = []  # Track all event intervals to avoid overlap
         
-        # Iterate through all fly-ball interaction pairs
-        for (fly_idx, ball_idx), onsets in self.fly.tracking_data.interactions_onsets.items():
-            for onset in onsets:
-                # Calculate event window boundaries
-                start = max(0, onset - self.fly.config.frames_before_onset)
-                end = min(len(self.fly_centered_tracks), 
-                        onset + self.fly.config.frames_after_onset)
-                
-                # Extract and annotate event data
-                event_data = self.fly_centered_tracks.iloc[start:end].copy()
-                event_data['event_id'] = event_counter
-                event_data['time_rel_onset'] = (event_data.index - onset)/self.fly.experiment.fps
-                event_data['fly_idx'] = fly_idx
-                event_data['ball_idx'] = ball_idx
-                
-                event_data['adjusted_frame'] = range(end-start)
-                
-                # Calculate ball displacement metrics
-                ball_disp = np.sqrt(
-                    (event_data['x_centre_preprocessed'] - event_data['x_centre_preprocessed'].iloc[0])**2 +
-                    (event_data['y_centre_preprocessed'] - event_data['y_centre_preprocessed'].iloc[0])**2
-                )
-                event_data['ball_displacement'] = ball_disp
-                
-                events.append(event_data)
-                event_counter += 1  # Increment for unique IDs
+        # First collect all real event intervals
+        if hasattr(self.fly.tracking_data, 'interactions_onsets') and self.fly.tracking_data.interactions_onsets:
+            for (fly_idx, ball_idx), onsets in self.fly.tracking_data.interactions_onsets.items():
+                for onset in onsets:
+                    start = max(0, onset - self.fly.config.frames_before_onset)
+                    end = min(len(self.fly_centered_tracks), 
+                            onset + self.fly.config.frames_after_onset)
+                    all_event_intervals.append((start, end))
+
+        # Process real interactions
+        event_counter = 0
+        if hasattr(self.fly.tracking_data, 'interactions_onsets') and self.fly.tracking_data.interactions_onsets:
+            for (fly_idx, ball_idx), onsets in self.fly.tracking_data.interactions_onsets.items():
+                for onset in onsets:
+                    # Existing event processing
+                    start = max(0, onset - self.fly.config.frames_before_onset)
+                    end = min(len(self.fly_centered_tracks), 
+                            onset + self.fly.config.frames_after_onset)
+                    
+                    event_data = self.fly_centered_tracks.iloc[start:end].copy()
+                    event_data['event_id'] = event_counter
+                    event_data['time_rel_onset'] = (event_data.index - onset)/self.fly.experiment.fps
+                    event_data['fly_idx'] = fly_idx
+                    event_data['ball_idx'] = ball_idx
+                    event_data['adjusted_frame'] = range(end-start)
+                    event_data['event_type'] = 'interaction'
+                    
+                    # Calculate ball displacement
+                    ball_disp = np.sqrt(
+                        (event_data['x_centre_preprocessed'] - event_data['x_centre_preprocessed'].iloc[0])**2 +
+                        (event_data['y_centre_preprocessed'] - event_data['y_centre_preprocessed'].iloc[0])**2
+                    )
+                    event_data['ball_displacement'] = ball_disp
+                    
+                    events.append(event_data)
+                    
+                    # Generate random negative example if requested
+                    if generate_random:
+                        random_data = self._generate_random_chunk(
+                            desired_length=end-start,
+                            exclude_intervals=all_event_intervals
+                        )
+                        if random_data is not None:
+                            random_data['event_id'] = event_counter
+                            random_data['event_type'] = 'random'
+                            random_data['fly_idx'] = fly_idx
+                            random_data['ball_idx'] = ball_idx
+                            events.append(random_data)
+                            
+                    event_counter += 1
 
         return pd.concat(events).reset_index(drop=True) if events else pd.DataFrame()
 
+    def _generate_random_chunk(self, desired_length, exclude_intervals):
+        """Generate random chunk of tracking data that doesn't overlap with any events"""
+        max_start = len(self.fly_centered_tracks) - desired_length
+        
+        if max_start <= 0:
+            return None
+
+        for _ in range(100):  # Try up to 100 times to find non-overlapping segment
+            random_start = np.random.randint(0, max_start)
+            random_end = random_start + desired_length
+            
+            # Check overlap with existing events
+            overlap = False
+            for (ex_start, ex_end) in exclude_intervals:
+                if (random_start < ex_end) and (random_end > ex_start):
+                    overlap = True
+                    break
+                    
+            if not overlap:
+                random_data = self.fly_centered_tracks.iloc[random_start:random_end].copy()
+                random_data['time_rel_onset'] = np.nan
+                random_data['adjusted_frame'] = range(desired_length)
+                
+                # Calculate ball displacement (should be near zero for non-events)
+                ball_disp = np.sqrt(
+                    (random_data['x_centre_preprocessed'] - random_data['x_centre_preprocessed'].iloc[0])**2 +
+                    (random_data['y_centre_preprocessed'] - random_data['y_centre_preprocessed'].iloc[0])**2
+                )
+                random_data['ball_displacement'] = ball_disp
+                
+                return random_data
+                
+        return None
             
         
     def get_final_contact(self, threshold=None, init=False):

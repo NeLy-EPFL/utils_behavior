@@ -24,12 +24,13 @@ import re
 # ==================================================================
 CONFIG = {
     "PATHS": {
-        "data_root": Path("/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets"),
+        "data_root": Path("/mnt/upramdya_data/MD/MultiMazeRecorder/Videos/"),
+        "dataset_dir": Path("/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/"),
         "output_summary_dir": "250220_StdContacts_Ctrl",
         "output_data_dir": "250220_StdContacts_Ctrl_Data",
     },
     "PROCESSING": {
-        "experiment_filter": "TNT_Fine",    # Filter for experiment folders
+        "experiment_filter": "FeedingState",    # Filter for experiment folders
         "success_cutoff": False,             # Enable success cutoff filtering
         "success_method": "final_event",     # Cutoff method selection
         "pooled_prefix": "250220_pooled",    # Base name for combined datasets
@@ -41,8 +42,8 @@ CONFIG = {
 # ==================================================================
 
 # Build derived paths from configuration
-output_summary = CONFIG["PATHS"]["data_root"] / CONFIG["PATHS"]["output_summary_dir"]
-output_data = CONFIG["PATHS"]["data_root"] / CONFIG["PATHS"]["output_data_dir"]
+output_summary = CONFIG["PATHS"]["dataset_dir"] / CONFIG["PATHS"]["output_summary_dir"]
+output_data = CONFIG["PATHS"]["dataset_dir"] / CONFIG["PATHS"]["output_data_dir"]
 
 # Create output directories
 output_summary.mkdir(parents=True, exist_ok=True)
@@ -64,26 +65,17 @@ for folder in Exp_folders:
     exp_name = folder.name
     experiment_pkl_path = output_summary / f"{exp_name}.pkl"
     
-    # Check if datasets already exist
-    datasets_exist = all(
-        (output_data / metric / f"{exp_name}_{metric}.feather").exists()
-        for metric in CONFIG["PROCESSING"]["metrics"]
-    )
-    
-    if datasets_exist:
-        print(f"All datasets for {exp_name} exist. Skipping.")
+    # Check if experiment pkl already exists
+    if experiment_pkl_path.exists():
+        print(f"Experiment {exp_name} already processed. Skipping.")
         continue
 
     # Load or create experiment
-    if experiment_pkl_path.exists():
-        try:
+    try:
+        if experiment_pkl_path.exists():
             experiment = Ballpushing_utils.load_object(experiment_pkl_path)
             print(f"Loaded existing experiment: {exp_name}")
-        except Exception as e:
-            print(f"Error loading {exp_name}: {str(e)}")
-            continue
-    else:
-        try:
+        else:
             experiment = Ballpushing_utils.Experiment(
                 folder,
                 success_cutoff=CONFIG["PROCESSING"]["success_cutoff"],
@@ -91,15 +83,16 @@ for folder in Exp_folders:
             )
             Ballpushing_utils.save_object(experiment, experiment_pkl_path)
             print(f"Created new experiment: {exp_name}")
-        except Exception as e:
-            print(f"Error creating {exp_name}: {str(e)}")
-            continue
+    except Exception as e:
+        print(f"Error loading or creating {exp_name}: {str(e)}")
+        continue
 
     # Generate datasets for each metric
     for metric in CONFIG["PROCESSING"]["metrics"]:
         dataset_path = output_data / metric / f"{exp_name}_{metric}.feather"
         
         if dataset_path.exists():
+            print(f"Dataset {dataset_path} already exists. Skipping.")
             continue
             
         try:

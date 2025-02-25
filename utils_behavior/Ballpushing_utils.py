@@ -454,7 +454,8 @@ class Config:
     # gap_between_contacts: int = 3 / 2
     # contact_min_length: int = 2
 
-    hidden_value: int = -1
+    #hidden_value: int = -1
+    hidden_value: int = 9999
 
     def __post_init__(self):
         print("Config loaded with the following parameters:")

@@ -274,7 +274,7 @@ def process_group(
 
 def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir=None):
     keypoint_columns = data.filter(regex="^(x|y)_").columns
-    metadata_columns = [
+    all_metadata_columns = [
         "flypath",
         "experiment",
         "event_type",
@@ -288,8 +288,12 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
         "Light",
         "Crossing",
         "event_id",
-        #"contact_index",
+        # "contact_index",
     ]
+    
+    # Filter metadata columns to only include those present in the data
+    metadata_columns = [col for col in all_metadata_columns if col in data.columns]
+    
     # Precompute fly initial positions
     fly_initial_positions = get_fly_initial_positions(data)
 
@@ -453,8 +457,8 @@ def main(
 
 
 if __name__ == "__main__":
-    input_path = "/mnt/upramdya_data/MD/Test_Datasets/StandardizedContacts.feather"
-    output_path = "/mnt/upramdya_data/MD/Test_Datasets/StandardizedContacts_Transformed_Keys.feather"
+    input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/250220_StdContacts_Ctrl_Data/standardized_contacts/230704_FeedingState_1_AM_Videos_Tracked_standardized_contacts.feather"
+    output_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/250220_StdContacts_Ctrl_Data/Transformed/230704_FeedingState_1_AM_Videos_Tracked_standardized_contacts_Transformed.feather"
 
     # input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/250106_FinalEventCutoffData_norm/contact_data/250106_Pooled_contact_data.feather"
     # output_path = ""/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/250107_Transform/250107_Transformed_contact_data_rawdisp.feather""

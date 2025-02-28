@@ -248,60 +248,78 @@ def find_interaction_events(
 
     return interaction_events
 
-def find_interaction_start(data, distance_col, frame_col, 
-                          threshold_multiplier=1.5, window_size=30, 
-                          min_plateau_length=50, peak_prominence=1,
-                          peak_window_size=10):
+
+def find_interaction_start(
+    data,
+    distance_col,
+    frame_col,
+    threshold_multiplier=1.5,
+    window_size=30,
+    min_plateau_length=50,
+    peak_prominence=1,
+    peak_window_size=10,
+):
     # Work on a copy to avoid modifying original data
     data = data.copy()
-    
+
     # Smoothing and derivative calculation
-    data['smoothed_distance'] = savgol_filter(data[distance_col], 
-                                            window_length=11, 
-                                            polyorder=3)
-    data['smoothed_diff'] = data['smoothed_distance'].diff()
-    data['smoothed_accel'] = data['smoothed_diff'].diff()  # Second derivative
+    data["smoothed_distance"] = savgol_filter(
+        data[distance_col], window_length=11, polyorder=3
+    )
+    data["smoothed_diff"] = data["smoothed_distance"].diff()
+    data["smoothed_accel"] = data["smoothed_diff"].diff()  # Second derivative
 
     # Dynamic threshold for plateaus based on rolling standard deviation
-    rolling_std = data['smoothed_diff'].rolling(window=window_size).std()
-    dynamic_threshold = rolling_std.mean() * threshold_multiplier  # Adjust multiplier as needed
+    rolling_std = data["smoothed_diff"].rolling(window=window_size).std()
+    dynamic_threshold = (
+        rolling_std.mean() * threshold_multiplier
+    )  # Adjust multiplier as needed
 
     # Plateau detection with dynamic threshold
-    plateau_mask = (data['smoothed_diff'].abs() < dynamic_threshold)
+    plateau_mask = data["smoothed_diff"].abs() < dynamic_threshold
     plateau_groups = (plateau_mask != plateau_mask.shift()).cumsum()
-    
+
     # Initialize plateau markers
-    data['plateau_start'] = 0
-    valid_plateaus = data[plateau_mask].groupby(plateau_groups).filter(
-        lambda x: len(x) >= min_plateau_length
+    data["plateau_start"] = 0
+    valid_plateaus = (
+        data[plateau_mask]
+        .groupby(plateau_groups)
+        .filter(lambda x: len(x) >= min_plateau_length)
     )
     if not valid_plateaus.empty:
         start_indices = valid_plateaus.groupby(plateau_groups).head(1).index
-        data.loc[start_indices, 'plateau_start'] = 1
+        data.loc[start_indices, "plateau_start"] = 1
 
     # Peak detection with stricter prominence
-    peaks, _ = find_peaks(-data['smoothed_distance'],
-                        prominence=peak_prominence,
-                        width=3)
-    
+    peaks, _ = find_peaks(
+        -data["smoothed_distance"], prominence=peak_prominence, width=3
+    )
+
     # Refine peak detection for better alignment
     refined_peaks = []
     for peak in peaks:
         if peak > 0 and peak < len(data) - 1:
             # Perform local search around the detected peak to refine position
-            local_region = data.iloc[max(0, peak - peak_window_size):min(len(data), peak + peak_window_size)]
-            true_peak_idx = local_region[distance_col].idxmin()  # Find true minimum in this region
+            local_region = data.iloc[
+                max(0, peak - peak_window_size) : min(
+                    len(data), peak + peak_window_size
+                )
+            ]
+            true_peak_idx = local_region[
+                distance_col
+            ].idxmin()  # Find true minimum in this region
             refined_peaks.append(true_peak_idx)
 
     # Combine plateau and refined peak detections
-    plateau_indices = data[data['plateau_start'] == 1].index
+    plateau_indices = data[data["plateau_start"] == 1].index
     all_candidates = sorted(list(plateau_indices) + refined_peaks)
-    
+
     # Fallback to minimum distance if no markers found
     if not all_candidates:
         return data[distance_col].idxmin()
-    
+
     return all_candidates[0]
+
 
 def filter_experiments(source, **criteria):
     """Generates a list of Experiment objects based on criteria.
@@ -415,7 +433,7 @@ class Config:
 
     frames_before_onset = 20
     frames_after_onset = 20
-    
+
     dead_threshold: int = 30
     adjusted_events_normalisation: int = 1000
     significant_threshold: int = 5
@@ -454,7 +472,7 @@ class Config:
     # gap_between_contacts: int = 3 / 2
     # contact_min_length: int = 2
 
-    #hidden_value: int = -1
+    # hidden_value: int = -1
     hidden_value: int = 9999
 
     def __post_init__(self):
@@ -739,7 +757,7 @@ class FlyTrackingData:
                 self.filter_tracking_data(self.success_cutoff_time_range)
 
                 self.interaction_events = self.find_flyball_interactions()
-                        
+
             self.interactions_onsets = self.get_interactions_onsets()
 
         else:
@@ -824,48 +842,50 @@ class FlyTrackingData:
                 fly_interactions[fly_idx][ball_idx] = interaction_events
 
         return fly_interactions
-    
+
     def get_interactions_onsets(self):
         """
         For each interaction event, get the onset of the fly interaction with the ball based on thorax/ball distance.
         """
-        
+
         if self.flytrack is None or self.balltrack is None:
-            
+
             print(
                 f"Skipping interaction events for {self.fly.metadata.name} due to missing tracking data."
             )
             return None
-        
-        if not hasattr(self, 'interactions_onsets'):
+
+        if not hasattr(self, "interactions_onsets"):
             self.interactions_onsets = {}
-        
+
         interactions_onsets = {}
-        
+
         for fly_idx in range(0, len(self.flytrack.objects)):
             fly_data = self.flytrack.objects[fly_idx].dataset
 
             for ball_idx in range(0, len(self.balltrack.objects)):
                 ball_data = self.balltrack.objects[ball_idx].dataset
-                
+
                 interaction_events = self.interaction_events[fly_idx][ball_idx]
-                
+
                 onsets = []
-                
+
                 for event in interaction_events:
-                    event_data = fly_data.loc[event[0]:event[1]]
+                    event_data = fly_data.loc[event[0] : event[1]]
                     event_data["adjusted_frame"] = range(len(event_data))
-                    
+
                     event_data["distance"] = np.sqrt(
                         (event_data["x_thorax"] - ball_data["x_centre"]) ** 2
                         + (event_data["y_thorax"] - ball_data["y_centre"]) ** 2
                     )
-                    
-                    onset = find_interaction_start(event_data, "distance", "adjusted_frame")
+
+                    onset = find_interaction_start(
+                        event_data, "distance", "adjusted_frame"
+                    )
                     onsets.append(onset)
-                    
+
                 interactions_onsets[(fly_idx, ball_idx)] = onsets
-                
+
         return interactions_onsets
 
     def check_data_quality(self):
@@ -1977,9 +1997,9 @@ class SkeletonMetrics:
         # print(f"Number of final contact events: {len(self.contacts)}")
 
         self.ball_displacements = self.compute_ball_displacements()
-        
+
         self.fly_centered_tracks = self.compute_fly_centered_tracks()
-        
+
         self.events_based_contacts = self.compute_events_based_contacts()
 
     def resize_coordinates(
@@ -2144,63 +2164,89 @@ class SkeletonMetrics:
             event, event_index = None, None
 
         return event, event_index
-    
+
     def compute_events_based_contacts(self, generate_random=True):
         """
         List fly relative tracking data associated with interaction events with optional random negative examples.
         """
         events = []
         all_event_intervals = []  # Track all event intervals to avoid overlap
-        
+
         # First collect all real event intervals
-        if hasattr(self.fly.tracking_data, 'interactions_onsets') and self.fly.tracking_data.interactions_onsets:
-            for (fly_idx, ball_idx), onsets in self.fly.tracking_data.interactions_onsets.items():
+        if (
+            hasattr(self.fly.tracking_data, "interactions_onsets")
+            and self.fly.tracking_data.interactions_onsets
+        ):
+            for (
+                fly_idx,
+                ball_idx,
+            ), onsets in self.fly.tracking_data.interactions_onsets.items():
                 for onset in onsets:
                     start = max(0, onset - self.fly.config.frames_before_onset)
-                    end = min(len(self.fly_centered_tracks), 
-                            onset + self.fly.config.frames_after_onset)
+                    end = min(
+                        len(self.fly_centered_tracks),
+                        onset + self.fly.config.frames_after_onset,
+                    )
                     all_event_intervals.append((start, end))
 
         # Process real interactions
         event_counter = 0
-        if hasattr(self.fly.tracking_data, 'interactions_onsets') and self.fly.tracking_data.interactions_onsets:
-            for (fly_idx, ball_idx), onsets in self.fly.tracking_data.interactions_onsets.items():
+        if (
+            hasattr(self.fly.tracking_data, "interactions_onsets")
+            and self.fly.tracking_data.interactions_onsets
+        ):
+            for (
+                fly_idx,
+                ball_idx,
+            ), onsets in self.fly.tracking_data.interactions_onsets.items():
                 for onset in onsets:
                     # Existing event processing
                     start = max(0, onset - self.fly.config.frames_before_onset)
-                    end = min(len(self.fly_centered_tracks), 
-                            onset + self.fly.config.frames_after_onset)
-                    
+                    end = min(
+                        len(self.fly_centered_tracks),
+                        onset + self.fly.config.frames_after_onset,
+                    )
+
                     event_data = self.fly_centered_tracks.iloc[start:end].copy()
-                    event_data['event_id'] = event_counter
-                    event_data['time_rel_onset'] = (event_data.index - onset)/self.fly.experiment.fps
-                    event_data['fly_idx'] = fly_idx
-                    event_data['ball_idx'] = ball_idx
-                    event_data['adjusted_frame'] = range(end-start)
-                    event_data['event_type'] = 'interaction'
-                    
+                    event_data["event_id"] = event_counter
+                    event_data["time_rel_onset"] = (
+                        event_data.index - onset
+                    ) / self.fly.experiment.fps
+                    event_data["fly_idx"] = fly_idx
+                    event_data["ball_idx"] = ball_idx
+                    event_data["adjusted_frame"] = range(end - start)
+                    event_data["event_type"] = "interaction"
+
                     # Calculate ball displacement
                     ball_disp = np.sqrt(
-                        (event_data['x_centre_preprocessed'] - event_data['x_centre_preprocessed'].iloc[0])**2 +
-                        (event_data['y_centre_preprocessed'] - event_data['y_centre_preprocessed'].iloc[0])**2
+                        (
+                            event_data["x_centre_preprocessed"]
+                            - event_data["x_centre_preprocessed"].iloc[0]
+                        )
+                        ** 2
+                        + (
+                            event_data["y_centre_preprocessed"]
+                            - event_data["y_centre_preprocessed"].iloc[0]
+                        )
+                        ** 2
                     )
-                    event_data['ball_displacement'] = ball_disp
-                    
+                    event_data["ball_displacement"] = ball_disp
+
                     events.append(event_data)
-                    
+
                     # Generate random negative example if requested
                     if generate_random:
                         random_data = self._generate_random_chunk(
-                            desired_length=end-start,
-                            exclude_intervals=all_event_intervals
+                            desired_length=end - start,
+                            exclude_intervals=all_event_intervals,
                         )
                         if random_data is not None:
-                            random_data['event_id'] = event_counter
-                            random_data['event_type'] = 'random'
-                            random_data['fly_idx'] = fly_idx
-                            random_data['ball_idx'] = ball_idx
+                            random_data["event_id"] = event_counter
+                            random_data["event_type"] = "random"
+                            random_data["fly_idx"] = fly_idx
+                            random_data["ball_idx"] = ball_idx
                             events.append(random_data)
-                            
+
                     event_counter += 1
 
         return pd.concat(events).reset_index(drop=True) if events else pd.DataFrame()
@@ -2208,38 +2254,47 @@ class SkeletonMetrics:
     def _generate_random_chunk(self, desired_length, exclude_intervals):
         """Generate random chunk of tracking data that doesn't overlap with any events"""
         max_start = len(self.fly_centered_tracks) - desired_length
-        
+
         if max_start <= 0:
             return None
 
         for _ in range(100):  # Try up to 100 times to find non-overlapping segment
             random_start = np.random.randint(0, max_start)
             random_end = random_start + desired_length
-            
+
             # Check overlap with existing events
             overlap = False
-            for (ex_start, ex_end) in exclude_intervals:
+            for ex_start, ex_end in exclude_intervals:
                 if (random_start < ex_end) and (random_end > ex_start):
                     overlap = True
                     break
-                    
+
             if not overlap:
-                random_data = self.fly_centered_tracks.iloc[random_start:random_end].copy()
-                random_data['time_rel_onset'] = np.nan
-                random_data['adjusted_frame'] = range(desired_length)
-                
+                random_data = self.fly_centered_tracks.iloc[
+                    random_start:random_end
+                ].copy()
+                random_data["time_rel_onset"] = np.nan
+                random_data["adjusted_frame"] = range(desired_length)
+
                 # Calculate ball displacement (should be near zero for non-events)
                 ball_disp = np.sqrt(
-                    (random_data['x_centre_preprocessed'] - random_data['x_centre_preprocessed'].iloc[0])**2 +
-                    (random_data['y_centre_preprocessed'] - random_data['y_centre_preprocessed'].iloc[0])**2
+                    (
+                        random_data["x_centre_preprocessed"]
+                        - random_data["x_centre_preprocessed"].iloc[0]
+                    )
+                    ** 2
+                    + (
+                        random_data["y_centre_preprocessed"]
+                        - random_data["y_centre_preprocessed"].iloc[0]
+                    )
+                    ** 2
                 )
-                random_data['ball_displacement'] = ball_disp
-                
+                random_data["ball_displacement"] = ball_disp
+
                 return random_data
-                
+
         return None
-            
-        
+
     def get_final_contact(self, threshold=None, init=False):
         if threshold is None:
             threshold = self.fly.config.final_event_threshold
@@ -2275,42 +2330,118 @@ class SkeletonMetrics:
             self.ball_displacements.append(ball_velocity)
 
         return self.ball_displacements
-    
+
     def compute_fly_centered_tracks(self):
+        """
+        Compute fly-centric coordinates by:
+        1. Translating all points to have thorax as origin
+        2. Rotating to align thorax-head direction with positive y-axis
+
+        Returns DataFrame with '_fly' suffix columns for transformed coordinates
+        """
+        tracking_data = self.fly.tracking_data.skeletontrack.objects[0].dataset.copy()
+
+        # Add ball coordinates to tracking data
+        tracking_data["x_centre_preprocessed"] = self.ball.objects[0].dataset[
+            "x_centre_preprocessed"
+        ]
+        tracking_data["y_centre_preprocessed"] = self.ball.objects[0].dataset[
+            "y_centre_preprocessed"
+        ]
+
+        # Get reference points
+        thorax_x = tracking_data["x_Thorax"].values
+        thorax_y = tracking_data["y_Thorax"].values
+        head_x = tracking_data["x_Head"].values
+        head_y = tracking_data["y_Head"].values
+
+        # Calculate direction vector components
+        dx = head_x - thorax_x
+        dy = head_y - thorax_y
+        mag = np.hypot(dx, dy)
+        valid = mag > 1e-6  # Valid frames with measurable head direction
+
+        # Calculate rotation components (vectorized operations)
+        cos_theta = dy / mag
+        sin_theta = dx / mag
+        cos_theta[~valid] = 0  # Handle invalid frames
+        sin_theta[~valid] = 0
+
+        # Get all trackable nodes (excluding existing '_fly' columns)
+        nodes = [
+            col[2:]
+            for col in tracking_data.columns
+            if col.startswith("x_") and not col.endswith("_fly")
+        ]
+
+        # Create transformed dataframe
+        transformed = tracking_data.copy()
+
+        for node in nodes:
+            x_col = f"x_{node}"
+            y_col = f"y_{node}"
+
+            # 1. Translate to thorax-centric coordinates
+            x_trans = tracking_data[x_col] - thorax_x
+            y_trans = tracking_data[y_col] - thorax_y
+
+            # 2. Apply rotation matrix (vectorized)
+            # New x = x_trans * cosθ - y_trans * sinθ
+            # New y = x_trans * sinθ + y_trans * cosθ
+            transformed[f"{x_col}_fly"] = x_trans * cos_theta - y_trans * sin_theta
+            transformed[f"{y_col}_fly"] = x_trans * sin_theta + y_trans * cos_theta
+
+            # Handle invalid frames using config value
+            transformed.loc[~valid, [f"{x_col}_fly", f"{y_col}_fly"]] = (
+                self.fly.config.hidden_value
+            )
+
+        return transformed
+
+    def compute_fly_centered_tracks_old(self):
         """
         Compute the fly-relative tracks for each skeleton tracking datapoint
         """
-        
+
         tracking_data = self.fly.tracking_data.skeletontrack.objects[0].dataset
         # Add the ball tracking data
-        
-        tracking_data['x_centre_preprocessed'] = self.ball.objects[0].dataset['x_centre_preprocessed']
-        tracking_data['y_centre_preprocessed'] = self.ball.objects[0].dataset['y_centre_preprocessed']
-        
-        thorax = tracking_data[['x_Thorax', 'y_Thorax']].values
-        head = tracking_data[['x_Head', 'y_Head']].values
-        
+
+        tracking_data["x_centre_preprocessed"] = self.ball.objects[0].dataset[
+            "x_centre_preprocessed"
+        ]
+        tracking_data["y_centre_preprocessed"] = self.ball.objects[0].dataset[
+            "y_centre_preprocessed"
+        ]
+
+        thorax = tracking_data[["x_Thorax", "y_Thorax"]].values
+        head = tracking_data[["x_Head", "y_Head"]].values
+
         # Vectorized calculations
         dxdy = head - thorax
         mag = np.linalg.norm(dxdy, axis=1)
         valid = mag > 1e-6  # Filter frames with valid head direction
-        
+
         # Only calculate rotation where valid
         cos_theta = np.zeros_like(mag)
         sin_theta = np.zeros_like(mag)
-        cos_theta[valid] = dxdy[valid,1]/mag[valid]
-        sin_theta[valid] = dxdy[valid,0]/mag[valid]
-        
+        cos_theta[valid] = dxdy[valid, 1] / mag[valid]
+        sin_theta[valid] = dxdy[valid, 0] / mag[valid]
+
         # Transform all points using matrix operations
-        translated = tracking_data.filter(like='x_').values - thorax[:,0][:,None]
+        translated = tracking_data.filter(like="x_").values - thorax[:, 0][:, None]
         rotated = np.empty_like(translated)
-        rotated[valid] = translated[valid] * cos_theta[valid,None] - translated[valid] * sin_theta[valid,None]
-        
+        rotated[valid] = (
+            translated[valid] * cos_theta[valid, None]
+            - translated[valid] * sin_theta[valid, None]
+        )
+
         # Create transformed dataframe
         transformed = tracking_data.copy()
-        for i, col in enumerate([c for c in tracking_data.columns if c.startswith('x_')]):
-            transformed[f'{col}_fly'] = rotated[:,i]
-        
+        for i, col in enumerate(
+            [c for c in tracking_data.columns if c.startswith("x_")]
+        ):
+            transformed[f"{col}_fly"] = rotated[:, i]
+
         return transformed
 
     def plot_skeleton_and_ball(self, frame=2039):
@@ -3584,18 +3715,16 @@ class Dataset:
 
     def _prepare_dataset_standardized_contacts(self, fly):
         """Prepares standardized contact event windows for analysis"""
-        if not hasattr(fly, 'skeleton_metrics') or fly.skeleton_metrics is None:
+        if not hasattr(fly, "skeleton_metrics") or fly.skeleton_metrics is None:
             return pd.DataFrame()
-            
+
         events_df = fly.skeleton_metrics.events_based_contacts
-        
+
         # add metadata
         events_df = self._add_metadata(events_df, fly)
-        
-        
+
         return events_df
 
-    
     def compute_behavior_map(
         self,
         perplexity=30,

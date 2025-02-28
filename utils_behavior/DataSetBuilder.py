@@ -25,15 +25,16 @@ import re
 CONFIG = {
     "PATHS": {
         "data_root": Path("/mnt/upramdya_data/MD/MultiMazeRecorder/Videos/"),
-        "dataset_dir": Path("/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/"),
-        "output_summary_dir": "250220_StdContacts_Ctrl",
-        "output_data_dir": "250220_StdContacts_Ctrl_Data",
+        "dataset_dir": Path("/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/"),
+        "output_summary_dir": "250227_StdContacts_Ctrl",
+        "output_data_dir": "250227_StdContacts_Ctrl_Data",
+        "excluded_folders": ["230706_FeedingState_3_PM_Flipped_Videos_Tracked", ]
     },
     "PROCESSING": {
         "experiment_filter": "FeedingState",    # Filter for experiment folders
         "success_cutoff": False,             # Enable success cutoff filtering
         "success_method": "final_event",     # Cutoff method selection
-        "pooled_prefix": "250220_pooled",    # Base name for combined datasets
+        "pooled_prefix": "250227_pooled",    # Base name for combined datasets
         "metrics": ["standardized_contacts"] # Metrics to process (add/remove as needed)
     }
 }
@@ -54,6 +55,15 @@ Exp_folders = [
     folder for folder in CONFIG["PATHS"]["data_root"].iterdir()
     if folder.is_dir() and CONFIG["PROCESSING"]["experiment_filter"] in folder.name
 ]
+
+# Exclude folders based on config list
+
+if CONFIG["PATHS"]["excluded_folders"]:
+    Exp_folders = [
+        folder for folder in Exp_folders
+        if folder.name not in CONFIG["PATHS"]["excluded_folders"]
+    ]
+
 print(f"Folders to analyze: {[f.name for f in Exp_folders]}")
 
 # Create metric subdirectories

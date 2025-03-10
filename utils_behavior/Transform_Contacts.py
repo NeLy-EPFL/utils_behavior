@@ -12,6 +12,8 @@ import os
 import time
 import logging
 
+from pathlib import Path
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -35,7 +37,7 @@ def transpose_keypoints(data):
     ).columns
     transposed = {}
 
-    print(f"Keypoint columns: {keypoint_columns}")
+    #print(f"Keypoint columns: {keypoint_columns}")
 
     # Create unique frame identifiers
     data = data.assign(frame_count=data.groupby(["fly", "adjusted_frame"]).cumcount())
@@ -111,23 +113,29 @@ def calculate_frame_features(group):
         # Calculate velocity magnitude and angles
         velocities = np.hypot(dx, dy)
         angles = np.degrees(np.arctan2(dx, dy)) % 360
+        angular_velocity = np.diff(angles, prepend=angles[0])  # New angular velocity
 
         # Store event type in features
         for i, frame in enumerate(group["adjusted_frame"]):
             features[f"{kp}_frame{frame}_velocity"] = velocities[i]
             features[f"{kp}_frame{frame}_angle"] = angles[i]
+            features[f"{kp}_frame{frame}_angular_velocity"] = angular_velocity[i]
 
     return features
 
 
-def calculate_derivatives(group, keypoint_columns):
-    velocities = group[keypoint_columns].diff()
+def calculate_derivatives(group, keypoint_columns, fly_relative=True):
+    if fly_relative:
+        fly_relative_columns = [col for col in keypoint_columns if "_fly" in col]
+    else:
+        fly_relative_columns = keypoint_columns
+    velocities = group[fly_relative_columns].diff()
     accelerations = velocities.diff()
     return (
-        {f"{col}_vel_mean": velocities[col].mean() for col in keypoint_columns}
-        | {f"{col}_vel_std": velocities[col].std() for col in keypoint_columns}
-        | {f"{col}_acc_mean": accelerations[col].mean() for col in keypoint_columns}
-        | {f"{col}_acc_std": accelerations[col].std() for col in keypoint_columns}
+        {f"{col}_vel_mean": velocities[col].mean() for col in fly_relative_columns}
+        | {f"{col}_vel_std": velocities[col].std() for col in fly_relative_columns}
+        | {f"{col}_acc_mean": accelerations[col].mean() for col in fly_relative_columns}
+        | {f"{col}_acc_std": accelerations[col].std() for col in fly_relative_columns}
     )
 
 
@@ -190,18 +198,26 @@ def calculate_relative_positions(group, keypoint_columns, fly_start_map):
     )
 
 
-def calculate_statistical_measures(group, keypoint_columns):
+def calculate_statistical_measures(group, keypoint_columns, fly_relative=True):
+    if fly_relative:
+        fly_relative_columns = [col for col in keypoint_columns if "_fly" in col]
+    else:
+        fly_relative_columns = keypoint_columns
     return (
-        {f"{col}_mean": group[col].mean() for col in keypoint_columns}
-        | {f"{col}_std": group[col].std() for col in keypoint_columns}
-        | {f"{col}_skew": group[col].skew() for col in keypoint_columns}
-        | {f"{col}_kurt": group[col].kurtosis() for col in keypoint_columns}
+        {f"{col}_mean": group[col].mean() for col in fly_relative_columns}
+        | {f"{col}_std": group[col].std() for col in fly_relative_columns}
+        | {f"{col}_skew": group[col].skew() for col in fly_relative_columns}
+        | {f"{col}_kurt": group[col].kurtosis() for col in fly_relative_columns}
     )
 
 
-def calculate_fourier_features(group, keypoint_columns):
+def calculate_fourier_features(group, keypoint_columns, fly_relative=True):
+    if fly_relative:
+        fly_relative_columns = [col for col in keypoint_columns if "_fly" in col]
+    else:
+        fly_relative_columns = keypoint_columns
     fft_results = {}
-    for col in keypoint_columns:
+    for col in fly_relative_columns:
         fft_vals = fft(group[col].values)
         dominant_freq = np.abs(fft_vals[1 : len(fft_vals) // 2]).argmax() + 1
         fft_results[f"{col}_dom_freq"] = dominant_freq
@@ -470,16 +486,22 @@ def main(
 
 
 if __name__ == "__main__":
-    input_path = "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250227_StdContacts_Ctrl_Data/standardized_contacts/250228_pooled_standardized_contacts.feather"
-    output_path = "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250227_StdContacts_Ctrl_Data/Transformed/250228_Pooled_FeedingState_Transformed.feather"
+    input_path = "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250305_StdContacts_Ctrl_noOverlap_Data/standardized_contacts/250305_pooled_standardized_contacts.feather"
+    output_path = "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250305_StdContacts_Ctrl_noOverlap_Data/Transformed/250305_Pooled_FeedingState_Transformed.feather"
+    
+    # Create the output directory if it doesn't exist
+    
+    outpath = Path(output_path)
+    
+    outpath.parent.mkdir(parents=True, exist_ok=True)
 
     # input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/250106_FinalEventCutoffData_norm/contact_data/250106_Pooled_contact_data.feather"
     # output_path = ""/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/250107_Transform/250107_Transformed_contact_data_rawdisp.feather""
     features = [
-        # "derivatives",
+        "derivatives",
         # "relative_positions",
-        # "statistical_measures",
-        # "fourier",
+        "statistical_measures",
+        "fourier",
         "frame_features",
         "keypoints",
         # "tsfresh",

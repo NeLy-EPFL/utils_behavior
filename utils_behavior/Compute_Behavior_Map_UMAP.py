@@ -2,6 +2,7 @@ import pandas as pd
 from sklearn.decomposition import IncrementalPCA, PCA
 import umap
 import time
+from pathlib import Path
 
 
 def compute_behavior_map(
@@ -20,6 +21,9 @@ def compute_behavior_map(
     feature_config = {
         "tracking": [r"_frame\d+_x$", r"_frame\d+_y$"],
         "frame": [r"_frame\d+_velocity$", r"_frame\d+_angle$"],
+        "derivatives": [r"_vel_mean$", r"_vel_std$", r"_acc_mean$", r"_acc_std$"],
+        "statistical": [r"_mean$", r"_std$", r"_skew$", r"_kurt$"],
+        "fourier": [r"_dom_freq$", r"_dom_freq_magnitude$"],
     }
 
     # Create combined regex pattern
@@ -29,18 +33,57 @@ def compute_behavior_map(
     feature_pattern = "|".join(regex_parts)
 
     # Extract features and metadata
-    feature_columns = data.filter(regex=feature_pattern).columns
+    feature_columns = data.filter(regex=feature_pattern).columns.tolist()
+
+    if len(feature_columns) == 0:
+        raise ValueError("No features found matching the selected feature groups")
+
+    # Add non-regex based features explicitly
+    additional_features = []
+    if "derivatives" in feature_groups:
+        additional_features.extend(
+            [
+                col
+                for col in data.columns
+                if any(x in col for x in ["_vel_", "_acc_"])
+                and col not in feature_columns
+            ]
+        )
+
+    if "statistical" in feature_groups:
+        additional_features.extend(
+            [
+                col
+                for col in data.columns
+                if any(x in col for x in ["_mean", "_std", "_skew", "_kurt"])
+                and col not in feature_columns
+            ]
+        )
+
+    if "fourier" in feature_groups:
+        additional_features.extend(
+            [
+                col
+                for col in data.columns
+                if "dom_freq" in col and col not in feature_columns
+            ]
+        )
 
     if not include_ball:
         print("Excluding ball features...")
 
         # Remove features that have "centre" in their name
         feature_columns = [col for col in feature_columns if "centre" not in col]
+        additional_features = [
+            col for col in additional_features if "centre" not in col
+        ]
 
-    if len(feature_columns) == 0:
+    if len(feature_columns) == 0 and len(additional_features) == 0:
         raise ValueError("No features found matching the selected feature groups")
 
+    feature_columns = feature_columns + additional_features
     features = data[feature_columns].values
+
     event_indices = (
         data["event_id"]
         if "event_id" in data.columns
@@ -118,7 +161,15 @@ def compute_behavior_map(
 # Example usage
 if __name__ == "__main__":
 
-    data_path = "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250227_StdContacts_Ctrl_Data/Transformed/250228_Pooled_FeedingState_Transformed.feather"
+    data_path = "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250305_StdContacts_Ctrl_noOverlap_Data/Transformed/250305_Pooled_FeedingState_Transformed.feather"
+
+    savepath = "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250305_StdContacts_Ctrl_noOverlap_Data/UMAP/240305_UMAPpooled_FeedingState_TrackingOnly.feather"
+
+    # Check if directory exist and if not create it
+
+    savedir = Path(savepath).parent
+
+    savedir.mkdir(parents=True, exist_ok=True)
 
     # Load your data
     print(f"Loading data from {data_path}...")
@@ -132,8 +183,15 @@ if __name__ == "__main__":
         n_components=2,
         explained_variance_threshold=0.95,
         batch_size=1000,
-        savepath="/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250227_StdContacts_Ctrl_Data/UMAP/240228_UMAPpooled_FeedingState.feather",
+        savepath=savepath,
         use_pca=False,
+        feature_groups=[
+            "tracking",
+            # "frame",
+            # "derivatives",
+            # "statistical",
+            # "fourier"
+        ],
         include_ball=False,
     )
 

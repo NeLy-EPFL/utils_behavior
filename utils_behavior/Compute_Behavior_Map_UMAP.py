@@ -3,7 +3,37 @@ from sklearn.decomposition import IncrementalPCA, PCA
 import umap
 import time
 from pathlib import Path
+import json
 
+# Configuration section
+config = {
+    "data_path": "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250307_StdContacts_Ctrl_noOverlap_Data_cutoff/Transformed/250305_Pooled_FeedingState_Transformed.feather",
+    "savepath": "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250307_StdContacts_Ctrl_noOverlap_Data_cutoff/UMAP/250305_Pooled_FeedingState_InteractionsOnly.feather",
+    "n_neighbors": 15,
+    "min_dist": 0.1,
+    "n_components": 2,
+    "explained_variance_threshold": 0.95,
+    "batch_size": 1000,
+    "use_pca": False,
+    "feature_groups": [
+        "tracking",
+        # "frame",
+        # "derivatives",
+        # "statistical",
+        # "fourier"
+    ],
+    "include_ball": False,
+    "include_random_events": False,
+}
+
+print(f"Configuration: {config}")
+
+def save_config(config, savepath):
+    """Save configuration settings to a JSON file."""
+    config_path = Path(savepath).with_suffix('.json')
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=4)
+    print(f"Configuration saved to {config_path}")
 
 def compute_behavior_map(
     data,
@@ -16,7 +46,29 @@ def compute_behavior_map(
     use_pca=True,
     feature_groups=["tracking", "frame"],
     include_ball=False,
+    include_random_events=True,
 ):
+    """
+    Compute a behavior map using UMAP.
+
+    Parameters:
+    - data (pd.DataFrame): The input data.
+    - n_neighbors (int): The size of local neighborhood (in terms of number of neighboring sample points) used for manifold approximation.
+    - min_dist (float): The effective minimum distance between embedded points.
+    - n_components (int): The number of dimensions of the embedded space.
+    - explained_variance_threshold (float): The threshold for explained variance to determine the number of PCA components.
+    - batch_size (int): The batch size for incremental PCA.
+    - savepath (str): The path to save the resulting UMAP embedding.
+    - use_pca (bool): Whether to use PCA for dimensionality reduction before UMAP.
+    - feature_groups (list): The list of feature groups to include.
+    - include_ball (bool): Whether to include ball features.
+    - include_random_events (bool): Whether to include random events.
+    """
+    # Filter data to only include interaction events if include_random_events is False
+    if not include_random_events:
+        data = data[data["event_type"] == "interaction"]
+        print(f"Filtered data to only include interaction events. New shape: {data.shape}")
+
     # Feature selection configuration
     feature_config = {
         "tracking": [r"_frame\d+_x$", r"_frame\d+_y$"],
@@ -157,42 +209,31 @@ def compute_behavior_map(
 
     return result_df
 
-
-# Example usage
 if __name__ == "__main__":
-
-    data_path = "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250305_StdContacts_Ctrl_noOverlap_Data/Transformed/250305_Pooled_FeedingState_Transformed.feather"
-
-    savepath = "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250305_StdContacts_Ctrl_noOverlap_Data/UMAP/240305_UMAPpooled_FeedingState_TrackingOnly.feather"
-
-    # Check if directory exist and if not create it
-
-    savedir = Path(savepath).parent
-
+    # Check if directory exists and if not create it
+    savedir = Path(config["savepath"]).parent
     savedir.mkdir(parents=True, exist_ok=True)
 
+    # Save configuration settings
+    save_config(config, config["savepath"])
+
     # Load your data
-    print(f"Loading data from {data_path}...")
-    data = pd.read_feather(data_path)
+    print(f"Loading data from {config['data_path']}...")
+    data = pd.read_feather(config["data_path"])
 
     # Compute the behavior map
     behavior_map = compute_behavior_map(
         data,
-        n_neighbors=15,
-        min_dist=0.1,
-        n_components=2,
-        explained_variance_threshold=0.95,
-        batch_size=1000,
-        savepath=savepath,
-        use_pca=False,
-        feature_groups=[
-            "tracking",
-            # "frame",
-            # "derivatives",
-            # "statistical",
-            # "fourier"
-        ],
-        include_ball=False,
+        n_neighbors=config["n_neighbors"],
+        min_dist=config["min_dist"],
+        n_components=config["n_components"],
+        explained_variance_threshold=config["explained_variance_threshold"],
+        batch_size=config["batch_size"],
+        savepath=config["savepath"],
+        use_pca=config["use_pca"],
+        feature_groups=config["feature_groups"],
+        include_ball=config["include_ball"],
+        include_random_events=config["include_random_events"],
     )
 
     print(behavior_map)

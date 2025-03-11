@@ -3,16 +3,32 @@ import numpy as np
 import pyarrow.feather as feather
 from scipy.fft import fft
 from scipy.signal import find_peaks
-
-# from tsfresh import extract_features
-# from tsfresh.feature_extraction import ComprehensiveFCParameters
 from sklearn.feature_selection import VarianceThreshold
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
 import time
 import logging
-
 from pathlib import Path
+import json
+
+# Configuration section
+config = {
+    "input_path": "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250307_StdContacts_Ctrl_noOverlap_Data_cutoff/standardized_contacts/250307_pooled_standardized_contacts.feather",
+    "output_path": "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250307_StdContacts_Ctrl_noOverlap_Data_cutoff/Transformed/250305_Pooled_FeedingState_Transformed_200frames.feather",
+    "features": [
+        "derivatives",
+        "relative_positions",
+        "statistical_measures",
+        "fourier",
+        "frame_features",
+        "keypoints",
+        # "tsfresh",
+    ],
+    "n_jobs": min(os.cpu_count(), 8),
+    "test_rows": None,
+    "chunk_size": None,
+    "frames_per_event": 200,
+}
 
 # Set up logging
 logging.basicConfig(
@@ -22,51 +38,43 @@ logging.basicConfig(
 num_cores = os.cpu_count()
 n_jobs = min(num_cores, 10)  # Limit to 4 CPU cores to avoid crashing the computer
 
+def save_config(config, savepath):
+    """Save configuration settings to a JSON file."""
+    config_path = Path(savepath).with_suffix('.json')
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=4)
+    print(f"Configuration saved to {config_path}")
 
 def transpose_keypoints(data):
-    """Transpose keypoints with proper X/Y coordinate pairing"""
-    # Get all fly-relative keypoints (both X and Y)
+    """Transpose keypoints with proper X/Y coordinate pairing."""
     x_fly_pattern = r"^x_.*_fly$"
     y_fly_pattern = r"^y_.*_fly$"
-    # y_body_pattern = r"^y_(Head|Thorax|Abdomen|Rfront|Lfront|Rmid|Lmid|Rhind|Lhind|Rwing|Lwing)$"
     centre_pattern = r"^[xy]_centre_preprocessed$"
 
-    # Combine patterns using regex OR
     keypoint_columns = data.filter(
         regex=f"({x_fly_pattern}|{y_fly_pattern}|{centre_pattern})"
     ).columns
     transposed = {}
 
-    #print(f"Keypoint columns: {keypoint_columns}")
-
-    # Create unique frame identifiers
     data = data.assign(frame_count=data.groupby(["fly", "adjusted_frame"]).cumcount())
 
     for keypoint in keypoint_columns:
-        # Split into components
         parts = keypoint.split("_")
         axis = parts[0]
 
-        # Handle different naming conventions
         if "fly" in parts:
-            # X and Y-coordinate pattern: x_Head_fly -> Head
             keypoint_name = "_".join(parts[1:-1])
         elif "preprocessed" in parts:
-            # Centre coordinates: x_centre_preprocessed -> centre
             keypoint_name = "_".join(parts[1:-1])
 
-        # Add event_type to the pivot index
         keypoint_df = data.pivot(
-            index=[
-                "fly",
-            ],  # Modified index, removed event_type
+            index=["fly"],
             columns=["adjusted_frame", "frame_count"],
             values=keypoint,
         )
 
-        # Update column naming to include event type
         keypoint_df.columns = [
-            f"{keypoint_name}_frame{frame}_{axis}"  # Removed event_type from column name
+            f"{keypoint_name}_frame{frame}_{axis}"
             for (frame, _) in keypoint_df.columns
         ]
 
@@ -74,13 +82,11 @@ def transpose_keypoints(data):
 
     return transposed
 
-
 def calculate_frame_features(group):
-    """Calculate per-frame velocity and angles using original coordinates"""
+    """Calculate per-frame velocity and angles using original coordinates."""
     features = {}
     group = group.sort_values("adjusted_frame").reset_index(drop=True)
 
-    # Base keypoints to process (from original columns)
     base_keypoints = {
         "Head",
         "Thorax",
@@ -106,16 +112,13 @@ def calculate_frame_features(group):
         x_vals = group[x_col].values
         y_vals = group[y_col].values
 
-        # Calculate velocity components
         dx = np.diff(x_vals, prepend=x_vals[0])
         dy = np.diff(y_vals, prepend=y_vals[0])
 
-        # Calculate velocity magnitude and angles
         velocities = np.hypot(dx, dy)
         angles = np.degrees(np.arctan2(dx, dy)) % 360
-        angular_velocity = np.diff(angles, prepend=angles[0])  # New angular velocity
+        angular_velocity = np.diff(angles, prepend=angles[0])
 
-        # Store event type in features
         for i, frame in enumerate(group["adjusted_frame"]):
             features[f"{kp}_frame{frame}_velocity"] = velocities[i]
             features[f"{kp}_frame{frame}_angle"] = angles[i]
@@ -123,8 +126,8 @@ def calculate_frame_features(group):
 
     return features
 
-
 def calculate_derivatives(group, keypoint_columns, fly_relative=True):
+    """Calculate velocity and acceleration derivatives."""
     if fly_relative:
         fly_relative_columns = [col for col in keypoint_columns if "_fly" in col]
     else:
@@ -138,16 +141,15 @@ def calculate_derivatives(group, keypoint_columns, fly_relative=True):
         | {f"{col}_acc_std": accelerations[col].std() for col in fly_relative_columns}
     )
 
-
 def calculate_relative_positions(group, keypoint_columns, fly_start_map):
-
+    """Calculate relative positions and distances."""
     fly = group["fly"].iloc[0]
     overall_start = fly_start_map[fly]
 
-    # Calculate the Euclidean distance between each frame and the initial frame
     initial_x = group["x_centre_preprocessed"].iloc[0]
     initial_y = group["y_centre_preprocessed"].iloc[0]
-    group["euclidean_distance"] = np.sqrt(
+    group = group.copy() 
+    group.loc[:, "euclidean_distance"] = np.sqrt(
         (group["x_centre_preprocessed"] - initial_x) ** 2
         + (group["y_centre_preprocessed"] - initial_y) ** 2
     )
@@ -155,26 +157,21 @@ def calculate_relative_positions(group, keypoint_columns, fly_start_map):
     initial_positions = group[keypoint_columns].iloc[0]
     displacements = group[keypoint_columns] - initial_positions
 
-    # Calculate median euclidean distance
     median_euclidean_distance = group["euclidean_distance"].median()
 
-    # Calculate direction
     initial_distance = group["euclidean_distance"].iloc[0]
     final_distance = group["euclidean_distance"].iloc[-1]
     direction = 1 if final_distance > initial_distance else -1
 
-    # Calculate raw displacement for centre_preprocessed keypoint
     final_x = group["x_centre_preprocessed"].iloc[-1]
     final_y = group["y_centre_preprocessed"].iloc[-1]
     raw_displacement = np.sqrt((final_x - initial_x) ** 2 + (final_y - initial_y) ** 2)
 
-    # Contact positions
     contact_start_x = group["x_centre_preprocessed"].iloc[0]
     contact_start_y = group["y_centre_preprocessed"].iloc[0]
     contact_end_x = group["x_centre_preprocessed"].iloc[-1]
     contact_end_y = group["y_centre_preprocessed"].iloc[-1]
 
-    # Calculate distances
     start_distance = np.sqrt(
         (contact_start_x - overall_start["overall_x_start"]) ** 2
         + (contact_start_y - overall_start["overall_y_start"]) ** 2
@@ -197,8 +194,8 @@ def calculate_relative_positions(group, keypoint_columns, fly_start_map):
         }
     )
 
-
 def calculate_statistical_measures(group, keypoint_columns, fly_relative=True):
+    """Calculate statistical measures for keypoints."""
     if fly_relative:
         fly_relative_columns = [col for col in keypoint_columns if "_fly" in col]
     else:
@@ -210,8 +207,8 @@ def calculate_statistical_measures(group, keypoint_columns, fly_relative=True):
         | {f"{col}_kurt": group[col].kurtosis() for col in fly_relative_columns}
     )
 
-
 def calculate_fourier_features(group, keypoint_columns, fly_relative=True):
+    """Calculate Fourier features for keypoints."""
     if fly_relative:
         fly_relative_columns = [col for col in keypoint_columns if "_fly" in col]
     else:
@@ -224,13 +221,12 @@ def calculate_fourier_features(group, keypoint_columns, fly_relative=True):
         fft_results[f"{col}_dom_freq_magnitude"] = np.abs(fft_vals[dominant_freq])
     return fft_results
 
-
 def calculate_tsfresh_features(group, keypoint_columns, n_jobs):
+    """Calculate TSFresh features for keypoints."""
     tsfresh_data = group[keypoint_columns].copy()
     tsfresh_data["id"] = 0  # Single id for the group
     tsfresh_data["frame"] = group["frame"].values
 
-    # Extract features using tsfresh
     extracted_features = extract_features(
         tsfresh_data,
         column_id="id",
@@ -240,9 +236,8 @@ def calculate_tsfresh_features(group, keypoint_columns, n_jobs):
     )
     return extracted_features.iloc[0].to_dict()
 
-
 def get_fly_initial_positions(data):
-    """Get first recorded position for each fly in entire dataset"""
+    """Get first recorded position for each fly in entire dataset."""
     return (
         data.groupby("fly")[["x_centre_preprocessed", "y_centre_preprocessed"]]
         .first()
@@ -255,19 +250,22 @@ def get_fly_initial_positions(data):
         .reset_index()
     )
 
-
 def process_group(
     fly,
     event_id,
     event_type,
-    # contact_index,
     group,
     features,
     keypoint_columns,
     metadata_columns,
     fly_start_map,
     n_jobs,
+    frames_per_event=None,
 ):
+    """Process a single group of data."""
+    if frames_per_event:
+        group = group.iloc[:frames_per_event]
+
     duration = group["frame"].max() - group["frame"].min() + 1
     metadata = group[metadata_columns].iloc[0]
     row = {
@@ -296,8 +294,8 @@ def process_group(
     row.update(metadata.to_dict())
     return row
 
-
-def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir=None):
+def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir=None, frames_per_event=None):
+    """Transform the data by processing each group and extracting features."""
     keypoint_columns = data.filter(regex="^(x|y)_").columns
     all_metadata_columns = [
         "flypath",
@@ -313,16 +311,12 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
         "Light",
         "Crossing",
         "event_id",
-        # "contact_index",
     ]
 
-    # Filter metadata columns to only include those present in the data
     metadata_columns = [col for col in all_metadata_columns if col in data.columns]
 
-    # Precompute fly initial positions
     fly_initial_positions = get_fly_initial_positions(data)
 
-    # Create dictionary for faster lookups
     fly_start_map = fly_initial_positions.set_index("fly")[
         ["overall_x_start", "overall_y_start"]
     ].to_dict("index")
@@ -366,8 +360,9 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
                     features,
                     keypoint_columns,
                     metadata_columns,
-                    fly_start_map,  # Pass the precomputed map
+                    fly_start_map,
                     n_jobs,
+                    frames_per_event,
                 )
                 for (fly, event_id, event_type), group in chunk
             ]
@@ -392,8 +387,8 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
         f"Processed {len(os.listdir(output_dir))} chunks out of {total_chunks} total chunks"
     )
 
-
 def concatenate_chunks(output_dir, output_path):
+    """Concatenate all chunk files into a single DataFrame."""
     chunk_files = [
         os.path.join(output_dir, f)
         for f in os.listdir(output_dir)
@@ -404,8 +399,8 @@ def concatenate_chunks(output_dir, output_path):
     feather.write_feather(concatenated_df, output_path)
     logging.info(f"Concatenated all chunks and saved to {output_path}")
 
-
 def feature_selection(data):
+    """Perform feature selection by removing low-variance and highly correlated features."""
     logging.info("Starting feature selection")
     start_time = time.time()
 
@@ -448,10 +443,10 @@ def feature_selection(data):
 
     return final_data
 
-
 def main(
-    input_path, output_path, features, n_jobs=num_cores, test_rows=None, chunk_size=None
+    input_path, output_path, features, n_jobs=num_cores, test_rows=None, chunk_size=None, frames_per_event=None
 ):
+    """Main function to load data, transform it, and perform feature selection."""
     logging.info(f"Loading data from {input_path}...")
     data = pd.read_feather(input_path)
     logging.info(f"Loaded data shape: {data.shape}")
@@ -468,7 +463,7 @@ def main(
 
     logging.info(f"Transforming data using features: {features}")
     transform_data(
-        data, features, n_jobs=n_jobs, chunk_size=chunk_size, output_dir=output_dir
+        data, features, n_jobs=n_jobs, chunk_size=chunk_size, output_dir=output_dir, frames_per_event=frames_per_event
     )
 
     logging.info("Concatenating chunks...")
@@ -484,39 +479,25 @@ def main(
     logging.info("Transformation complete.")
     logging.info(f"Final data shape: {selected_data.shape}")
 
-
 if __name__ == "__main__":
-    input_path = "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250305_StdContacts_Ctrl_noOverlap_Data/standardized_contacts/250305_pooled_standardized_contacts.feather"
-    output_path = "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250305_StdContacts_Ctrl_noOverlap_Data/Transformed/250305_Pooled_FeedingState_Transformed.feather"
-    
-    # Create the output directory if it doesn't exist
-    
-    outpath = Path(output_path)
-    
-    outpath.parent.mkdir(parents=True, exist_ok=True)
+    # Check if directory exists and if not create it
+    savedir = Path(config["output_path"]).parent
+    savedir.mkdir(parents=True, exist_ok=True)
 
-    # input_path = "/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/250106_FinalEventCutoffData_norm/contact_data/250106_Pooled_contact_data.feather"
-    # output_path = ""/mnt/upramdya_data/MD/MultiMazeRecorder/Datasets/Skeleton_TNT/250107_Transform/250107_Transformed_contact_data_rawdisp.feather""
-    features = [
-        "derivatives",
-        # "relative_positions",
-        "statistical_measures",
-        "fourier",
-        "frame_features",
-        "keypoints",
-        # "tsfresh",
-    ]
+    # Save configuration settings
+    save_config(config, config["output_path"])
 
-    num_cores = os.cpu_count()
-    n_jobs = min(num_cores, 10)  # Limit to 4 CPU cores to avoid crashing the computer
+    # Load your data
+    logging.info(f"Loading data from {config['input_path']}...")
+    data = pd.read_feather(config["input_path"])
 
-    test_rows = 100  # Use a small subset for testing
-
+    # Main function to load data, transform it, and perform feature selection
     main(
-        input_path,
-        output_path,
-        features,
-        n_jobs=n_jobs,
-        test_rows=None,
-        chunk_size=None,  # Adjust chunk size as needed
+        input_path=config["input_path"],
+        output_path=config["output_path"],
+        features=config["features"],
+        n_jobs=config["n_jobs"],
+        test_rows=config["test_rows"],
+        chunk_size=config["chunk_size"],
+        frames_per_event=config["frames_per_event"],
     )

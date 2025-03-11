@@ -27,14 +27,15 @@ CONFIG = {
     "PATHS": {
         "data_root": Path("/mnt/upramdya_data/MD/MultiMazeRecorder/Videos/"),
         "dataset_dir": Path("/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/"),
-        "output_summary_dir": "250307_StdContacts_Ctrl_noOverlap_cutoff",
-        "output_data_dir": "250307_StdContacts_Ctrl_noOverlap_Data_cutoff",
+        "output_summary_dir": "250303_StdContacts_Ctrl",
+        "output_data_dir": "250303_StdContacts_Ctrl_Data",
         "excluded_folders": [],
-        "config_path" : "config.json"
     },
     "PROCESSING": {
         "experiment_filter": "FeedingState",  # Filter for experiment folders
-        "pooled_prefix": "250307_pooled",  # Base name for combined datasets
+        "success_cutoff": False,  # Enable success cutoff filtering
+        "success_method": "final_event",  # Cutoff method selection
+        "pooled_prefix": "250227_pooled",  # Base name for combined datasets
         "metrics": [
             "standardized_contacts"
         ],  # Metrics to process (add/remove as needed)
@@ -131,6 +132,8 @@ for folder in Exp_folders:
         else:
             experiment = Ballpushing_utils.Experiment(
                 folder,
+                success_cutoff=CONFIG["PROCESSING"]["success_cutoff"],
+                success_cutoff_method=CONFIG["PROCESSING"]["success_method"],
             )
             Ballpushing_utils.save_object(experiment, experiment_pkl_path)
             print(f"Created new experiment: {exp_name}")

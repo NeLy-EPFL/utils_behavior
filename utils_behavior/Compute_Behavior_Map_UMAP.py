@@ -4,36 +4,33 @@ import umap
 import time
 from pathlib import Path
 import json
+import numpy as np
 
 # Configuration section
 config = {
-    "data_path": "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250307_StdContacts_Ctrl_noOverlap_Data_cutoff/Transformed/250305_Pooled_FeedingState_Transformed.feather",
-    "savepath": "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250307_StdContacts_Ctrl_noOverlap_Data_cutoff/UMAP/250305_Pooled_FeedingState_InteractionsOnly.feather",
+    "data_path": "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250313_StdContacts_Ctrl_cutoff_300frames_Data/Transformed/250313_pooled_standardized_contacts_Transformed.feather",
+    "savepath": "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250313_StdContacts_Ctrl_cutoff_300frames_Data/UMAP/250313_pooled_standardized_contacts_Allfeatures.feather",
     "n_neighbors": 15,
     "min_dist": 0.1,
     "n_components": 2,
     "explained_variance_threshold": 0.95,
     "batch_size": 1000,
     "use_pca": False,
-    "feature_groups": [
-        "tracking",
-        # "frame",
-        # "derivatives",
-        # "statistical",
-        # "fourier"
-    ],
+    "feature_groups": ["tracking", "frame", "derivatives", "statistical", "fourier"],
     "include_ball": False,
-    "include_random_events": False,
+    "include_random_events": True,
 }
 
 print(f"Configuration: {config}")
 
+
 def save_config(config, savepath):
     """Save configuration settings to a JSON file."""
-    config_path = Path(savepath).with_suffix('.json')
-    with open(config_path, 'w') as f:
+    config_path = Path(savepath).with_suffix(".json")
+    with open(config_path, "w") as f:
         json.dump(config, f, indent=4)
     print(f"Configuration saved to {config_path}")
+
 
 def compute_behavior_map(
     data,
@@ -67,7 +64,9 @@ def compute_behavior_map(
     # Filter data to only include interaction events if include_random_events is False
     if not include_random_events:
         data = data[data["event_type"] == "interaction"]
-        print(f"Filtered data to only include interaction events. New shape: {data.shape}")
+        print(
+            f"Filtered data to only include interaction events. New shape: {data.shape}"
+        )
 
     # Feature selection configuration
     feature_config = {
@@ -165,16 +164,16 @@ def compute_behavior_map(
     # PCA processing
     if use_pca:
         print("Applying Incremental PCA...")
-        pca = PCA().fit(features)
-        cumulative_variance = pca.explained_variance_ratio_.cumsum()
+        pca = PCA(n_components=min(features.shape), svd_solver="randomized").fit(
+            features
+        )
         n_components_pca = (
-            cumulative_variance < explained_variance_threshold
-        ).sum() + 1
-
-        ipca = IncrementalPCA(n_components=n_components_pca, batch_size=batch_size)
-        for batch in range(0, len(features), batch_size):
-            ipca.partial_fit(features[batch : batch + batch_size])
-        processed_features = ipca.transform(features)
+            np.argmax(
+                pca.explained_variance_ratio_.cumsum() >= explained_variance_threshold
+            )
+            + 1
+        )
+        processed_features = pca.transform(features)[:, :n_components_pca]
     else:
         print("Skipping PCA...")
         processed_features = features
@@ -208,6 +207,7 @@ def compute_behavior_map(
         print(f"Saved to {savepath}")
 
     return result_df
+
 
 if __name__ == "__main__":
     # Check if directory exists and if not create it

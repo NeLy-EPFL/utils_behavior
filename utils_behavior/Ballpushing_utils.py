@@ -423,6 +423,7 @@ class Config:
 
     # Random events attributes
 
+    generate_random: bool = True
     random_exclude_interactions: bool = True
     random_interaction_map: str = "full"  # Options: "full" or "onset"
 
@@ -679,7 +680,9 @@ class FlyTrackingData:
                 smoothing=self.fly.config.skeleton_tracks_smoothing,
             )
 
-            if self.balltrack is None or (self.flytrack is None and self.skeletontrack is None):
+            if self.balltrack is None or (
+                self.flytrack is None and self.skeletontrack is None
+            ):
                 print(f"Missing tracking files for {self.fly.metadata.name}")
                 self.valid_data = False
                 if self.log_missing:
@@ -692,7 +695,7 @@ class FlyTrackingData:
             if self.log_missing:
                 self.log_missing_fly()
             return
-        
+
         # Data quality checks
         self.valid_data = self.check_data_quality()
         self.check_dying()
@@ -733,45 +736,43 @@ class FlyTrackingData:
             )
         except IndexError:
             return None
-        
+
     def _determine_success_cutoff(self):
         """Calculate success cutoff based on the final event threshold."""
         if self.fly.config.success_cutoff_method == "final_event":
             ball_data = self.balltrack.objects[0].dataset
             threshold = self.fly.config.final_event_threshold
-            
+
             # Calculate ball displacement
             ball_data["euclidean_distance"] = np.sqrt(
                 (ball_data["x_centre"] - ball_data["x_centre"].iloc[0]) ** 2
                 + (ball_data["y_centre"] - ball_data["y_centre"].iloc[0]) ** 2
             )
-            
+
             # Find frames exceeding threshold
             over_threshold = ball_data[ball_data["euclidean_distance"] >= threshold]
-            
+
             if not over_threshold.empty:
                 final_frame = over_threshold.index[0]
                 self.cutoff_reference = final_frame / self.fly.experiment.fps
-                print(f"Setting cutoff at frame {final_frame} ({self.cutoff_reference:.2f}s)")
-            else:
-                print(f"No frame exceeded threshold {threshold}, using full tracking")
-                
+
         # Reset cached calculations
-        for attr in ['_interaction_events', '_interactions_onsets', '_std_interactions']:
+        for attr in [
+            "_interaction_events",
+            "_interactions_onsets",
+            "_std_interactions",
+        ]:
             if hasattr(self, attr):
                 delattr(self, attr)
-
 
     @property
     def interaction_events(self):
         """Chunks of time where the fly is interacting with the ball."""
-        if not hasattr(self, '_interaction_events'):
+        if not hasattr(self, "_interaction_events"):
             time_range = (0, self.cutoff_reference) if self.cutoff_reference else None
-            # if time_range:
-            #     print(f"Applying cutoff at {time_range[1]}s for {self.fly.metadata.name}")
+
             self._interaction_events = self._calculate_interactions(time_range)
         return self._interaction_events
-
 
     def _calculate_interactions(self, time_range=None):
         """Actual event detection with optional time range"""
@@ -780,20 +781,18 @@ class FlyTrackingData:
             events[fly_idx] = {}
             for ball_idx in range(len(self.balltrack.objects)):
                 events[fly_idx][ball_idx] = self.find_flyball_interactions(
-                    time_range=time_range,
-                    fly_idx=fly_idx,
-                    ball_idx=ball_idx
+                    time_range=time_range, fly_idx=fly_idx, ball_idx=ball_idx
                 )
         return events
 
     def find_flyball_interactions(
-        self, 
+        self,
         gap_between_events=None,
         event_min_length=None,
         thresh=None,
         time_range=None,
         fly_idx=0,
-        ball_idx=0
+        ball_idx=0,
     ):
         """
         Find interaction events between the fly and the ball.
@@ -813,11 +812,13 @@ class FlyTrackingData:
         # Apply time range filtering at detection time
         fly_data = self.flytrack.objects[fly_idx].dataset
         ball_data = self.balltrack.objects[ball_idx].dataset
-        
+
         if time_range:
             # Convert frame indices to integers for iloc
             start = int(time_range[0] * self.fly.experiment.fps)
-            end = int(time_range[1] * self.fly.experiment.fps) if time_range[1] else None
+            end = (
+                int(time_range[1] * self.fly.experiment.fps) if time_range[1] else None
+            )
             fly_data = fly_data.iloc[start:end]
             ball_data = ball_data.iloc[start:end]
 
@@ -833,17 +834,23 @@ class FlyTrackingData:
             fps=self.fly.experiment.fps,
         )
         return interaction_events
-    
-    @property 
+
+    @property
     def events_before_cutoff(self):
         """Number of events before cutoff."""
         if self.cutoff_reference:
             all_events = self._calculate_interactions(None)
             filtered_events = self._calculate_interactions((0, self.cutoff_reference))
-            all_count = sum(len(events) for fly_dict in all_events.values() 
-                            for events in fly_dict.values())
-            filtered_count = sum(len(events) for fly_dict in filtered_events.values() 
-                                for events in fly_dict.values())
+            all_count = sum(
+                len(events)
+                for fly_dict in all_events.values()
+                for events in fly_dict.values()
+            )
+            filtered_count = sum(
+                len(events)
+                for fly_dict in filtered_events.values()
+                for events in fly_dict.values()
+            )
             return filtered_count, all_count
         return None, None
 
@@ -852,14 +859,16 @@ class FlyTrackingData:
         """
         For each interaction event, get the onset of the fly interaction with the ball.
         """
-        if not hasattr(self, '_interactions_onsets'):
+        if not hasattr(self, "_interactions_onsets"):
             self._interactions_onsets = self._calculate_interactions_onsets()
         return self._interactions_onsets
 
     def _calculate_interactions_onsets(self):
         """Calculate interaction onsets."""
         if self.flytrack is None or self.balltrack is None:
-            print(f"Skipping interaction events for {self.fly.metadata.name} due to missing tracking data.")
+            print(
+                f"Skipping interaction events for {self.fly.metadata.name} due to missing tracking data."
+            )
             return {}
 
         interactions_onsets = {}
@@ -870,38 +879,43 @@ class FlyTrackingData:
 
             for ball_idx in range(0, len(self.balltrack.objects)):
                 ball_data = self.balltrack.objects[ball_idx].dataset
-                
+
                 # Access events through the property to ensure they're calculated
                 interaction_events = self.interaction_events[fly_idx][ball_idx]
                 event_count += len(interaction_events)
-                
+
                 onsets = []
                 for event in interaction_events:
                     event_data = fly_data.loc[event[0] : event[1]]
                     event_data["adjusted_frame"] = range(len(event_data))
-                    
+
                     event_data["distance"] = np.sqrt(
                         (event_data["x_thorax"] - ball_data["x_centre"]) ** 2
                         + (event_data["y_thorax"] - ball_data["y_centre"]) ** 2
                     )
-                    
-                    onset = find_interaction_start(event_data, "distance", "adjusted_frame")
+
+                    onset = find_interaction_start(
+                        event_data, "distance", "adjusted_frame"
+                    )
                     onsets.append(onset)
-                    
+
                 interactions_onsets[(fly_idx, ball_idx)] = onsets
-                
+
         # print(f"Found {event_count} interaction events with onsets for {self.fly.metadata.name}")
         return interactions_onsets
 
-    
     @property
     def standardized_interactions(self):
         """Standardized interaction events based on frames before and after onset."""
-        if not hasattr(self, '_std_interactions') or \
-        (hasattr(self, '_prev_cutoff') and self._prev_cutoff != self.cutoff_reference):
+        if not hasattr(self, "_std_interactions") or (
+            hasattr(self, "_prev_cutoff") and self._prev_cutoff != self.cutoff_reference
+        ):
             # Make sure interaction_events exist and contain data
-            if not self.interaction_events or not any(events for fly_dict in self.interaction_events.values() 
-                                                for events in fly_dict.values()):
+            if not self.interaction_events or not any(
+                events
+                for fly_dict in self.interaction_events.values()
+                for events in fly_dict.values()
+            ):
                 print(f"No interaction events found for {self.fly.metadata.name}")
                 self._std_interactions = {}
             else:
@@ -909,38 +923,36 @@ class FlyTrackingData:
             self._prev_cutoff = self.cutoff_reference
         return self._std_interactions
 
-
-
     def _calculate_standardized_interactions(self):
         standardized = {}
-        
+
         # Check if onsets exist
         if not self.interactions_onsets:
             print(f"No interaction onsets found for {self.fly.metadata.name}")
             return {}
-        
-        # Debug print
-        # onset_count = sum(len(onsets) for onsets in self.interactions_onsets.values())
-        # print(f"Processing {onset_count} onsets for standardized interactions")
-        
+
         for (fly_idx, ball_idx), onsets in self.interactions_onsets.items():
             events = []
             for onset in onsets:
                 if onset is None:
                     continue
-                    
-                # Properly calculate start and end frames with bounds checking
                 start = max(0, onset - self.fly.config.frames_before_onset)
                 end = min(
                     len(self.flytrack.objects[fly_idx].dataset),
-                    onset + self.fly.config.frames_after_onset
+                    onset + self.fly.config.frames_after_onset,
                 )
                 events.append((start, end))
-            standardized[(fly_idx, ball_idx)] = events
-        
+
+            # Add deduplication here
+            unique_events = []
+            for event in events:
+                if event not in unique_events:
+                    unique_events.append(event)
+
+            standardized[(fly_idx, ball_idx)] = unique_events
+
         return standardized
 
-    
     def check_data_quality(self):
         """Check if the fly is dead or in poor condition.
 
@@ -1026,7 +1038,7 @@ class FlyTrackingData:
                     consecutive_points[durations.index(events)].index[0]
                 ]["time"]
 
-                print(f"Warning: {self.fly.metadata.name} is dying at {time}")
+                print(f"Warning: {self.fly.metadata.name} is inactive at {time}")
 
                 return True
 
@@ -2222,26 +2234,37 @@ class SkeletonMetrics:
         """
         List fly relative tracking data associated with interaction events with optional random negative examples.
         """
+
+        generate_random = self.fly.config.generate_random
+
         events = []
         all_event_intervals = []
-        
+
         if hasattr(self.fly.tracking_data, "standardized_interactions"):
             # Collect all interaction intervals for exclusion
-            for (fly_idx, ball_idx), event_list in self.fly.tracking_data.standardized_interactions.items():
+            for (
+                fly_idx,
+                ball_idx,
+            ), event_list in self.fly.tracking_data.standardized_interactions.items():
                 for event in event_list:
+
                     start = event[0]
                     end = event[1]
                     all_event_intervals.append((start, end))
-            #print(f"all_event_intervals: {all_event_intervals}")
-        
+
         else:
             print("No standardized interactions found")
 
         event_counter = 0
-        if (hasattr(self.fly.tracking_data, "standardized_interactions") 
-            and self.fly.tracking_data.standardized_interactions):
-            
-            for (fly_idx, ball_idx), event_list in self.fly.tracking_data.standardized_interactions.items():
+        if (
+            hasattr(self.fly.tracking_data, "standardized_interactions")
+            and self.fly.tracking_data.standardized_interactions
+        ):
+
+            for (
+                fly_idx,
+                ball_idx,
+            ), event_list in self.fly.tracking_data.standardized_interactions.items():
                 for event in event_list:
                     if len(event) != 2:
                         print(f"Skipping malformed event: {event}")
@@ -2249,27 +2272,30 @@ class SkeletonMetrics:
 
                     start_frame = int(event[0])
                     end_frame = int(event[1])
-                    
+
                     # Convert to actual indices
                     start_idx = start_frame
                     end_idx = end_frame
-                    
+
                     # Validate indices
-                    if start_idx >= len(self.fly_centered_tracks) or end_idx > len(self.fly_centered_tracks):
-                        print(f"Invalid event bounds {start_idx}-{end_idx} for track length {len(self.fly_centered_tracks)}")
+                    if start_idx >= len(self.fly_centered_tracks) or end_idx > len(
+                        self.fly_centered_tracks
+                    ):
+                        print(
+                            f"Invalid event bounds {start_idx}-{end_idx} for track length {len(self.fly_centered_tracks)}"
+                        )
                         continue
 
                     # Process event data
                     event_data = self.fly_centered_tracks.iloc[start_idx:end_idx].copy()
 
-                    event_data = self.fly_centered_tracks.iloc[start:end].copy()
                     event_data["event_id"] = event_counter
                     event_data["time_rel_onset"] = (
                         event_data.index - start
                     ) / self.fly.experiment.fps
                     event_data["fly_idx"] = fly_idx
                     event_data["ball_idx"] = ball_idx
-                    event_data["adjusted_frame"] = range(end - start)
+                    event_data["adjusted_frame"] = range(end_idx - start_idx)
                     event_data["event_type"] = "interaction"
 
                     # Calculate ball displacement

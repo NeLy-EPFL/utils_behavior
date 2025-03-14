@@ -2,19 +2,23 @@ import pandas as pd
 import numpy as np
 import pyarrow.feather as feather
 from scipy.fft import fft
-from scipy.signal import find_peaks
-from sklearn.feature_selection import VarianceThreshold
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
 import time
 import logging
 from pathlib import Path
 import json
+from tqdm import tqdm
+import pyarrow
+import pyarrow.ipc as ipc
+import gc
+import psutil
+import os
 
 # Configuration section
 config = {
-    "input_path": "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250307_StdContacts_Ctrl_noOverlap_Data_cutoff/standardized_contacts/250307_pooled_standardized_contacts.feather",
-    "output_path": "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250307_StdContacts_Ctrl_noOverlap_Data_cutoff/Transformed/250305_Pooled_FeedingState_Transformed_200frames.feather",
+    "input_path": "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250313_StdContacts_Ctrl_cutoff_300frames_Data/standardized_contacts/250313_pooled_standardized_contacts.feather",
+    "output_path": "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250313_StdContacts_Ctrl_cutoff_300frames_Data/Transformed/250313_pooled_standardized_contacts_Transformed.feather",
     "features": [
         "derivatives",
         "relative_positions",
@@ -22,12 +26,12 @@ config = {
         "fourier",
         "frame_features",
         "keypoints",
-        # "tsfresh",
     ],
     "n_jobs": min(os.cpu_count(), 8),
-    "test_rows": None,
-    "chunk_size": None,
-    "frames_per_event": 200,
+    "frames_per_event": None,
+    "batch_size": 100000,
+    "cleanup_temp_files": True,
+    "retry_failed": True,
 }
 
 # Set up logging
@@ -35,17 +39,95 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+
+# Memory monitoring function
+def check_memory(threshold=80):
+    """Monitor memory usage and trigger GC if above threshold percent"""
+    memory_percent = psutil.virtual_memory().percent
+    if memory_percent > threshold:
+        gc.collect()
+        return True
+    return False
+
+
+def get_optimal_batch_size(default_size=10000, min_size=1000):
+    """Determine optimal batch size based on available system memory"""
+    # Get available memory in GB
+    available_memory_gb = psutil.virtual_memory().available / (1024**3)
+
+    # Conservative approach: adjust batch size based on available memory
+    # Rough estimate: ~10MB per 1000 rows (adjust based on your specific data)
+    memory_based_size = int(available_memory_gb * 100000)  # ~100K rows per GB
+
+    # More conservative when running over SSH
+    if "SSH_CONNECTION" in os.environ:
+        memory_based_size = memory_based_size // 2
+
+    # Constrain between min_size and default_size
+    optimal_size = max(min_size, min(default_size, memory_based_size))
+    logging.info(
+        f"Optimal batch size determined: {optimal_size} rows (available memory: {available_memory_gb:.2f} GB)"
+    )
+    return optimal_size
+
+
+def batch_load_data(input_path):
+    """Load data in batches using PyArrow IPC reader with a fixed chunk strategy"""
+    import pyarrow.ipc as ipc
+
+    with tqdm(desc="Loading data batches") as pbar:
+        with ipc.open_file(input_path) as reader:
+            num_batches = reader.num_record_batches
+            pbar.total = num_batches
+
+            for i in range(num_batches):
+                batch = reader.get_batch(i)
+                df_batch = batch.to_pandas()
+                yield df_batch
+                check_memory()  # Still monitor memory and GC if needed
+                pbar.update(1)
+
+
+# Adaptive worker count based on available resources
+def get_optimal_workers():
+    """Determine optimal worker count based on system resources"""
+    cpu_count = os.cpu_count()
+    memory_gb = psutil.virtual_memory().total / (1024**3)
+
+    # More conservative when running over SSH
+    if "SSH_CONNECTION" in os.environ:
+        return min(cpu_count // 2, max(1, int(memory_gb // 4)))
+    else:
+        return min(cpu_count, max(1, int(memory_gb // 2)))
+
+
+def cleanup_batch_files(output_dir):
+    """Delete temporary batch files after successful concatenation"""
+    batch_files = [
+        os.path.join(output_dir, f)
+        for f in os.listdir(output_dir)
+        if f.startswith("batch_")
+    ]
+
+    logging.info(f"Cleaning up {len(batch_files)} temporary batch files")
+    for file in tqdm(batch_files, desc="Cleaning up batch files"):
+        os.remove(file)
+    logging.info("Cleanup complete")
+
+
 num_cores = os.cpu_count()
 n_jobs = min(num_cores, 10)  # Limit to 4 CPU cores to avoid crashing the computer
 
+
 def save_config(config, savepath):
     """Save configuration settings to a JSON file."""
-    config_path = Path(savepath).with_suffix('.json')
-    with open(config_path, 'w') as f:
+    config_path = Path(savepath).with_suffix(".json")
+    with open(config_path, "w") as f:
         json.dump(config, f, indent=4)
     print(f"Configuration saved to {config_path}")
 
-def transpose_keypoints(data):
+
+def transpose_keypoints(data, frames_per_event=None):
     """Transpose keypoints with proper X/Y coordinate pairing."""
     x_fly_pattern = r"^x_.*_fly$"
     y_fly_pattern = r"^y_.*_fly$"
@@ -56,7 +138,15 @@ def transpose_keypoints(data):
     ).columns
     transposed = {}
 
-    data = data.assign(frame_count=data.groupby(["fly", "adjusted_frame"]).cumcount())
+    data = data.assign(
+        frame_count=data.groupby(["fly", "event_id", "adjusted_frame"]).cumcount()
+    )
+
+    # Filter frames by the frames_per_event parameter if provided
+    if frames_per_event:
+        unique_frames = sorted(data["adjusted_frame"].unique())
+        allowed_frames = unique_frames[:frames_per_event]
+        data = data[data["adjusted_frame"].isin(allowed_frames)]
 
     for keypoint in keypoint_columns:
         parts = keypoint.split("_")
@@ -68,24 +158,33 @@ def transpose_keypoints(data):
             keypoint_name = "_".join(parts[1:-1])
 
         keypoint_df = data.pivot(
-            index=["fly"],
+            index=["fly", "event_id"],
             columns=["adjusted_frame", "frame_count"],
             values=keypoint,
         )
 
         keypoint_df.columns = [
-            f"{keypoint_name}_frame{frame}_{axis}"
-            for (frame, _) in keypoint_df.columns
+            f"{keypoint_name}_frame{frame}_{axis}" for (frame, _) in keypoint_df.columns
         ]
 
         transposed.update(keypoint_df.iloc[0].to_dict())
 
     return transposed
 
-def calculate_frame_features(group):
+
+def calculate_frame_features(group, frames_per_event=None):
     """Calculate per-frame velocity and angles using original coordinates."""
     features = {}
     group = group.sort_values("adjusted_frame").reset_index(drop=True)
+
+    # Filter frames by the frames_per_event parameter if provided
+    if frames_per_event:
+        unique_frames = sorted(group["adjusted_frame"].unique())
+        allowed_frames = unique_frames[:frames_per_event]
+        group = group[group["adjusted_frame"].isin(allowed_frames)]
+
+    # Now only process the allowed frames
+    available_frames = group["adjusted_frame"].unique()
 
     base_keypoints = {
         "Head",
@@ -126,6 +225,7 @@ def calculate_frame_features(group):
 
     return features
 
+
 def calculate_derivatives(group, keypoint_columns, fly_relative=True):
     """Calculate velocity and acceleration derivatives."""
     if fly_relative:
@@ -141,6 +241,7 @@ def calculate_derivatives(group, keypoint_columns, fly_relative=True):
         | {f"{col}_acc_std": accelerations[col].std() for col in fly_relative_columns}
     )
 
+
 def calculate_relative_positions(group, keypoint_columns, fly_start_map):
     """Calculate relative positions and distances."""
     fly = group["fly"].iloc[0]
@@ -148,7 +249,7 @@ def calculate_relative_positions(group, keypoint_columns, fly_start_map):
 
     initial_x = group["x_centre_preprocessed"].iloc[0]
     initial_y = group["y_centre_preprocessed"].iloc[0]
-    group = group.copy() 
+    group = group.copy()
     group.loc[:, "euclidean_distance"] = np.sqrt(
         (group["x_centre_preprocessed"] - initial_x) ** 2
         + (group["y_centre_preprocessed"] - initial_y) ** 2
@@ -194,6 +295,7 @@ def calculate_relative_positions(group, keypoint_columns, fly_start_map):
         }
     )
 
+
 def calculate_statistical_measures(group, keypoint_columns, fly_relative=True):
     """Calculate statistical measures for keypoints."""
     if fly_relative:
@@ -206,6 +308,7 @@ def calculate_statistical_measures(group, keypoint_columns, fly_relative=True):
         | {f"{col}_skew": group[col].skew() for col in fly_relative_columns}
         | {f"{col}_kurt": group[col].kurtosis() for col in fly_relative_columns}
     )
+
 
 def calculate_fourier_features(group, keypoint_columns, fly_relative=True):
     """Calculate Fourier features for keypoints."""
@@ -220,6 +323,7 @@ def calculate_fourier_features(group, keypoint_columns, fly_relative=True):
         fft_results[f"{col}_dom_freq"] = dominant_freq
         fft_results[f"{col}_dom_freq_magnitude"] = np.abs(fft_vals[dominant_freq])
     return fft_results
+
 
 def calculate_tsfresh_features(group, keypoint_columns, n_jobs):
     """Calculate TSFresh features for keypoints."""
@@ -236,6 +340,7 @@ def calculate_tsfresh_features(group, keypoint_columns, n_jobs):
     )
     return extracted_features.iloc[0].to_dict()
 
+
 def get_fly_initial_positions(data):
     """Get first recorded position for each fly in entire dataset."""
     return (
@@ -249,6 +354,7 @@ def get_fly_initial_positions(data):
         )
         .reset_index()
     )
+
 
 def process_group(
     fly,
@@ -271,6 +377,7 @@ def process_group(
     row = {
         "duration": duration,
         "fly": fly,
+        "event_id": event_id,
         "event_type": event_type if "event_type" in group.columns else None,
         "start": group["time"].iloc[0],
         "end": group["time"].iloc[-1],
@@ -286,17 +393,25 @@ def process_group(
     if "fourier" in features:
         row.update(calculate_fourier_features(group, keypoint_columns))
     if "frame_features" in features:
-        row.update(calculate_frame_features(group))
+        row.update(calculate_frame_features(group, frames_per_event=frames_per_event))
     if "keypoints" in features:
-        row.update(transpose_keypoints(group))
+        row.update(transpose_keypoints(group, frames_per_event=frames_per_event))
     if "tsfresh" in features:
         row.update(calculate_tsfresh_features(group, keypoint_columns, n_jobs=n_jobs))
     row.update(metadata.to_dict())
     return row
 
-def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir=None, frames_per_event=None):
-    """Transform the data by processing each group and extracting features."""
-    keypoint_columns = data.filter(regex="^(x|y)_").columns
+
+def transform_data_batch(
+    data_batch,
+    features,
+    n_jobs=num_cores,
+    output_dir=None,
+    frames_per_event=None,
+    processed_groups=None,
+):
+    """Process a batch of data with error tracking"""
+    keypoint_columns = data_batch.filter(regex="^(x|y)_").columns
     all_metadata_columns = [
         "flypath",
         "experiment",
@@ -313,173 +428,320 @@ def transform_data(data, features, n_jobs=num_cores, chunk_size=None, output_dir
         "event_id",
     ]
 
-    metadata_columns = [col for col in all_metadata_columns if col in data.columns]
-
-    fly_initial_positions = get_fly_initial_positions(data)
-
+    metadata_columns = [
+        col for col in all_metadata_columns if col in data_batch.columns
+    ]
+    fly_initial_positions = get_fly_initial_positions(data_batch)
     fly_start_map = fly_initial_positions.set_index("fly")[
         ["overall_x_start", "overall_y_start"]
     ].to_dict("index")
 
+    # Group data
     groups = (
-        list(data.groupby(["fly", "event_id", "event_type"]))
-        if "event_type" in data.columns
-        else list(data.groupby(["fly", "event_id"]))
+        list(data_batch.groupby(["fly", "event_id", "event_type"]))
+        if "event_type" in data_batch.columns
+        else list(data_batch.groupby(["fly", "event_id"]))
     )
 
-    total_groups = len(groups)
-    logging.info(f"Processing {total_groups} groups with {n_jobs} workers")
-    start_time = time.time()
+    batch_data = []
+    with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+        futures = {}  # Map futures to their group keys for error tracking
+        for group_key, group in groups:
+            # Generate a consistent group ID
+            group_id = "_".join(str(k) for k in group_key)
 
-    if chunk_size is None:
-        chunk_size = total_groups
+            if processed_groups and group_id in processed_groups:
+                continue
 
-    existing_chunks = set(
-        int(f.split("_")[1].split(".")[0])
-        for f in os.listdir(output_dir)
-        if f.startswith("chunk_")
-    )
-    total_chunks = (total_groups + chunk_size - 1) // chunk_size
+            future = executor.submit(
+                process_group,
+                *group_key,
+                group,
+                features,
+                keypoint_columns,
+                metadata_columns,
+                fly_start_map,
+                n_jobs,
+                frames_per_event,
+            )
+            futures[future] = group_key
 
-    for chunk_index in range(0, total_groups, chunk_size):
-        chunk_number = chunk_index // chunk_size + 1
-        if chunk_number in existing_chunks:
-            logging.info(f"Skipping chunk {chunk_number} as it already exists")
-            continue
+        for future in tqdm(
+            as_completed(futures), total=len(futures), desc="Processing groups"
+        ):
+            try:
+                batch_data.append(future.result())
+                # Garbage collect periodically
+                if len(batch_data) % 50 == 0:
+                    gc.collect()
+            except Exception as e:
+                # Get the group key for the failed future
+                group_key = futures[future]
+                group_id = "_".join(str(k) for k in group_key)
 
-        chunk = groups[chunk_index : chunk_index + chunk_size]
-        chunk_data = []
-        with ProcessPoolExecutor(max_workers=n_jobs) as executor:
-            futures = [
-                executor.submit(
-                    process_group,
-                    fly,
-                    event_id,
-                    event_type,
-                    group,
-                    features,
-                    keypoint_columns,
-                    metadata_columns,
-                    fly_start_map,
-                    n_jobs,
-                    frames_per_event,
-                )
-                for (fly, event_id, event_type), group in chunk
-            ]
+                # Log the error
+                error_msg = str(e)
+                logging.error(f"Error processing group {group_id}: {error_msg}")
 
-            for i, future in enumerate(as_completed(futures), 1):
-                chunk_data.append(future.result())
-                if i % 100 == 0 or i == len(chunk):
-                    logging.info(
-                        f"Processed {i}/{len(chunk)} groups in chunk {chunk_number}"
-                    )
+                # Track the failed group
+                track_failed_group(output_dir, *group_key, error_msg)
 
-        chunk_df = pd.DataFrame(chunk_data)
-        chunk_filename = os.path.join(output_dir, f"chunk_{chunk_number}.feather")
-        feather.write_feather(chunk_df, chunk_filename)
-        logging.info(f"Saved chunk {chunk_number} to {chunk_filename}")
+    if batch_data:
+        batch_df = pd.DataFrame(batch_data)
+        batch_filename = os.path.join(output_dir, f"batch_{time.time()}.feather")
+        feather.write_feather(batch_df, batch_filename)
+        logging.info(f"Saved batch to {batch_filename}")
 
-    end_time = time.time()
-    logging.info(
-        f"Data transformation completed in {end_time - start_time:.2f} seconds"
-    )
-    logging.info(
-        f"Processed {len(os.listdir(output_dir))} chunks out of {total_chunks} total chunks"
-    )
+        # Update processed groups
+        if processed_groups is not None:
+            with open(os.path.join(output_dir, "processed_groups.txt"), "a") as f:
+                for group_key, _ in groups:
+                    group_id = "_".join(str(k) for k in group_key)
+                    if group_id not in processed_groups:
+                        f.write(f"{group_id}\n")
 
-def concatenate_chunks(output_dir, output_path):
-    """Concatenate all chunk files into a single DataFrame."""
-    chunk_files = [
+
+def concatenate_batches(output_dir, output_path, cleanup=True):
+    """Concatenate all batch files into a single DataFrame with progress bar."""
+    batch_files = [
         os.path.join(output_dir, f)
         for f in os.listdir(output_dir)
-        if f.startswith("chunk_")
+        if f.startswith("batch_")
     ]
-    chunk_dfs = [pd.read_feather(chunk_file) for chunk_file in chunk_files]
-    concatenated_df = pd.concat(chunk_dfs, ignore_index=True)
+
+    logging.info(f"Concatenating {len(batch_files)} batch files")
+    batch_dfs = []
+
+    for batch_file in tqdm(batch_files, desc="Reading batch files"):
+        batch_dfs.append(pd.read_feather(batch_file))
+
+    concatenated_df = pd.concat(batch_dfs, ignore_index=True)
+
+    logging.info(f"Writing concatenated data to {output_path}")
     feather.write_feather(concatenated_df, output_path)
-    logging.info(f"Concatenated all chunks and saved to {output_path}")
+    logging.info(f"Concatenated all batches and saved to {output_path}")
 
-def feature_selection(data):
-    """Perform feature selection by removing low-variance and highly correlated features."""
-    logging.info("Starting feature selection")
-    start_time = time.time()
+    # Cleanup temporary files if requested
+    if cleanup:
+        cleanup_batch_files(output_dir)
 
-    numeric_columns = data.select_dtypes(include=[np.number]).columns
-    non_numeric_columns = data.select_dtypes(exclude=[np.number]).columns
 
-    logging.info(
-        f"Found {len(numeric_columns)} numeric columns and {len(non_numeric_columns)} non-numeric columns"
-    )
+def track_failed_group(output_dir, fly, event_id, event_type, error_msg):
+    """Record failed group processing in an error log"""
+    error_file = os.path.join(output_dir, "failed_groups.txt")
+    with open(error_file, "a") as f:
+        f.write(f"{fly}_{event_id}_{event_type}|{error_msg}\n")
 
-    numeric_data = data[numeric_columns]
 
-    logging.info("Applying variance threshold")
-    selector = VarianceThreshold(threshold=0.01)
-    data_var = selector.fit_transform(numeric_data)
-    selected_features = numeric_data.columns[selector.get_support(indices=True)]
-    selected_numeric_data = pd.DataFrame(
-        data_var, columns=selected_features, index=data.index
-    )
+def load_failed_groups(output_dir):
+    """Load list of failed groups from error log"""
+    failed_groups = {}
+    error_file = os.path.join(output_dir, "failed_groups.txt")
 
-    logging.info(
-        f"Removed {len(numeric_columns) - len(selected_features)} low-variance features"
-    )
+    if os.path.exists(error_file):
+        with open(error_file, "r") as f:
+            for line in f:
+                parts = line.strip().split("|", 1)
+                if len(parts) == 2:
+                    group_key, error_msg = parts
+                    failed_groups[group_key] = error_msg
 
-    logging.info("Removing highly correlated features")
-    corr_matrix = selected_numeric_data.corr().abs()
-    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
-    to_drop = [column for column in upper.columns if any(upper[column] > 0.95)]
-    final_numeric_data = selected_numeric_data.drop(columns=to_drop)
+    return failed_groups
 
-    logging.info(
-        f"Removed {len(selected_features) - len(final_numeric_data.columns)} highly correlated features"
-    )
 
-    final_data = pd.concat([final_numeric_data, data[non_numeric_columns]], axis=1)
+def retry_failed_groups(
+    input_path, output_dir, features, n_jobs, frames_per_event=None
+):
+    """Retry processing previously failed groups"""
+    failed_groups = load_failed_groups(output_dir)
 
-    end_time = time.time()
-    logging.info(f"Feature selection completed in {end_time - start_time:.2f} seconds")
-    logging.info(f"Final dataset shape: {final_data.shape}")
+    if not failed_groups:
+        logging.info("No failed groups to retry")
+        return 0
 
-    return final_data
+    logging.info(f"Attempting to retry {len(failed_groups)} failed groups")
+
+    # Load the data for these specific groups
+    all_data = pd.read_feather(input_path)
+
+    retried_count = 0
+    batch_data = []
+
+    for group_key in tqdm(failed_groups, desc="Retrying failed groups"):
+        try:
+            fly, event_id, event_type = group_key.split("_")
+            event_id = int(event_id)
+
+            # Filter data for this specific group
+            if "event_type" in all_data.columns:
+                group_data = all_data[
+                    (all_data["fly"] == fly)
+                    & (all_data["event_id"] == event_id)
+                    & (all_data["event_type"] == event_type)
+                ]
+            else:
+                group_data = all_data[
+                    (all_data["fly"] == fly) & (all_data["event_id"] == event_id)
+                ]
+
+            if len(group_data) == 0:
+                logging.warning(f"Could not find data for group {group_key}")
+                continue
+
+            # Process this group with minimal parallelization to avoid issues
+            keypoint_columns = all_data.filter(regex="^(x|y)_").columns
+            all_metadata_columns = [
+                "flypath",
+                "experiment",
+                "event_type",
+                "Nickname",
+                "Brain region",
+                "Date",
+                "Genotype",
+                "Period",
+                "FeedingState",
+                "Orientation",
+                "Light",
+                "Crossing",
+                "event_id",
+            ]
+            metadata_columns = [
+                col for col in all_metadata_columns if col in all_data.columns
+            ]
+
+            # Get fly initial positions for this specific fly
+            fly_data = all_data[all_data["fly"] == fly]
+            fly_initial_positions = get_fly_initial_positions(fly_data)
+            fly_start_map = fly_initial_positions.set_index("fly")[
+                ["overall_x_start", "overall_y_start"]
+            ].to_dict("index")
+
+            # Process this group
+            result = process_group(
+                fly,
+                event_id,
+                event_type,
+                group_data,
+                features,
+                keypoint_columns,
+                metadata_columns,
+                fly_start_map,
+                n_jobs=1,  # Use single thread for retries to avoid issues
+                frames_per_event=frames_per_event,
+            )
+
+            batch_data.append(result)
+            retried_count += 1
+
+            # Remove from failed groups file
+            with open(os.path.join(output_dir, "failed_groups.txt"), "r") as f:
+                failed_lines = f.readlines()
+
+            with open(os.path.join(output_dir, "failed_groups.txt"), "w") as f:
+                for line in failed_lines:
+                    if not line.startswith(f"{group_key}|"):
+                        f.write(line)
+
+        except Exception as e:
+            logging.error(f"Retry failed for group {group_key}: {str(e)}")
+            # Update the error message
+            with open(os.path.join(output_dir, "failed_groups.txt"), "a") as f:
+                f.write(f"{group_key}|RETRY_FAILED: {str(e)}\n")
+
+    # Save the retried data as a batch
+    if batch_data:
+        batch_df = pd.DataFrame(batch_data)
+        batch_filename = os.path.join(
+            output_dir, f"retried_batch_{time.time()}.feather"
+        )
+        feather.write_feather(batch_df, batch_filename)
+        logging.info(f"Saved {retried_count} retried groups to {batch_filename}")
+
+    return retried_count
+
 
 def main(
-    input_path, output_path, features, n_jobs=num_cores, test_rows=None, chunk_size=None, frames_per_event=None
+    input_path,
+    output_path,
+    features,
+    n_jobs=None,
+    frames_per_event=None,
+    cleanup_temp_files=True,
+    retry_failed=True,
 ):
-    """Main function to load data, transform it, and perform feature selection."""
-    logging.info(f"Loading data from {input_path}...")
-    data = pd.read_feather(input_path)
-    logging.info(f"Loaded data shape: {data.shape}")
+    """Streamlined main function with fixed batch processing"""
 
-    if test_rows:
-        data = data.head(test_rows)
-        logging.info(
-            f"Using a subset of {test_rows} rows for testing. New shape: {data.shape}"
-        )
+    if n_jobs is None:
+        n_jobs = get_optimal_workers()
 
+    logging.info(f"Using {n_jobs} workers based on system resources")
+
+    # Create output directory
     output_dir = os.path.dirname(output_path)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    logging.info(f"Transforming data using features: {features}")
-    transform_data(
-        data, features, n_jobs=n_jobs, chunk_size=chunk_size, output_dir=output_dir, frames_per_event=frames_per_event
-    )
+    # Track processed groups for resumability
+    processed_groups = set()
+    if os.path.exists(os.path.join(output_dir, "processed_groups.txt")):
+        with open(os.path.join(output_dir, "processed_groups.txt"), "r") as f:
+            processed_groups = set(line.strip() for line in f)
 
-    logging.info("Concatenating chunks...")
-    concatenate_chunks(output_dir, output_path)
+    # Process batches with fixed batch size from PyArrow
+    for batch_idx, data_batch in enumerate(batch_load_data(input_path), 1):
+        logging.info(f"Processing batch {batch_idx} with {len(data_batch)} rows")
 
-    logging.info("Selecting features...")
-    transformed_data = pd.read_feather(output_path)
-    selected_data = feature_selection(transformed_data)
+        # Process the batch
+        transform_data_batch(
+            data_batch,
+            features,
+            n_jobs=n_jobs,
+            output_dir=output_dir,
+            frames_per_event=frames_per_event,
+            processed_groups=processed_groups,
+        )
 
-    selected_path = output_path.replace(".feather", "_Selected.feather")
-    feather.write_feather(selected_data, selected_path)
+        # Still use garbage collection between batches
+        gc.collect()
 
-    logging.info("Transformation complete.")
-    logging.info(f"Final data shape: {selected_data.shape}")
+    # Retry failed groups if requested
+    if retry_failed:
+        failed_groups = load_failed_groups(output_dir)
+        if failed_groups:
+            logging.info(
+                f"Found {len(failed_groups)} failed groups. Attempting to retry..."
+            )
+            retry_count = retry_failed_groups(
+                input_path, output_dir, features, max(1, n_jobs // 2), frames_per_event
+            )
+            logging.info(
+                f"Successfully retried {retry_count} of {len(failed_groups)} failed groups"
+            )
+
+    # After all batches are processed, concatenate them
+    logging.info("All batches processed. Concatenating results...")
+    concatenate_batches(output_dir, output_path, cleanup=cleanup_temp_files)
+
+    # Report any remaining failed groups
+    remaining_failed = load_failed_groups(output_dir)
+    if remaining_failed:
+        failures_file = os.path.join(output_dir, "final_failures.txt")
+        logging.warning(
+            f"{len(remaining_failed)} groups failed processing. See {failures_file} for details."
+        )
+        with open(failures_file, "w") as f:
+            for group_key, error_msg in remaining_failed.items():
+                f.write(f"{group_key}: {error_msg}\n")
+    else:
+        logging.info("All groups processed successfully.")
+
+    logging.info(f"Final output saved to {output_path}")
+
 
 if __name__ == "__main__":
+    # Simplify configuration
+    config.setdefault("retry_failed", True)
+
     # Check if directory exists and if not create it
     savedir = Path(config["output_path"]).parent
     savedir.mkdir(parents=True, exist_ok=True)
@@ -487,17 +749,13 @@ if __name__ == "__main__":
     # Save configuration settings
     save_config(config, config["output_path"])
 
-    # Load your data
-    logging.info(f"Loading data from {config['input_path']}...")
-    data = pd.read_feather(config["input_path"])
-
-    # Main function to load data, transform it, and perform feature selection
+    # Main function with simplified parameters
     main(
         input_path=config["input_path"],
         output_path=config["output_path"],
         features=config["features"],
         n_jobs=config["n_jobs"],
-        test_rows=config["test_rows"],
-        chunk_size=config["chunk_size"],
         frames_per_event=config["frames_per_event"],
+        cleanup_temp_files=config.get("cleanup_temp_files", True),
+        retry_failed=config.get("retry_failed", True),
     )

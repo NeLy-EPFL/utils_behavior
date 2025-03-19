@@ -408,7 +408,7 @@ class Config:
     # General configuration attributes
 
     time_range: tuple = None
-    success_cutoff: bool = True
+    success_cutoff: bool = False
     success_cutoff_method: str = "final_event"
     tracks_smoothing: bool = True
 
@@ -493,6 +493,12 @@ class Config:
             self.time_range = (3600, None)
             self.final_event_threshold = 100
             # Add other specific settings for MagnetBlock
+        elif experiment_type == "Learning":
+            # Learning experiment specific settings
+            self.trial_peak_height = 0.23  # Height threshold for peak detection
+            self.trial_peak_distance = 500  # Minimum distance between peaks
+            self.trial_skip_frames = 500  # Initial frames to skip in a trial
+            self.trial_min_count = 2  # Minimum number of trials for a valid fly
         else:
             print(f"{experiment_type} has no particular configuration.")
 
@@ -689,6 +695,9 @@ class FlyTrackingData:
                     self.log_missing_fly()
                 return
 
+            # Calculate euclidean distances for all balls (new line)
+            self.calculate_euclidean_distances()
+
         except Exception as e:
             print(f"Error loading files for {self.fly.metadata.name}: {e}")
             self.valid_data = False
@@ -737,17 +746,37 @@ class FlyTrackingData:
         except IndexError:
             return None
 
+    def calculate_euclidean_distances(self):
+        """
+        Calculate euclidean distance for all balls in the tracking data.
+        This is the distance from the ball's initial position.
+        """
+        if self.balltrack is None:
+            return
+            
+        for ball_idx in range(len(self.balltrack.objects)):
+            ball_data = self.balltrack.objects[ball_idx].dataset
+            
+            # Calculate euclidean distance from initial position
+            ball_data["euclidean_distance"] = np.sqrt(
+                (ball_data["x_centre"] - ball_data["x_centre"].iloc[0]) ** 2 +
+                (ball_data["y_centre"] - ball_data["y_centre"].iloc[0]) ** 2
+            )
+            
+            # Also add an alias column for learning experiments
+            ball_data[f"distance_ball_{ball_idx}"] = ball_data["euclidean_distance"]
+    
     def _determine_success_cutoff(self):
         """Calculate success cutoff based on the final event threshold."""
         if self.fly.config.success_cutoff_method == "final_event":
             ball_data = self.balltrack.objects[0].dataset
             threshold = self.fly.config.final_event_threshold
 
-            # Calculate ball displacement
-            ball_data["euclidean_distance"] = np.sqrt(
-                (ball_data["x_centre"] - ball_data["x_centre"].iloc[0]) ** 2
-                + (ball_data["y_centre"] - ball_data["y_centre"].iloc[0]) ** 2
-            )
+            # # Calculate ball displacement
+            # ball_data["euclidean_distance"] = np.sqrt(
+            #     (ball_data["x_centre"] - ball_data["x_centre"].iloc[0]) ** 2
+            #     + (ball_data["y_centre"] - ball_data["y_centre"].iloc[0]) ** 2
+            # )
 
             # Find frames exceeding threshold
             over_threshold = ball_data[ball_data["euclidean_distance"] >= threshold]
@@ -952,6 +981,62 @@ class FlyTrackingData:
             standardized[(fly_idx, ball_idx)] = unique_events
 
         return standardized
+    
+    def detect_trials(self):
+        """
+        Detect trials for learning experiments.
+        """
+        if self.fly.experiment_type != "Learning":
+            return None
+            
+        # This will call the LearningMetrics class methods
+        return self.fly.learning_metrics.trials_data
+        
+    def get_trial_events(self, trial_number):
+        """
+        Get interaction events for a specific trial.
+        
+        Args:
+            trial_number (int): The trial number.
+            
+        Returns:
+            dict: A dictionary of events for the specified trial.
+        """
+        if self.fly.experiment_type != "Learning" or not hasattr(self.fly, "learning_metrics"):
+            return {}
+            
+        trial_interactions = self.fly.learning_metrics.metrics.get("trial_interactions", {})
+        return trial_interactions.get(trial_number, [])
+        
+    def get_trial_standardized_interactions(self, trial_number):
+        """
+        Get standardized interaction events for a specific trial.
+        
+        Args:
+            trial_number (int): The trial number.
+            
+        Returns:
+            dict: A dictionary of standardized events for the specified trial.
+        """
+        if self.fly.experiment_type != "Learning" or not hasattr(self.fly, "learning_metrics"):
+            return {}
+            
+        # Filter standardized interactions by trial
+        trial_events = self.get_trial_events(trial_number)
+        
+        # Create a set of event bounds for quick lookup
+        event_bounds = {(event[0], event[1]) for event in trial_events}
+        
+        # Filter standardized interactions
+        trial_std_interactions = {}
+        
+        for (fly_idx, ball_idx), events in self.standardized_interactions.items():
+            matching_events = [event for event in events if (event[0], event[1]) in event_bounds]
+            
+            if matching_events:
+                trial_std_interactions[(fly_idx, ball_idx)] = matching_events
+                
+        return trial_std_interactions
 
     def check_data_quality(self):
         """Check if the fly is dead or in poor condition.
@@ -1407,10 +1492,10 @@ class BallpushingMetrics:
         """
         ball_data = self.tracking_data.balltrack.objects[ball_idx].dataset
 
-        ball_data["euclidean_distance"] = np.sqrt(
-            (ball_data["x_centre"] - ball_data["x_centre"].iloc[0]) ** 2
-            + (ball_data["y_centre"] - ball_data["y_centre"].iloc[0]) ** 2
-        )
+        # ball_data["euclidean_distance"] = np.sqrt(
+        #     (ball_data["x_centre"] - ball_data["x_centre"].iloc[0]) ** 2
+        #     + (ball_data["y_centre"] - ball_data["y_centre"].iloc[0]) ** 2
+        # )
 
         if distance_type == "max":
             max_distance = ball_data["euclidean_distance"].max() - threshold
@@ -2032,7 +2117,144 @@ class F1Metrics:
                 return "different"
         else:
             return None
-
+        
+class LearningMetrics:
+    def __init__(self, tracking_data):
+        self.tracking_data = tracking_data
+        self.fly = tracking_data.fly
+        self.metrics = {}
+        self.trials_data = None
+        self.trial_durations = None
+        
+        # Detect trials and compute metrics
+        self.detect_trials()
+        self.compute_metrics()
+    
+    def detect_trials(self):
+        """
+        Detect individual trials based on negative peaks in the ball position derivative.
+        """
+        # Get ball data
+        ball_data = self.tracking_data.balltrack.objects[0].dataset.copy()
+        
+        # Compute the derivative of the ball position using the standard column
+        ball_data["position_derivative"] = ball_data["euclidean_distance"].diff()
+        
+        # Find negative peaks (indicating ball reset)
+        peaks, properties = find_peaks(
+            -ball_data["position_derivative"],
+            height=self.fly.config.trial_peak_height,
+            distance=self.fly.config.trial_peak_distance
+        )
+        
+        # Assign trial numbers
+        ball_data["trial"] = 0
+        trial_number = 1
+        previous_peak = 0
+        
+        for peak in peaks:
+            ball_data.iloc[previous_peak:peak+1, ball_data.columns.get_loc("trial")] = trial_number
+            trial_number += 1
+            previous_peak = peak + 1
+            
+        # Assign last trial
+        ball_data.iloc[previous_peak:, ball_data.columns.get_loc("trial")] = trial_number
+        
+        # Store the data with trial information
+        self.trials_data = ball_data
+        
+        # Clean trials (skip initial frames, trim at max position)
+        self.clean_trials()
+        
+        # Compute trial durations
+        self.compute_trial_durations()
+        
+        return self.trials_data
+    
+    def clean_trials(self):
+        """
+        Clean trial data by removing initial frames and trimming at maximum position.
+        """
+        cleaned_data = []
+        
+        for trial in self.trials_data["trial"].unique():
+            # Get data for this trial
+            trial_data = self.trials_data[self.trials_data["trial"] == trial].copy()
+            
+            # Skip initial frames
+            if len(trial_data) > self.fly.config.trial_skip_frames:
+                trial_data = trial_data.iloc[self.fly.config.trial_skip_frames:]
+            
+            # Find max position and trim
+            max_index = trial_data["euclidean_distance"].idxmax()
+            trial_data = trial_data.loc[:max_index]
+            
+            cleaned_data.append(trial_data)
+        
+        if cleaned_data:
+            self.trials_data = pd.concat(cleaned_data).reset_index(drop=True)
+    
+    def compute_trial_durations(self):
+        """
+        Compute the duration of each trial.
+        """
+        durations = []
+        
+        for trial in self.trials_data["trial"].unique():
+            trial_data = self.trials_data[self.trials_data["trial"] == trial]
+            duration = trial_data["time"].max() - trial_data["time"].min()
+            durations.append({"trial": trial, "duration": duration})
+        
+        self.trial_durations = pd.DataFrame(durations)
+    
+    def compute_metrics(self):
+        """
+        Compute metrics for learning experiments.
+        """
+        # Basic metrics about trials
+        self.metrics["num_trials"] = len(self.trials_data["trial"].unique())
+        
+        if not self.trial_durations.empty:
+            self.metrics["mean_trial_duration"] = self.trial_durations["duration"].mean()
+            self.metrics["trial_durations"] = self.trial_durations["duration"].tolist()
+            self.metrics["trial_numbers"] = self.trial_durations["trial"].tolist()
+        
+        # Map interaction events to trials
+        self.map_interactions_to_trials()
+    
+    def map_interactions_to_trials(self):
+        """
+        Associate interaction events with trials.
+        """
+        if not hasattr(self.tracking_data, "interaction_events"):
+            return
+            
+        # Create a mapping of frame to trial
+        frame_to_trial = dict(zip(self.trials_data.index, self.trials_data["trial"]))
+        
+        # Map each interaction event to a trial
+        trial_interactions = {}
+        
+        for fly_idx, ball_dict in self.tracking_data.interaction_events.items():
+            for ball_idx, events in ball_dict.items():
+                for event in events:
+                    start_frame, end_frame = event[0], event[1]
+                    
+                    # Find trial for the event (use start frame)
+                    if start_frame in frame_to_trial:
+                        trial = frame_to_trial[start_frame]
+                        
+                        if trial not in trial_interactions:
+                            trial_interactions[trial] = []
+                            
+                        trial_interactions[trial].append(event)
+        
+        self.metrics["trial_interactions"] = trial_interactions
+        
+        # Count interactions per trial
+        self.metrics["interactions_per_trial"] = {
+            trial: len(events) for trial, events in trial_interactions.items()
+        }
 
 class SkeletonMetrics:
     """
@@ -2188,18 +2410,18 @@ class SkeletonMetrics:
     def find_contact_by_distance(self, threshold, distance_type="max"):
         ball_data = self.ball.objects[0].dataset
 
-        ball_data["euclidean_distance"] = np.sqrt(
-            (
-                ball_data["x_centre_preprocessed"]
-                - ball_data["x_centre_preprocessed"].iloc[0]
-            )
-            ** 2
-            + (
-                ball_data["y_centre_preprocessed"]
-                - ball_data["y_centre_preprocessed"].iloc[0]
-            )
-            ** 2
-        )
+        # ball_data["euclidean_distance"] = np.sqrt(
+        #     (
+        #         ball_data["x_centre_preprocessed"]
+        #         - ball_data["x_centre_preprocessed"].iloc[0]
+        #     )
+        #     ** 2
+        #     + (
+        #         ball_data["y_centre_preprocessed"]
+        #         - ball_data["y_centre_preprocessed"].iloc[0]
+        #     )
+        #     ** 2
+        # )
 
         if distance_type == "max":
             max_distance = ball_data["euclidean_distance"].max() - threshold
@@ -2693,6 +2915,13 @@ class Fly:
         self.metadata = FlyMetadata(self)
 
         self._tracking_data = None
+        
+        # Check if the fly has valid tracking data
+        
+        if as_individual:
+            if not self.tracking_data.valid_data:
+                print(f"Invalid data for: {self.metadata.name}. Skipping.")
+                return
 
         self.flyball_positions = None
         self.fly_skeleton = None
@@ -2700,6 +2929,8 @@ class Fly:
         self._events_metrics = None
 
         self._f1_metrics = None
+        
+        self._learning_metrics = None
 
         self._skeleton_metrics = None
 
@@ -2724,6 +2955,12 @@ class Fly:
         if self._f1_metrics is None and self.experiment_type == "F1":
             self._f1_metrics = F1Metrics(self.tracking_data).metrics
         return self._f1_metrics
+    
+    @property
+    def learning_metrics(self):
+        if self._learning_metrics is None and self.experiment_type == "Learning":
+            self._learning_metrics = LearningMetrics(self.tracking_data)
+        return self._learning_metrics
 
     @property
     def skeleton_metrics(self):
@@ -3521,7 +3758,8 @@ class Dataset:
             dataset = dataset.iloc[:: downsampling_factor * fly.experiment.fps]
 
         if annotate_events:
-            interaction_events = fly.tracking_data.find_flyball_interactions()
+            interaction_events = fly.tracking_data.interaction_events
+                        
             event_frames = np.full(len(dataset), np.nan)
             event_index = 0
             for fly_idx, ball_events in interaction_events.items():
@@ -3530,6 +3768,38 @@ class Dataset:
                         event_frames[event[0] : event[1]] = event_index
                         event_index += 1
             dataset["interaction_event"] = event_frames
+            
+            events_onsets = fly.tracking_data.interactions_onsets
+
+            # Initialize array of NaNs
+            event_onset_frames = np.full(len(dataset), np.nan)
+                        
+            event_onset = 0
+            # Keys are tuples of (fly_idx, ball_idx)
+            for (fly_idx, ball_idx), onsets in events_onsets.items():
+                # Iterate through each onset in the list
+                for onset in onsets:
+                    if onset is not None and 0 <= onset < len(event_onset_frames):
+                        # Mark this frame with the sequential event number
+                        event_onset_frames[onset] = event_onset
+                        event_onset += 1
+                        
+            dataset["interaction_event_onset"] = event_onset_frames
+            
+        # Add trial information for learning experiments
+        if fly.experiment_type == "Learning" and hasattr(fly, "learning_metrics"):
+            trials_data = fly.learning_metrics.trials_data
+            
+            # Create mapping from frame to trial
+            frame_to_trial = dict(zip(trials_data.index, trials_data["trial"]))
+            
+            # Add trial column with default value of Nan
+            dataset["trial"] = np.nan
+            
+            # Update with actual trial values
+            for frame in dataset.index:
+                if frame in frame_to_trial:
+                    dataset.loc[frame, "trial"] = frame_to_trial[frame]
 
         dataset = self._add_metadata(dataset, fly)
 
@@ -3832,6 +4102,21 @@ class Dataset:
             return pd.DataFrame()
 
         events_df = fly.skeleton_metrics.events_based_contacts
+        
+        # Add trial information for learning experiments
+        if fly.experiment_type == "Learning" and hasattr(fly, "learning_metrics"):
+            trials_data = fly.learning_metrics.trials_data
+            
+            # Create mapping from frame to trial
+            frame_to_trial = dict(zip(trials_data.index, trials_data["trial"]))
+            
+            # Add trial column with default value of 0
+            events_df["trial"] = 0
+            
+            # Update with actual trial values - more efficient with vectorized operations
+            common_indices = events_df.index.intersection(trials_data.index)
+            if not common_indices.empty:
+                events_df.loc[common_indices, "trial"] = trials_data.loc[common_indices, "trial"].values
 
         # add metadata
         events_df = self._add_metadata(events_df, fly)

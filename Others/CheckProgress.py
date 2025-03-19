@@ -36,7 +36,7 @@ def count_preprocessed_videos(directories):
 
 
 # Example usage
-yaml_file = Path("/home/durrieu/sleap_tools/control_folders.yaml")
+yaml_file = Path("/home/durrieu/sleap_tools/ball_replacement_folders.yaml")
 
 directories = load_directories_from_yaml(yaml_file)
 preprocessed_videos, total_videos, ratio = count_preprocessed_videos(directories)

@@ -365,14 +365,14 @@ def filter_experiments(source, **criteria):
 def load_fly(
     mp4_file,
     experiment,
-    experiment_type,
+    #experiment_type,
 ):
     print(f"Loading fly from {mp4_file.parent}")
     try:
         fly = Fly(
             mp4_file.parent,
             experiment=experiment,
-            experiment_type=experiment_type,
+            #experiment_type=experiment_type,
         )
         if fly.tracking_data and fly.tracking_data.valid_data:
             return fly
@@ -406,6 +406,8 @@ class Config:
     """
 
     # General configuration attributes
+    
+    experiment_type: str = "Learning"
 
     time_range: tuple = None
     success_cutoff: bool = False
@@ -423,7 +425,7 @@ class Config:
 
     # Random events attributes
 
-    generate_random: bool = True
+    generate_random: bool = False
     random_exclude_interactions: bool = True
     random_interaction_map: str = "full"  # Options: "full" or "onset"
 
@@ -532,7 +534,7 @@ class FlyMetadata:
         for var, data in self.arena_metadata.items():
             setattr(self, var, data)
 
-        if fly.experiment_type == "F1":
+        if fly.config.experiment_type == "F1":
             self.compute_F1_condition()
 
         self.nickname, self.brain_region = self.load_brain_regions(brain_regions_path)
@@ -986,7 +988,7 @@ class FlyTrackingData:
         """
         Detect trials for learning experiments.
         """
-        if self.fly.experiment_type != "Learning":
+        if self.fly.config.experiment_type != "Learning":
             return None
 
         # This will call the LearningMetrics class methods
@@ -1002,7 +1004,7 @@ class FlyTrackingData:
         Returns:
             dict: A dictionary of events for the specified trial.
         """
-        if self.fly.experiment_type != "Learning" or not hasattr(
+        if self.fly.config.experiment_type != "Learning" or not hasattr(
             self.fly, "learning_metrics"
         ):
             return {}
@@ -1022,7 +1024,7 @@ class FlyTrackingData:
         Returns:
             dict: A dictionary of standardized events for the specified trial.
         """
-        if self.fly.experiment_type != "Learning" or not hasattr(
+        if self.fly.config.experiment_type != "Learning" or not hasattr(
             self.fly, "learning_metrics"
         ):
             return {}
@@ -1300,7 +1302,7 @@ class BallpushingMetrics:
                     significant_events = []
 
                 try:
-                    if self.fly.experiment_type == "F1":
+                    if self.fly.config.experiment_type == "F1":
                         nb_significant_events = self.get_adjusted_nb_events(
                             fly_idx, ball_idx, signif=True
                         )
@@ -2890,9 +2892,9 @@ class Fly:
         self,
         directory,
         experiment=None,
-        experiment_type=None,
+        #experiment_type=None,
         as_individual=False,
-        time_range=None,
+        #time_range=None,
     ):
         """
         Initialize a Fly object.
@@ -2927,10 +2929,10 @@ class Fly:
 
         self.config = self.experiment.config
 
-        self.experiment_type = experiment_type
+        #self.experiment_type = experiment_type
 
-        if self.experiment_type:
-            self.config.set_experiment_config(self.experiment_type)
+        if self.config.experiment_type:
+            self.config.set_experiment_config(self.config.experiment_type)
 
         self.metadata = FlyMetadata(self)
 
@@ -2972,13 +2974,13 @@ class Fly:
 
     @property
     def f1_metrics(self):
-        if self._f1_metrics is None and self.experiment_type == "F1":
+        if self._f1_metrics is None and self.config.experiment_type == "F1":
             self._f1_metrics = F1Metrics(self.tracking_data).metrics
         return self._f1_metrics
 
     @property
     def learning_metrics(self):
-        if self._learning_metrics is None and self.experiment_type == "Learning":
+        if self._learning_metrics is None and self.config.experiment_type == "Learning":
             self._learning_metrics = LearningMetrics(self.tracking_data)
         return self._learning_metrics
 
@@ -3357,7 +3359,7 @@ class Experiment:
         self.metadata = self.load_metadata()
         self.fps = self.load_fps()
 
-        self.experiment_type = experiment_type
+        #self.experiment_type = experiment_type
 
         # If metadata_only is True, don't load the flies
         if not metadata_only:
@@ -3466,7 +3468,7 @@ class Experiment:
                         args=(
                             mp4_file,
                             self,
-                            self.experiment_type,
+                            #self.experiment_type,
                         ),
                     )
                     for mp4_file in mp4_files
@@ -3480,7 +3482,7 @@ class Experiment:
                 fly = load_fly(
                     mp4_file,
                     self,
-                    experiment_type=self.experiment_type,
+                    #experiment_type=self.experiment_type,
                 )
                 if fly is not None:
                     flies.append(fly)
@@ -3773,7 +3775,7 @@ class Dataset:
             self._annotate_interaction_events(dataset, fly)
 
         # Add trial information for learning experiments
-        if fly.experiment_type == "Learning" and hasattr(fly, "learning_metrics"):
+        if fly.config.experiment_type == "Learning" and hasattr(fly, "learning_metrics"):
             self._add_trial_information(dataset, fly)
 
         # Add metadata
@@ -3830,13 +3832,15 @@ class Dataset:
         trials_data = fly.learning_metrics.trials_data
         frame_to_trial = trials_data["trial"].to_dict()
 
+        # Map trial numbers to the dataset
         dataset["trial"] = dataset.index.map(frame_to_trial).fillna(np.nan)
-        dataset["trial_frame"] = dataset["trial"].map(
-            trials_data.groupby("trial")["frame"].first().to_dict()
-        )
-        dataset["trial_time"] = dataset["trial"].map(
-            trials_data.groupby("trial")["time"].first().to_dict()
-        )
+
+        # Calculate trial_frame as the frame index relative to the start of each trial
+        dataset["trial_frame"] = dataset.groupby("trial").cumcount()
+
+        # Compute trial_time from the trials_data
+        
+        dataset["trial_time"] = dataset["trial_frame"] / fly.experiment.fps
 
     def _prepare_dataset_contact_data(self, fly, hidden_value=None):
         if hidden_value is None:
@@ -4133,7 +4137,7 @@ class Dataset:
         events_df = fly.skeleton_metrics.events_based_contacts
 
         # Add trial information for learning experiments
-        if fly.experiment_type == "Learning" and hasattr(fly, "learning_metrics"):
+        if fly.config.experiment_type == "Learning" and hasattr(fly, "learning_metrics"):
             trials_data = fly.learning_metrics.trials_data
 
             # Create mapping from frame to trial

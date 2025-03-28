@@ -8,8 +8,8 @@ import numpy as np
 
 # Configuration section
 config = {
-    "data_path": "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250313_StdContacts_Ctrl_cutoff_300frames_Data/Transformed/250313_pooled_standardized_contacts_Transformed.feather",
-    "savepath": "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250313_StdContacts_Ctrl_cutoff_300frames_Data/UMAP/250313_pooled_standardized_contacts_Allfeatures.feather",
+    "data_path": "/mnt/upramdya_data/MD/BallPushing_Learning/Datasets/250326_StdContacts_Ctrl_300frames_Data/Transformed/250313_pooled_standardized_contacts_Transformed.feather",
+    "savepath": "/mnt/upramdya_data/MD/BallPushing_Learning/Datasets/250326_StdContacts_Ctrl_300frames_Data/UMAP/250313_pooled_standardized_contacts_Allfeatures.feather",
     "n_neighbors": 15,
     "min_dist": 0.1,
     "n_components": 2,

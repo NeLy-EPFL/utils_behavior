@@ -17,8 +17,8 @@ import os
 
 # Configuration section
 config = {
-    "input_path": "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250313_StdContacts_Ctrl_cutoff_300frames_Data/standardized_contacts/250313_pooled_standardized_contacts.feather",
-    "output_path": "/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/250313_StdContacts_Ctrl_cutoff_300frames_Data/Transformed/250313_pooled_standardized_contacts_Transformed.feather",
+    "input_path": "/mnt/upramdya_data/MD/BallPushing_Learning/Datasets/250326_StdContacts_Ctrl_300frames_Data/standardized_contacts/250326_pooled_standardized_contacts.feather",
+    "output_path": "/mnt/upramdya_data/MD/BallPushing_Learning/Datasets/250326_StdContacts_Ctrl_300frames_Data/Transformed/250313_pooled_standardized_contacts_Transformed.feather",
     "features": [
         "derivatives",
         "relative_positions",
@@ -426,6 +426,7 @@ def transform_data_batch(
         "Light",
         "Crossing",
         "event_id",
+        "trial",
     ]
 
     metadata_columns = [

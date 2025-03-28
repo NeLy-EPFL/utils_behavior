@@ -30,15 +30,15 @@ import os
 CONFIG = {
     "PATHS": {
         "data_root": Path("/mnt/upramdya_data/MD/MultiMazeRecorder/Videos/"),
-        "dataset_dir": Path("/mnt/upramdya_data/MD/Ballpushing_Exploration/Datasets/"),
-        "output_summary_dir": "250313_StdContacts_Ctrl_cutoff_300frames",
-        "output_data_dir": "250313_StdContacts_Ctrl_cutoff_300frames_Data",
+        "dataset_dir": Path("/mnt/upramdya_data/MD/BallPushing_Learning/Datasets/"),
+        "output_summary_dir": "250326_StdContacts_Ctrl_300frames",
+        "output_data_dir": "250326_StdContacts_Ctrl_300frames_Data",
         "excluded_folders": [],
         "config_path": "config.json",
     },
     "PROCESSING": {
-        "experiment_filter": "FeedingState",  # Filter for experiment folders
-        "pooled_prefix": "250313_pooled",  # Base name for combined datasets
+        "experiment_filter": "Learning",  # Filter for experiment folders
+        "pooled_prefix": "250326_pooled",  # Base name for combined datasets
         "metrics": [
             "standardized_contacts"
         ],  # Metrics to process (add/remove as needed)
@@ -48,6 +48,7 @@ CONFIG = {
 
 def config_to_dict(config):
     return {
+        "experiment_type": config.experiment_type,
         "time_range": config.time_range,
         "success_cutoff": config.success_cutoff,
         "success_cutoff_method": config.success_cutoff_method,

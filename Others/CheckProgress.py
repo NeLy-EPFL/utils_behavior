@@ -36,7 +36,7 @@ def count_preprocessed_videos(directories):
 
 
 # Example usage
-yaml_file = Path("/home/durrieu/sleap_tools/ball_replacement_folders.yaml")
+yaml_file = Path("/home/durrieu/sleap_tools/magnet_block_folders.yaml")
 
 directories = load_directories_from_yaml(yaml_file)
 preprocessed_videos, total_videos, ratio = count_preprocessed_videos(directories)
@@ -77,20 +77,20 @@ def find_folders_with_preprocessed_video_but_no_full_body_slp(directories):
                     )
 
                     # Remove the preprocessed video
-                    for video in preprocessed_videos:
-                        print(f"Removing {video}")
-                        video.unlink()
+                    # for video in preprocessed_videos:
+                    #     print(f"Removing {video}")
+                    #     #video.unlink()
                     folders.append(subdir)
     return folders
 
 
-# folders_with_preprocessed_video_but_no_full_body_slp = (
-#     find_folders_with_preprocessed_video_but_no_full_body_slp(directories)
-# )
+folders_with_preprocessed_video_but_no_full_body_slp = (
+    find_folders_with_preprocessed_video_but_no_full_body_slp(directories)
+)
 
-# print(
-#     f"Folders missing a slp file but with preprocessed folder:{folders_with_preprocessed_video_but_no_full_body_slp}"
-# )
+print(
+    f"Folders missing a slp file but with preprocessed folder:{folders_with_preprocessed_video_but_no_full_body_slp}"
+)
 
 
 def find_last_folders(directories):

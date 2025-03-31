@@ -1,13 +1,13 @@
 import h5py
 
 # import h5pickle as h5py
-import copy
 import pandas as pd
 
 import cv2
 
-from .Processing import *
-#TODO : Fix this import for integration with SleapTracker
+import Processing
+
+# TODO : Fix this import for integration with SleapTracker
 
 # import matplotlib.pyplot as plt
 import numpy as np
@@ -18,11 +18,6 @@ import random
 from pathlib import Path
 
 from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import ProcessPoolExecutor
-
-import yaml
-
-import subprocess
 
 
 def generate_annotated_frame(
@@ -584,12 +579,12 @@ class Sleap_Tracks:
                 if self.smoothed_tracks:
                     if self.debug:
                         print("smoothing tracks")
-                    x_coords[k] = savgol_lowpass_filter(x_coords[k], 221, 1)
-                    y_coords[k] = savgol_lowpass_filter(y_coords[k], 221, 1)
+                    x_coords[k] = Processing.savgol_lowpass_filter(x_coords[k], 221, 1)
+                    y_coords[k] = Processing.savgol_lowpass_filter(y_coords[k], 221, 1)
 
                     # Replace NaNs with the previous value
-                    replace_nans_with_previous_value(x_coords[k])
-                    replace_nans_with_previous_value(y_coords[k])
+                    Processing.replace_nans_with_previous_value(x_coords[k])
+                    Processing.replace_nans_with_previous_value(y_coords[k])
 
                 tracking_df[f"x_{n}"] = x_coords[k]
                 tracking_df[f"y_{n}"] = y_coords[k]

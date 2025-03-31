@@ -1,7 +1,5 @@
 import datetime
 import numpy as np
-import pandas as pd
-from traceback import format_tb
 import requests
 import re
 import os

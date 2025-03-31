@@ -1,57 +1,20 @@
-# import h5py
-# import h5pickle as h5py
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# from sklearn.manifold import TSNE
-# from sklearn.decomposition import PCA
-# from openTSNE import TSNE
-# from openTSNE.callbacks import Callback
-from tqdm.auto import tqdm
-
-import itertools
-from operator import itemgetter
-
-import holoviews as hv
-from bokeh.models import HoverTool
-from bokeh.plotting import show
-from bokeh.models import TapTool
-from bokeh.models import CustomJS
-from bokeh.io import show, curdoc
-from bokeh.plotting import figure
-import webbrowser
-
-from holoviews import streams
-
-import multiprocessing
 from multiprocessing import Pool
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from scipy.ndimage import median_filter, gaussian_filter
 from pathlib import Path
 import sys
 import traceback
 import json
 import datetime
-import subprocess
 from collections import Counter
 import pickle
 import os
-import platform
-
 import cv2
 import moviepy
 import moviepy.config as mpconfig
-
-moviepy.config.change_settings({"IMAGEMAGICK_BINARY": "magick"})
-mpconfig.change_settings(
-    {"IMAGEMAGICK_BINARY": "/home/durrieu/miniforge3/envs/tracking_analysis/bin/magick"}
-)
-
-os.environ["MAGICK_FONT_PATH"] = "/etc/ImageMagick-6"
-# os.environ['MAGICK_CONFIGURE_PATH'] = '/etc/ImageMagick-6'
 
 from moviepy.editor import (
     VideoFileClip,
@@ -62,45 +25,35 @@ from moviepy.editor import (
     CompositeVideoClip,
 )
 from moviepy.editor import VideoClip
-from moviepy.editor import VideoFileClip
 from moviepy.video.fx import all as vfx
-
-
-# import moviepy as mpy
 
 import pygame
 
 import warnings
 
-from .Utils import *
-from .Processing import *
-from .Sleap_utils import *
-
-from .HoloviewsTemplates import hv_main
+import Utils
+import Sleap_utils
 
 from dataclasses import dataclass
 
 from scipy.signal import find_peaks, savgol_filter
 
-sys.modules["Ballpushing_utils"] = sys.modules[
-    __name__
-]  # This line creates an alias for utils_behavior.Ballpushing_utils to utils_behavior.__init__ so that the previously made pkl files can be loaded.
+moviepy.config.change_settings({"IMAGEMAGICK_BINARY": "magick"})
+mpconfig.change_settings(
+    {"IMAGEMAGICK_BINARY": "/home/durrieu/miniforge3/envs/tracking_analysis/bin/magick"}
+)
+
+os.environ["MAGICK_FONT_PATH"] = "/etc/ImageMagick-6"
+# os.environ['MAGICK_CONFIGURE_PATH'] = '/etc/ImageMagick-6'
+
+
+sys.modules["Ballpushing_utils"] = sys.modules[__name__]
+# This line creates an alias for utils_behavior.Ballpushing_utils to
+# utils_behavior.__init__ so that the previously made pkl files can be loaded.
 
 print("Loading BallPushing utils version 10 Mar 2025")
 
 brain_regions_path = "/mnt/upramdya_data/MD/Region_map_250116.csv"
-
-
-# class ProgressCallback(Callback):
-#     def __init__(self, n_iter):
-#         self.pbar = tqdm(total=n_iter, desc="t-SNE progress")
-
-#     def __call__(self, iteration, error, embedding):
-#         self.pbar.update(1)
-#         return False
-
-#     def close(self):
-#         self.pbar.close()
 
 
 def save_object(obj, filename):
@@ -365,14 +318,14 @@ def filter_experiments(source, **criteria):
 def load_fly(
     mp4_file,
     experiment,
-    #experiment_type,
+    # experiment_type,
 ):
     print(f"Loading fly from {mp4_file.parent}")
     try:
         fly = Fly(
             mp4_file.parent,
             experiment=experiment,
-            #experiment_type=experiment_type,
+            # experiment_type=experiment_type,
         )
         if fly.tracking_data and fly.tracking_data.valid_data:
             return fly
@@ -405,8 +358,10 @@ class Config:
 
     """
 
+    debugging: bool = False
+
     # General configuration attributes
-    
+
     experiment_type: str = "Learning"
 
     time_range: tuple = None
@@ -415,7 +370,7 @@ class Config:
     tracks_smoothing: bool = True
 
     log_missing = True
-    log_path = get_data_server() / "MD/MultiMazeRecorder"
+    log_path = Utils.get_data_server() / "MD/MultiMazeRecorder"
 
     keep_idle = True
 
@@ -739,7 +694,7 @@ class FlyTrackingData:
 
         try:
             tracking_file = list(self.fly.directory.glob(pattern))[0]
-            return Sleap_Tracks(
+            return Sleap_utils.Sleap_Tracks(
                 tracking_file,
                 object_type=object_type,
                 smoothed_tracks=smoothing,
@@ -1286,20 +1241,32 @@ class BallpushingMetrics:
                 except Exception as e:
                     nb_events = np.nan
 
+                    if self.fly.config.debugging:
+                        print(f"Error in get_adjusted_nb_events: {e}")
+
                 try:
                     max_event = self.get_max_event(fly_idx, ball_idx)
                 except Exception as e:
                     max_event = (np.nan, np.nan)
+
+                    if self.fly.config.debugging:
+                        print(f"Error in get_max_event: {e}")
 
                 try:
                     max_distance = self.get_max_distance(fly_idx, ball_idx)
                 except Exception as e:
                     max_distance = np.nan
 
+                    if self.fly.config.debugging:
+                        print(f"Error in get_max_distance: {e}")
+
                 try:
                     significant_events = self.get_significant_events(fly_idx, ball_idx)
                 except Exception as e:
                     significant_events = []
+
+                    if self.fly.config.debugging:
+                        print(f"Error in get_significant_events: {e}")
 
                 try:
                     if self.fly.config.experiment_type == "F1":
@@ -1311,6 +1278,9 @@ class BallpushingMetrics:
                 except Exception as e:
                     nb_significant_events = np.nan
 
+                    if self.fly.config.debugging:
+                        print(f"Error in get_adjusted_nb_events: {e}")
+
                 try:
                     first_significant_event = self.get_first_significant_event(
                         fly_idx, ball_idx
@@ -1318,30 +1288,40 @@ class BallpushingMetrics:
                 except Exception as e:
                     first_significant_event = (np.nan, np.nan)
 
+                    if self.fly.config.debugging:
+                        print(f"Error in get_first_significant_event: {e}")
+
                 try:
                     aha_moment = self.get_aha_moment(fly_idx, ball_idx)
                 except Exception as e:
                     aha_moment = (np.nan, np.nan)
 
-                try:
-                    breaks = self.find_breaks(fly_idx, ball_idx)
-                except Exception as e:
-                    breaks = []
+                    if self.fly.config.debugging:
+                        print(f"Error in get_aha_moment: {e}")
 
                 try:
                     events_direction = self.find_events_direction(fly_idx, ball_idx)
                 except Exception as e:
                     events_direction = ([], [])
 
+                    if self.fly.config.debugging:
+                        print(f"Error in find_events_direction: {e}")
+
                 try:
                     final_event = self.get_final_event(fly_idx, ball_idx)
                 except Exception as e:
                     final_event = (np.nan, np.nan)
 
+                    if self.fly.config.debugging:
+                        print(f"Error in get_final_event: {e}")
+
                 try:
                     success_direction = self.get_success_direction(fly_idx, ball_idx)
                 except Exception as e:
                     success_direction = np.nan
+
+                    if self.fly.config.debugging:
+                        print(f"Error in get_success_direction: {e}")
 
                 try:
                     cumulated_breaks_duration = self.get_cumulated_breaks_duration(
@@ -1350,10 +1330,16 @@ class BallpushingMetrics:
                 except Exception as e:
                     cumulated_breaks_duration = np.nan
 
+                    if self.fly.config.debugging:
+                        print(f"Error in get_cumulated_breaks_duration: {e}")
+
                 try:
                     distance_moved = self.get_distance_moved(fly_idx, ball_idx)
                 except Exception as e:
                     distance_moved = np.nan
+
+                    if self.fly.config.debugging:
+                        print(f"Error in get_distance_moved: {e}")
 
                 try:
                     insight_effect = (
@@ -1363,6 +1349,9 @@ class BallpushingMetrics:
                     )
                 except Exception as e:
                     insight_effect = np.nan
+
+                    if self.fly.config.debugging:
+                        print(f"Error in get_insight_effect: {e}")
 
                 self.metrics[key] = {
                     "nb_events": nb_events,
@@ -1429,8 +1418,6 @@ class BallpushingMetrics:
             events = self.tracking_data.interaction_events[fly_idx][ball_idx]
 
         adjusted_nb_events = 0  # Initialize to 0 in case there are no events
-
-        key = f"fly_{fly_idx}_ball_{ball_idx}"
 
         if hasattr(self.fly.metadata, "F1_condition"):
 
@@ -1919,7 +1906,7 @@ class BallpushingMetrics:
             "raw_effect": insight_effect,
             "log_effect": log_effect,
             "classification": classification,
-            "first_event": (aha_moment_index == 0),
+            "first_event": aha_moment_index == 0,
             "post_aha_count": len(after_aha),
         }
 
@@ -2259,7 +2246,7 @@ class LearningMetrics:
         for fly_idx, ball_dict in self.tracking_data.interaction_events.items():
             for ball_idx, events in ball_dict.items():
                 for event in events:
-                    start_frame, end_frame = event[0], event[1]
+                    start_frame, _ = event[0], event[1]
 
                     # Find trial for the event (use start frame)
                     if start_frame in frame_to_trial:
@@ -2825,7 +2812,7 @@ class SkeletonMetrics:
             node for node in self.ball.node_names if "preprocessed" in node
         ]
 
-        annotated_frame = generate_annotated_frame(
+        annotated_frame = Sleap_utils.generate_annotated_frame(
             video=self.fly.tracking_data.skeletontrack.video,
             sleap_tracks_list=[self.fly.tracking_data.skeletontrack, self.ball],
             frame=frame,
@@ -2892,9 +2879,9 @@ class Fly:
         self,
         directory,
         experiment=None,
-        #experiment_type=None,
+        # experiment_type=None,
         as_individual=False,
-        #time_range=None,
+        # time_range=None,
     ):
         """
         Initialize a Fly object.
@@ -2929,7 +2916,7 @@ class Fly:
 
         self.config = self.experiment.config
 
-        #self.experiment_type = experiment_type
+        # self.experiment_type = experiment_type
 
         if self.config.experiment_type:
             self.config.set_experiment_config(self.config.experiment_type)
@@ -3004,8 +2991,6 @@ class Fly:
     def __repr__(self):
         return f"Fly({self.directory})"
 
-    ################################ Video clip generation ################################
-
     def generate_clip(
         self, event, outpath=None, fps=None, width=None, height=None, tracks=False
     ):
@@ -3027,7 +3012,7 @@ class Fly:
 
         # If no outpath is provided, use a default path based on the fly's name and the event number
         if not outpath:
-            outpath = get_labserver() / "Videos"
+            outpath = Utils.get_labserver() / "Videos"
 
         # Check if the event is an integer or a list
         if isinstance(event, int):
@@ -3052,7 +3037,7 @@ class Fly:
             # Get the index of the event in the list to apply it to the output file name
             event_index = self.tracking_data.interaction_events.index(event)
 
-            if outpath == get_labserver() / "Videos":
+            if outpath == Utils.get_labserver() / "Videos":
                 clip_path = outpath.joinpath(
                     f"{self.metadata.name}_{event_index}.mp4"
                 ).as_posix()
@@ -3257,7 +3242,7 @@ class Fly:
         if save and output_path is None:
             # Use the default output path
             output_path = (
-                get_labserver()
+                Utils.get_labserver()
                 / "Videos"
                 / "Previews"
                 / f"{self.metadata.name}_{self.Genotype if self.Genotype else 'undefined'}_x{speed}.mp4"
@@ -3359,7 +3344,7 @@ class Experiment:
         self.metadata = self.load_metadata()
         self.fps = self.load_fps()
 
-        #self.experiment_type = experiment_type
+        # self.experiment_type = experiment_type
 
         # If metadata_only is True, don't load the flies
         if not metadata_only:
@@ -3468,7 +3453,7 @@ class Experiment:
                         args=(
                             mp4_file,
                             self,
-                            #self.experiment_type,
+                            # self.experiment_type,
                         ),
                     )
                     for mp4_file in mp4_files
@@ -3482,7 +3467,7 @@ class Experiment:
                 fly = load_fly(
                     mp4_file,
                     self,
-                    #experiment_type=self.experiment_type,
+                    # experiment_type=self.experiment_type,
                 )
                 if fly is not None:
                     flies.append(fly)
@@ -3775,7 +3760,9 @@ class Dataset:
             self._annotate_interaction_events(dataset, fly)
 
         # Add trial information for learning experiments
-        if fly.config.experiment_type == "Learning" and hasattr(fly, "learning_metrics"):
+        if fly.config.experiment_type == "Learning" and hasattr(
+            fly, "learning_metrics"
+        ):
             self._add_trial_information(dataset, fly)
 
         # Add metadata
@@ -3839,7 +3826,7 @@ class Dataset:
         dataset["trial_frame"] = dataset.groupby("trial").cumcount()
 
         # Compute trial_time from the trials_data
-        
+
         dataset["trial_time"] = dataset["trial_frame"] / fly.experiment.fps
 
     def _prepare_dataset_contact_data(self, fly, hidden_value=None):
@@ -4137,11 +4124,10 @@ class Dataset:
         events_df = fly.skeleton_metrics.events_based_contacts
 
         # Add trial information for learning experiments
-        if fly.config.experiment_type == "Learning" and hasattr(fly, "learning_metrics"):
+        if fly.config.experiment_type == "Learning" and hasattr(
+            fly, "learning_metrics"
+        ):
             trials_data = fly.learning_metrics.trials_data
-
-            # Create mapping from frame to trial
-            frame_to_trial = dict(zip(trials_data.index, trials_data["trial"]))
 
             # Add trial column with default value of 0
             events_df["trial"] = 0
@@ -4157,128 +4143,6 @@ class Dataset:
         events_df = self._add_metadata(events_df, fly)
 
         return events_df
-
-    def compute_behavior_map(
-        self,
-        perplexity=30,
-        n_iter=3000,
-        pca_components=50,
-        hidden_value=None,
-        savepath=None,
-    ):
-        if hidden_value is None:
-            hidden_value = self.config.hidden_value
-
-        all_contact_data = []
-        metadata = []
-        contact_indices = []
-
-        print("Fetching contacts for all flies...")
-
-        for fly_idx, fly in enumerate(self.flies):
-
-            if fly.skeleton_metrics is None:
-                print(
-                    f"No skeleton metrics found for fly {fly.metadata.name}. Skipping..."
-                )
-                continue
-            else:
-                skeleton_data = fly.tracking_data.skeletontrack.objects[0].dataset
-                contact_events = fly.skeleton_metrics.find_contact_events()
-
-                for event_idx, event in enumerate(contact_events):
-                    start_idx, end_idx = event[0], event[1]
-                    contact_data = skeleton_data.iloc[start_idx:end_idx]
-                    all_contact_data.append(contact_data)
-
-                    metadata.append(
-                        {
-                            "name": fly.metadata.name,
-                            "flypath": fly.metadata.directory.as_posix(),
-                            "experiment": fly.experiment.directory.name,
-                            "Nickname": (
-                                fly.metadata.nickname
-                                if fly.metadata.nickname is not None
-                                else "Unknown"
-                            ),
-                            "Brain region": (
-                                fly.metadata.brain_region
-                                if fly.metadata.brain_region is not None
-                                else "Unknown"
-                            ),
-                            "Simplified Nickname": (
-                                fly.metadata.simplified_nickname
-                                if fly.metadata.simplified_nickname is not None
-                                else "Unknown"
-                            ),
-                            "Split": (
-                                fly.metadata.split
-                                if fly.metadata.split is not None
-                                else "Unknown"
-                            ),
-                            **{
-                                var: data if data is not None else "Unknown"
-                                for var, data in fly.metadata.arena_metadata.items()
-                            },
-                        }
-                    )
-
-                    contact_indices.append(event_idx)
-
-        combined_data = pd.concat(all_contact_data, ignore_index=True)
-        combined_data.fillna(hidden_value, inplace=True)
-
-        print("Applying PCA...")
-
-        features = combined_data.filter(regex="^(x|y)_").values
-
-        # Adjust PCA components if necessary
-        n_features = features.shape[1]
-        pca_components = min(pca_components, n_features)
-
-        pca = PCA(n_components=pca_components)
-        pca_results = pca.fit_transform(features)
-
-        print("PCA completed. Starting t-SNE...")
-
-        # Create the progress callback
-        progress_callback = ProgressCallback(n_iter)
-
-        tsne = TSNE(
-            n_components=2,
-            perplexity=perplexity,
-            n_iter=n_iter,
-            random_state=42,
-            n_jobs=-1,
-            callbacks=[progress_callback],
-            callbacks_every_iters=1,
-        )
-        tsne_results = tsne.fit(pca_results)
-
-        # Close the progress bar
-        progress_callback.close()
-
-        tsne_df = pd.DataFrame(
-            tsne_results, columns=["t-SNE Component 1", "t-SNE Component 2"]
-        )
-        metadata_df = pd.DataFrame(metadata)
-
-        result_df = pd.concat(
-            [
-                tsne_df,
-                metadata_df.reset_index(drop=True),
-                pd.DataFrame({"contact_index": contact_indices}),
-            ],
-            axis=1,
-        )
-
-        self.behavior_map = result_df
-
-        if savepath:
-            result_df.to_csv(savepath, index=False)
-            print(f"Behavior map saved to {savepath}")
-
-        return result_df
 
     def generate_clip(self, fly, event, outpath):
         """
@@ -4529,8 +4393,10 @@ def generate_grid(Experiment, preview=False, overwrite=False):
             # Plot the frame on this subplot
             try:
                 axs[row, col].imshow(frame, cmap="gray", vmin=0, vmax=255)
-            except:
-                print(f"Error: Could not plot frame {i} for video {flypath}")
+            except Exception as e:
+                print(
+                    f"Error: Could not plot frame {i} for video {flypath}. Exception: {e}"
+                )
                 # go to the next folder
                 continue
 
@@ -4546,5 +4412,5 @@ def generate_grid(Experiment, preview=False, overwrite=False):
         # Save the grid image in the main folder
         plt.savefig(Experiment.directory / "grid.png")
 
-        if preview == True:
+        if preview:
             plt.show()

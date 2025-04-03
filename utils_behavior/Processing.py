@@ -3,7 +3,6 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 import h5py
-import warnings
 import pandas as pd
 from typing import Dict, List, Union
 from statsmodels.stats.multitest import multipletests
@@ -167,6 +166,45 @@ def extract_coordinates(h5_file):
     return x, y
 
 
+def calculate_euclidian_distance(x1, y1, x2, y2):
+    """
+    Calculate the Euclidean distance between two sets of x and y coordinates.
+
+    Args:
+        x1 (np.ndarray): The x coordinates of the first set.
+        y1 (np.ndarray): The y coordinates of the first set.
+        x2 (np.ndarray): The x coordinates of the second set.
+        y2 (np.ndarray): The y coordinates of the second set.
+
+    Returns:
+        np.ndarray: The Euclidean distance between the two sets of coordinates.
+    """
+    return np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
+
+
+def logistic_function(t, L, k, t0):
+    """
+    Logistic function.
+
+    Parameters
+    ----------
+    t : array-like
+        Time.
+    L : float
+        Maximum value (plateau).
+    k : float
+        Growth rate (steepness of the curve).
+    t0 : float
+        Midpoint (time at which the curve reaches half of L).
+
+    Returns
+    -------
+    array-like
+        Logistic function values.
+    """
+    return L / (1 + np.exp(-k * (t - t0)))
+
+
 def replace_nans_with_previous_value(arr):
     """
     Replace NaN values with the previous value in a numpy array. If the first value is NaN, it is replaced with the
@@ -315,7 +353,6 @@ def compute_permutation_test(
         # Permutation test
         combined = np.concatenate([focal, control])
         n_focal = len(focal)
-        extreme_count = 0
 
         perm_diffs = np.empty(n_permutations)
         for p in range(n_permutations):

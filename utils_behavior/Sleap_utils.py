@@ -5,7 +5,7 @@ import pandas as pd
 
 import cv2
 
-import Processing
+from utils_behavior import Processing
 
 # TODO : Fix this import for integration with SleapTracker
 

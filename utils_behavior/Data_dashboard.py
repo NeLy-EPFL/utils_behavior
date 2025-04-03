@@ -9,7 +9,7 @@ Usage:
 
     2. From another Python script:
        from data_explorer import create_app, run_app
-       
+
        # With a DataFrame
        df = pd.DataFrame(...)
        app = create_app(df)
@@ -46,7 +46,6 @@ import sys
 import io
 import base64
 import pyperclip
-
 
 # Run the app in the browser
 import nest_asyncio
@@ -221,25 +220,31 @@ def main(input_data):
     Main function to run the data exploration dashboard.
 
     Args:
-        input_data (str or pd.DataFrame): Either a path to a CSV file or a pandas DataFrame.
+        input_data (str or pd.DataFrame): Either a path to a CSV/Feather file or a pandas DataFrame.
 
     Raises:
-        SystemExit: If there's an error reading the CSV file or if the input is invalid.
+        SystemExit: If there's an error reading the file or if the input is invalid.
     """
 
     if isinstance(input_data, str):
         # If input is a string, assume it's a file path
         try:
-            data = pd.read_csv(input_data)
+            if input_data.endswith(".csv"):
+                data = pd.read_csv(input_data)
+            elif input_data.endswith(".feather"):
+                data = pd.read_feather(input_data)
+            else:
+                print("Unsupported file format. Please provide a CSV or Feather file.")
+                sys.exit(1)
         except Exception as e:
-            print(f"Error reading CSV file: {e}")
+            print(f"Error reading file: {e}")
             sys.exit(1)
     elif isinstance(input_data, pd.DataFrame):
         # If input is already a DataFrame, use it directly
         data = input_data
     else:
         print(
-            "Invalid input. Please provide either a CSV file path or a pandas DataFrame."
+            "Invalid input. Please provide either a CSV/Feather file path or a pandas DataFrame."
         )
         sys.exit(1)
 

@@ -136,7 +136,10 @@ def cpu_generate_annotated_video(
     colorby=None,
 ):
     cap = cv2.VideoCapture(str(video))
+    if not cap.isOpened():
+        raise ValueError(f"Failed to open video file: {str(video)}")
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    print(f"Total frames in video: {total_frames}")
 
     if start is None:
         start = 1
@@ -331,8 +334,8 @@ def gpu_generate_annotated_video(
 
 
 def generate_annotated_video(
-    video,
     sleap_tracks_list,
+    video=None,
     save=False,
     output_path=None,
     start=None,
@@ -359,6 +362,9 @@ def generate_annotated_video(
     Returns:
         None
     """
+    if video is None:
+        video = sleap_tracks_list[0].video
+
     # Check if OpenCV has CUDA support
     try:
         if cv2.cuda.getCudaEnabledDeviceCount() > 0:
@@ -468,7 +474,12 @@ class Sleap_Tracks:
                 self._node_properties[node] = self._create_node_property(node)
 
     def __init__(
-        self, filename, object_type="object", smoothed_tracks=True, debug=False
+        self,
+        filename,
+        object_type="object",
+        smoothed_tracks=True,
+        smoothing_params=(221, 1),
+        debug=False,
     ):
         """Initialize the Sleap_Track object with the given SLEAP tracking file.
 
@@ -482,6 +493,7 @@ class Sleap_Tracks:
         self.path = Path(filename)
         self.object_type = object_type
         self.smoothed_tracks = smoothed_tracks
+        self.smoothing_params = smoothing_params
 
         # Open the SLEAP tracking file and read the necessary data
         try:
@@ -579,8 +591,12 @@ class Sleap_Tracks:
                 if self.smoothed_tracks:
                     if self.debug:
                         print("smoothing tracks")
-                    x_coords[k] = Processing.savgol_lowpass_filter(x_coords[k], 221, 1)
-                    y_coords[k] = Processing.savgol_lowpass_filter(y_coords[k], 221, 1)
+                    x_coords[k] = Processing.savgol_lowpass_filter(
+                        x_coords[k], self.smoothing_params[0], self.smoothing_params[1]
+                    )
+                    y_coords[k] = Processing.savgol_lowpass_filter(
+                        y_coords[k], self.smoothing_params[0], self.smoothing_params[1]
+                    )
 
                     # Replace NaNs with the previous value
                     Processing.replace_nans_with_previous_value(x_coords[k])

@@ -202,7 +202,9 @@ def logistic_function(t, L, k, t0):
     array-like
         Logistic function values.
     """
-    return L / (1 + np.exp(-k * (t - t0)))
+    # Clip the input to np.exp to avoid overflow
+    exp_input = np.clip(-k * (t - t0), -700, 700)
+    return L / (1 + np.exp(exp_input))
 
 
 def replace_nans_with_previous_value(arr):

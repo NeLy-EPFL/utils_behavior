@@ -9,6 +9,8 @@ import os
 from tqdm import tqdm
 import re
 import math
+import traceback
+
 import argparse
 
 # Configure logging
@@ -25,23 +27,27 @@ CONFIG = {
     "bottom_padding": 50,
     "rotate_videos": True,
     "rotation_angle": cv2.ROTATE_90_CLOCKWISE,
-    "output_dir": "/mnt/upramdya_data/MD/MagnetBlock/Grids",
+    "output_dir": "/mnt/upramdya_data/MD/BallPushing_Learning/Grids",
     "max_grid_width": 3840,
     "max_grid_height": 2160,
     "min_cell_width": 320,
     "min_cell_height": 180,
     "aspect_ratio_tolerance": 0.2,
     "test_duration": 10,
+    "trial_mode": False,
+    "trial_column": "trial",
+    "clip_buffer": 2,  # seconds before/after trial
+    "temp_clip_dir": "/tmp/video_clips",
 }
 
-MIN_DURATION = 1800  # 30 minutes
+MIN_DURATION = 60  # 1 minute
 
 # Constants
-DATA_PATH = "/mnt/upramdya_data/MD/MagnetBlock/Datasets/250213_coordinates.feather"
+DATA_PATH = "/mnt/upramdya_data/MD/BallPushing_Learning/Datasets/250318_Datasets/250320_Annotated_data.feather"
 
-groupby = "label"
+groupby = "Date"
 
-METADATA_COLUMNS = ["label"]
+METADATA_COLUMNS = ["Date"]
 
 
 def ensure_output_directory_exists(output_dir: str):
@@ -68,23 +74,25 @@ def filter_by_column(data: pd.DataFrame, column_name: str, value: str) -> pd.Dat
     return data.loc[data[column_name] == value]
 
 
-def get_video_paths(flypaths: List[str], preprocessed: bool = False) -> List[Path]:
-    video_paths = []
-    for flypath in flypaths:
-        path = Path(flypath)
-        try:
-            if preprocessed:
-                video = next(path.glob("*preprocessed*.mp4"), None)
-            else:
-                video = next(
-                    (p for p in path.glob("*.mp4") if "preprocessed" not in p.name),
-                    None,
+def get_video_paths(flypaths: List[str], trial_data: pd.DataFrame) -> List[Path]:
+    if CONFIG["trial_mode"]:
+        # Extract trial clips for each video
+        with ThreadPoolExecutor() as executor:
+            all_clips = list(
+                executor.map(
+                    lambda p: extract_trial_clips(Path(p), trial_data), flypaths
                 )
-            video_paths.append(video)
-        except StopIteration:
-            logger.warning(f"No video found in path: {path}")
-            video_paths.append(None)
-    return video_paths
+            )
+        return [clip for sublist in all_clips for clip in sublist]
+    else:
+        video_paths = []
+        for fp in flypaths:
+            matches = list(Path(fp).glob("*.mp4"))
+            if not matches:
+                logger.error(f"No MP4 files found in directory: {fp}")
+                continue
+            video_paths.append(matches[0])  # Take first match or implement sorting
+        return video_paths
 
 
 def load_video(path: Path) -> Optional[cv2.VideoCapture]:
@@ -97,7 +105,7 @@ def load_video(path: Path) -> Optional[cv2.VideoCapture]:
             else:
                 logger.error(f"Error opening video {path}")
         except Exception as e:
-            logger.error(f"Error loading video {path}: {e}")
+            logger.error(f"Error loading video {path}: {e}\n{traceback.format_exc()}")
     else:
         logger.error(f"Invalid or non-existent path: {path}")
     return None
@@ -338,7 +346,9 @@ def create_video_grid_with_features(
         return out
 
     except Exception as e:
-        logger.error(f"Error in create_video_grid_with_features: {e}")
+        logger.error(
+            f"Error in create_video_grid_with_features: {e}\n{traceback.format_exc()}"
+        )
         return None
     finally:
         for video in videos:
@@ -442,7 +452,7 @@ def read_and_process_frame(
             )
         return cv2.resize(frame, (target_width, target_height))
     except Exception as e:
-        logger.error(f"Frame processing error: {e}")
+        logger.error(f"Frame processing error: {e}\n{traceback.format_exc()}")
         return None
 
 
@@ -532,53 +542,144 @@ def validate_video_duration(video: cv2.VideoCapture, path: Path) -> bool:
     return True
 
 
-def main(test=False, full_screen=False):
-    transformed_data = load_dataset(DATA_PATH)
-    if transformed_data.empty:
-        print("empty data")
-        return
+def extract_trial_clips(video_path: Path, trial_data: pd.DataFrame) -> List[Path]:
+    """Extract temporary clips for each trial using MoviePy"""
+    from moviepy.editor import VideoFileClip
 
-    ensure_output_directory_exists(CONFIG["output_dir"])
+    clips = []
+    video = VideoFileClip(str(video_path))
 
-    nickname_list = transformed_data[groupby].unique() if full_screen else []
+    for _, trial in trial_data.iterrows():
+        start = max(0, trial["start_time"] - CONFIG["clip_buffer"])
+        end = min(video.duration, trial["end_time"] + CONFIG["clip_buffer"])
 
-    # if not nickname_list:
-    #     logger.error("No experimental conditions found in dataset")
-    #     return
-
-    for nickname in nickname_list:
-        nickname_data = filter_by_column(transformed_data, groupby, nickname)
-        if nickname_data.empty:
-            continue
-
-        flypaths = nickname_data["flypath"].unique()
-        video_paths = get_video_paths(flypaths)
-        video_entries = load_videos(video_paths)
-
-        valid_videos = [
-            v for v, path in video_entries if validate_video_duration(v, path)
-        ]
-        if not valid_videos:
-            continue
-
-        title = generate_metadata(nickname_data)
-        output_filename = sanitize_filename(f"{nickname}_grid.mp4")
-
-        if Path(CONFIG["output_dir"], output_filename).exists():
-            logger.info(f"Skipping existing: {output_filename}")
-            continue
-
-        identifiers = generate_identifiers(nickname_data, [p for _, p in video_entries])
-        video_grid = create_video_grid_with_features(
-            valid_videos,
-            identifiers=identifiers,
-            grid_text=title,
-            output_filename=output_filename,
-            test=test,
+        clip = video.subclip(start, end)
+        temp_path = (
+            Path(CONFIG["temp_clip_dir"])
+            / f"{video_path.stem}_trial_{trial['trial_id']}.mp4"
         )
+        clip.write_videofile(str(temp_path), logger=None)
+        clips.append(temp_path)
 
-        if video_grid:
-            logger.info(f"Video grid created: {output_filename}")
+    video.close()
+    return clips
+
+
+def main(test=False, full_screen=False):
+
+    try:
+        transformed_data = load_dataset(DATA_PATH)
+        if transformed_data.empty:
+            logger.error("Empty dataset loaded")
+            return
+
+        ensure_output_directory_exists(CONFIG["output_dir"])
+
+        # Grouping logic based on mode
+        if CONFIG["trial_mode"]:
+            groups = transformed_data.groupby([CONFIG["trial_column"], groupby])
+            logger.info(f"Processing {len(groups)} trial-group combinations")
+        else:
+            groups = transformed_data.groupby(groupby)
+            logger.info(f"Processing {len(groups)} experimental groups")
+
+        for group_key, group_data in groups:
+            try:
+                # Handle trial-mode metadata
+                if CONFIG["trial_mode"]:
+                    trial_id, nickname = group_key
+                    output_filename = f"{nickname}_trial_{trial_id}_grid.mp4"
+                    trial_times = group_data[
+                        ["start_time", "end_time"]
+                    ].drop_duplicates()
+                else:
+                    nickname = group_key
+                    output_filename = f"{nickname}_grid.mp4"
+
+                # Skip existing outputs
+                output_path = Path(CONFIG["output_dir"]) / sanitize_filename(
+                    output_filename
+                )
+                if output_path.exists():
+                    logger.info(f"Skipping existing: {output_filename}")
+                    continue
+
+                # Get and validate video paths
+                flypaths = group_data["flypath"].unique()
+
+                invalid_paths = [fp for fp in flypaths if not Path(fp).exists()]
+                if invalid_paths:
+                    logger.error(f"Missing directories:\n{invalid_paths}")
+                    continue
+
+                video_paths = []
+                for fp in flypaths:
+                    path = Path(fp)
+                    if (
+                        path.is_file() and path.suffix == ".mp4"
+                    ):  # Handle direct file paths
+                        video_paths.append(path)
+                    else:
+                        matches = list(path.glob("*.mp4"))
+                        if matches:
+                            video_paths.append(sorted(matches)[0])  # Take latest file
+                        else:
+                            logger.warning(f"No videos found in {fp}")
+
+                # Trial-specific processing
+                if CONFIG["trial_mode"]:
+                    # Extract trial clips in parallel
+                    with ThreadPoolExecutor() as executor:
+                        clip_paths = list(
+                            executor.map(
+                                lambda p: extract_trial_clips(Path(p), trial_times),
+                                flypaths,
+                            )
+                        )
+                    video_paths = [clip for sublist in clip_paths for clip in sublist]
+
+                video_entries = load_videos(video_paths)
+                valid_videos = [
+                    v for v, path in video_entries if validate_video_duration(v, path)
+                ]
+
+                if not valid_videos:
+                    logger.warning(f"No valid videos for group: {group_key}")
+                    continue
+
+                # Generate identifiers and metadata
+                identifiers = generate_identifiers(
+                    group_data, [p for _, p in video_entries]
+                )
+                title = generate_metadata(group_data) + (
+                    f" | Trial {trial_id}" if CONFIG["trial_mode"] else ""
+                )
+
+                # Create video grid
+                video_grid = create_video_grid_with_features(
+                    valid_videos,
+                    identifiers=identifiers,
+                    grid_text=title,
+                    output_filename=output_filename,
+                    test=test,
+                )
+
+                if video_grid:
+                    logger.info(f"Successfully created: {output_filename}")
+
+            except Exception as e:
+                logger.error(
+                    f"Failed processing group {group_key}: {e}\n{traceback.format_exc()}"
+                )
+                continue
+            finally:
+                # Cleanup trial clips
+                if CONFIG["trial_mode"] and "clip_paths" in locals():
+                    for clip in clip_paths:
+                        for c in clip:
+                            c.unlink(missing_ok=True)
+    except Exception as e:
+        logger.error(f"Fatal error in main: {e}\n{traceback.format_exc()}")
 
 
 if __name__ == "__main__":
@@ -587,6 +688,9 @@ if __name__ == "__main__":
     parser.add_argument("--test", action="store_true", help="Enable test mode (10sec)")
     parser.add_argument(
         "--full-screen", action="store_true", help="Process all experimental conditions"
+    )
+    parser.add_argument(
+        "--trials", action="store_true", help="Enable trial-based clipping"
     )
     args = parser.parse_args()
 

@@ -2,7 +2,7 @@
 
 import argparse
 from pathlib import Path
-from Sleap_utils import Sleap_Tracks
+from Sleap_utils import Sleap_Tracks, generate_annotated_video
 import subprocess
 
 class SleapTracker:
@@ -88,9 +88,9 @@ class SleapTracker:
                 self.videos_to_process.extend(list(folder.rglob(f"*{video_extension}")))
         print(f"Collected {len(self.videos_to_process)} videos for tracking.")
 
-    def filter_tracked_videos(self):
+    def filter_tracked_videos(self, render=False):
         """
-        Filter out videos that have already been tracked (i.e., videos with corresponding .slp or .h5 files).
+        Filter out videos that have already been tracked (i.e., videos with corresponding .slp, .h5, or annotated video files).
         """
         videos_filtered = []
         for video in self.videos_to_process:
@@ -98,8 +98,15 @@ class SleapTracker:
             output_folder = video.parent  # Check in the video's directory
             slp_file = output_folder / f"{video_name}_tracked.slp"
             h5_file = output_folder / f"{video_name}_tracked.h5"
-            if not slp_file.exists() and not h5_file.exists():
+            annotated_file = output_folder / f"{video_name}_tracked_annotated.mp4"
+            already_processed = slp_file.exists() and h5_file.exists()
+            if render:
+                already_processed = already_processed and annotated_file.exists()
+            if not already_processed:
                 videos_filtered.append(video)
+
+        self.videos_to_process = videos_filtered
+        print(f"Filtered to {len(self.videos_to_process)} videos needing tracking.")
 
         self.videos_to_process = videos_filtered
         print(f"Filtered to {len(self.videos_to_process)} videos needing tracking.")
@@ -113,7 +120,7 @@ class SleapTracker:
 
         This is necessary to ensure the correct environment is used for tracking.
         """
-        subprocess.run(["conda", "activate", self.conda_env], check=True)
+        subprocess.run(["mamba", "activate", self.conda_env], check=True)
 
     def process_videos(self):
         """
@@ -130,6 +137,10 @@ class SleapTracker:
 
             # Build the sleap-track command for tracking
             sleap_track_cmd = [
+                "mamba",
+                "run",
+                "-n",
+                self.conda_env,
                 "sleap-track",
                 str(video),
                 "--model",
@@ -157,6 +168,10 @@ class SleapTracker:
 
             # Convert the .slp file to .h5 format for analysis
             sleap_convert_cmd = [
+                "mamba",
+                "run",
+                "-n",
+                self.conda_env,
                 "sleap-convert",
                 str(output_folder / f"{video.stem}_tracked.slp"),
                 "--format",
@@ -174,16 +189,17 @@ class SleapTracker:
             tracker.run()
         """
         self.collect_videos(video_extension=video_extension)
-        self.filter_tracked_videos()
+        self.filter_tracked_videos(render=render)
         if self.videos_to_process:
             self.process_videos()
 
             if render:
-                sleap_tracks = Sleap_Tracks(
-                    self.output_folder / f"{self.videos_to_process[0].stem}_tracked.h5"
-                )
-
-                sleap_tracks.generate_annotated_video(save=True)
+                h5_path = self.output_folder / f"{self.videos_to_process[0].stem}_tracked.h5"
+                sleap_tracks = Sleap_Tracks(h5_path)
+                if not hasattr(sleap_tracks, "video") or sleap_tracks.video is None:
+                    print(f"Warning: No video path found in {h5_path}, skipping annotation.")
+                else:
+                    generate_annotated_video([sleap_tracks], save=True)
         else:
             print("No new videos to track.")
 

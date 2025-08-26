@@ -9,12 +9,15 @@ import os
 from tqdm import tqdm
 import re
 import math
+import traceback
+
 import argparse
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# TODO: Fix messed up labels in vertical orientation
 # Configuration parameters
 CONFIG = {
     "font_scale": 0.5,
@@ -23,25 +26,30 @@ CONFIG = {
     "vertical_padding": 50,
     "top_padding": 60,
     "bottom_padding": 50,
-    "rotate_videos": True,
-    "rotation_angle": cv2.ROTATE_90_CLOCKWISE,
-    "output_dir": "/mnt/upramdya_data/MD/MagnetBlock/Grids",
-    "max_grid_width": 3840,
-    "max_grid_height": 2160,
+    "rotate_videos": False,
+    "rotation_angle": cv2.ROTATE_90_CLOCKWISE,  # Rotate videos by default
+    "output_dir": "/mnt/upramdya_data/MD/Balltypes_RawGrids",
+    "max_grid_width": 1920,  # 3840,
+    "max_grid_height": 1080,  # 2160,
     "min_cell_width": 320,
     "min_cell_height": 180,
     "aspect_ratio_tolerance": 0.2,
     "test_duration": 10,
+    "trial_mode": False,
+    "trial_column": "trial",
+    "clip_buffer": 2,  # seconds before/after trial
+    "temp_clip_dir": "/tmp/video_clips",
+    "force_single_row": True,  # Set to True to always use a single row for the grid
 }
 
-MIN_DURATION = 1800  # 30 minutes
+MIN_DURATION = 60  # 1 minute
 
 # Constants
-DATA_PATH = "/mnt/upramdya_data/MD/MagnetBlock/Datasets/250213_coordinates.feather"
+DATA_PATH = "/mnt/upramdya_data/MD/Ballpushing_Balltypes/Datasets/250815_17_summary_ball_types_Data/summary/pooled_summary.feather"
 
-groupby = "label"
+groupby = "BallType"
 
-METADATA_COLUMNS = ["label"]
+METADATA_COLUMNS = ["Date"]
 
 
 def ensure_output_directory_exists(output_dir: str):
@@ -68,23 +76,25 @@ def filter_by_column(data: pd.DataFrame, column_name: str, value: str) -> pd.Dat
     return data.loc[data[column_name] == value]
 
 
-def get_video_paths(flypaths: List[str], preprocessed: bool = False) -> List[Path]:
-    video_paths = []
-    for flypath in flypaths:
-        path = Path(flypath)
-        try:
-            if preprocessed:
-                video = next(path.glob("*preprocessed*.mp4"), None)
-            else:
-                video = next(
-                    (p for p in path.glob("*.mp4") if "preprocessed" not in p.name),
-                    None,
+def get_video_paths(flypaths: List[str], trial_data: pd.DataFrame) -> List[Path]:
+    if CONFIG["trial_mode"]:
+        # Extract trial clips for each video
+        with ThreadPoolExecutor() as executor:
+            all_clips = list(
+                executor.map(
+                    lambda p: extract_trial_clips(Path(p), trial_data), flypaths
                 )
-            video_paths.append(video)
-        except StopIteration:
-            logger.warning(f"No video found in path: {path}")
-            video_paths.append(None)
-    return video_paths
+            )
+        return [clip for sublist in all_clips for clip in sublist]
+    else:
+        video_paths = []
+        for fp in flypaths:
+            matches = list(Path(fp).glob("*.mp4"))
+            if not matches:
+                logger.error(f"No MP4 files found in directory: {fp}")
+                continue
+            video_paths.append(matches[0])  # Take first match or implement sorting
+        return video_paths
 
 
 def load_video(path: Path) -> Optional[cv2.VideoCapture]:
@@ -97,7 +107,7 @@ def load_video(path: Path) -> Optional[cv2.VideoCapture]:
             else:
                 logger.error(f"Error opening video {path}")
         except Exception as e:
-            logger.error(f"Error loading video {path}: {e}")
+            logger.error(f"Error loading video {path}: {e}\n{traceback.format_exc()}")
     else:
         logger.error(f"Invalid or non-existent path: {path}")
     return None
@@ -141,6 +151,7 @@ def create_video_grid_with_features(
     grid_text: str,
     output_filename: str,
     test=False,
+    force_max=False,
 ) -> Optional[cv2.VideoWriter]:
     if not videos:
         logger.error("No videos to create grid.")
@@ -156,20 +167,13 @@ def create_video_grid_with_features(
                 ar = v.get(cv2.CAP_PROP_FRAME_WIDTH) / v.get(cv2.CAP_PROP_FRAME_HEIGHT)
             aspect_ratios.append(ar)
 
-        # Find median aspect ratio for grid calculation
         median_aspect = sorted(aspect_ratios)[len(aspect_ratios) // 2]
         num_videos = len(videos)
 
-        # Dynamic grid calculation
-        best_layout = None
-        best_utilization = 0
-        max_cols = min(
-            num_videos, int(CONFIG["max_grid_width"] / CONFIG["min_cell_width"])
-        )
-
-        for cols in range(1, max_cols + 1):
-            rows = math.ceil(num_videos / cols)
-
+        # --- FORCE SINGLE ROW LOGIC ---
+        if CONFIG.get("force_single_row", False):
+            cols = num_videos
+            rows = 1
             # Calculate available space for cells
             avail_width = CONFIG["max_grid_width"] - CONFIG["horizontal_padding"] * (
                 cols + 1
@@ -180,37 +184,124 @@ def create_video_grid_with_features(
                 - CONFIG["bottom_padding"]
                 - CONFIG["vertical_padding"] * (rows + 1)
             )
-
-            if avail_width <= 0 or avail_height <= 0:
-                continue
-
             cell_width = avail_width / cols
-            cell_height = avail_height / rows
-
-            # Check minimum size constraints
-            if (
-                cell_width < CONFIG["min_cell_width"]
-                or cell_height < CONFIG["min_cell_height"]
-            ):
-                continue
-
-            # Check aspect ratio compatibility
-            cell_ar = cell_width / cell_height
-            if abs(cell_ar - median_aspect) > CONFIG["aspect_ratio_tolerance"]:
-                continue
-
-            # Calculate space utilization
-            utilization = (
-                (cell_width * cell_height)
-                * num_videos
-                / (CONFIG["max_grid_width"] * CONFIG["max_grid_height"])
+            cell_height = avail_height
+            # Optionally, allow cell_height to be smaller than min_cell_height if needed
+            if cell_width < CONFIG["min_cell_width"]:
+                logger.warning(
+                    "Cell width below min_cell_width in forced single row mode."
+                )
+            if cell_height < CONFIG["min_cell_height"]:
+                logger.warning(
+                    "Cell height below min_cell_height in forced single row mode."
+                )
+            best_layout = (cols, rows, cell_width, cell_height)
+        else:
+            # Dynamic grid calculation
+            best_layout = None
+            best_utilization = 0
+            max_cols = min(
+                num_videos, int(CONFIG["max_grid_width"] / CONFIG["min_cell_width"])
             )
-            if utilization > best_utilization:
-                best_utilization = utilization
-                best_layout = (cols, rows, cell_width, cell_height)
 
-        # Original grid calculation attempt
-        if not best_layout:
+            for cols in range(1, max_cols + 1):
+                rows = math.ceil(num_videos / cols)
+
+                # Calculate available space for cells
+                avail_width = CONFIG["max_grid_width"] - CONFIG[
+                    "horizontal_padding"
+                ] * (cols + 1)
+                avail_height = (
+                    CONFIG["max_grid_height"]
+                    - CONFIG["top_padding"]
+                    - CONFIG["bottom_padding"]
+                    - CONFIG["vertical_padding"] * (rows + 1)
+                )
+
+                if avail_width <= 0 or avail_height <= 0:
+                    continue
+
+                cell_width = avail_width / cols
+                cell_height = avail_height / rows
+
+                # Check minimum size constraints
+                if (
+                    cell_width < CONFIG["min_cell_width"]
+                    or cell_height < CONFIG["min_cell_height"]
+                ):
+                    continue
+
+                # Check aspect ratio compatibility
+                cell_ar = cell_width / cell_height
+                if abs(cell_ar - median_aspect) > CONFIG["aspect_ratio_tolerance"]:
+                    continue
+
+                # Calculate space utilization
+                utilization = (
+                    (cell_width * cell_height)
+                    * num_videos
+                    / (CONFIG["max_grid_width"] * CONFIG["max_grid_height"])
+                )
+                if utilization > best_utilization:
+                    best_utilization = utilization
+                    best_layout = (cols, rows, cell_width, cell_height)
+
+        # If no valid layout and force_max is set, relax constraints
+        if not best_layout and force_max:
+            logger.warning(
+                "No valid layout found - relaxing constraints to fit all videos (force_max)"
+            )
+            relax_factor = 0.8  # Reduce min cell size by 20% each attempt
+            ar_tolerance_factor = 1.5  # Increase aspect ratio tolerance
+            min_cell_width = CONFIG["min_cell_width"]
+            min_cell_height = CONFIG["min_cell_height"]
+            aspect_tol = CONFIG["aspect_ratio_tolerance"]
+            max_attempts = 5
+            for attempt in range(max_attempts):
+                min_cell_width *= relax_factor
+                min_cell_height *= relax_factor
+                aspect_tol *= ar_tolerance_factor
+                for cols in range(1, max_cols + 1):
+                    rows = math.ceil(num_videos / cols)
+                    avail_width = CONFIG["max_grid_width"] - CONFIG[
+                        "horizontal_padding"
+                    ] * (cols + 1)
+                    avail_height = (
+                        CONFIG["max_grid_height"]
+                        - CONFIG["top_padding"]
+                        - CONFIG["bottom_padding"]
+                        - CONFIG["vertical_padding"] * (rows + 1)
+                    )
+                    if avail_width <= 0 or avail_height <= 0:
+                        continue
+                    cell_width = avail_width / cols
+                    cell_height = avail_height / rows
+                    if cell_width < min_cell_width or cell_height < min_cell_height:
+                        continue
+                    cell_ar = cell_width / cell_height
+                    if abs(cell_ar - median_aspect) > aspect_tol:
+                        continue
+                    utilization = (
+                        (cell_width * cell_height)
+                        * num_videos
+                        / (CONFIG["max_grid_width"] * CONFIG["max_grid_height"])
+                    )
+                    if utilization > best_utilization:
+                        best_utilization = utilization
+                        best_layout = (cols, rows, cell_width, cell_height)
+                if best_layout:
+                    logger.info(
+                        f"Found forced layout with relaxed constraints (attempt {attempt+1})"
+                    )
+                    break
+            if not best_layout:
+                logger.error(
+                    "Failed to find layout even after relaxing constraints with force_max"
+                )
+                return None
+
+        # Original grid calculation attempt (video reduction)
+        if not best_layout and not force_max:
             logger.warning("No valid layout found - attempting video reduction")
 
             # Try removing videos until we find a workable layout
@@ -338,7 +429,9 @@ def create_video_grid_with_features(
         return out
 
     except Exception as e:
-        logger.error(f"Error in create_video_grid_with_features: {e}")
+        logger.error(
+            f"Error in create_video_grid_with_features: {e}\n{traceback.format_exc()}"
+        )
         return None
     finally:
         for video in videos:
@@ -442,7 +535,7 @@ def read_and_process_frame(
             )
         return cv2.resize(frame, (target_width, target_height))
     except Exception as e:
-        logger.error(f"Frame processing error: {e}")
+        logger.error(f"Frame processing error: {e}\n{traceback.format_exc()}")
         return None
 
 
@@ -532,53 +625,144 @@ def validate_video_duration(video: cv2.VideoCapture, path: Path) -> bool:
     return True
 
 
-def main(test=False, full_screen=False):
-    transformed_data = load_dataset(DATA_PATH)
-    if transformed_data.empty:
-        print("empty data")
-        return
+def extract_trial_clips(video_path: Path, trial_data: pd.DataFrame) -> List[Path]:
+    """Extract temporary clips for each trial using MoviePy"""
+    from moviepy.editor import VideoFileClip
 
-    ensure_output_directory_exists(CONFIG["output_dir"])
+    clips = []
+    video = VideoFileClip(str(video_path))
 
-    nickname_list = transformed_data[groupby].unique() if full_screen else []
+    for _, trial in trial_data.iterrows():
+        start = max(0, trial["start_time"] - CONFIG["clip_buffer"])
+        end = min(video.duration, trial["end_time"] + CONFIG["clip_buffer"])
 
-    # if not nickname_list:
-    #     logger.error("No experimental conditions found in dataset")
-    #     return
-
-    for nickname in nickname_list:
-        nickname_data = filter_by_column(transformed_data, groupby, nickname)
-        if nickname_data.empty:
-            continue
-
-        flypaths = nickname_data["flypath"].unique()
-        video_paths = get_video_paths(flypaths)
-        video_entries = load_videos(video_paths)
-
-        valid_videos = [
-            v for v, path in video_entries if validate_video_duration(v, path)
-        ]
-        if not valid_videos:
-            continue
-
-        title = generate_metadata(nickname_data)
-        output_filename = sanitize_filename(f"{nickname}_grid.mp4")
-
-        if Path(CONFIG["output_dir"], output_filename).exists():
-            logger.info(f"Skipping existing: {output_filename}")
-            continue
-
-        identifiers = generate_identifiers(nickname_data, [p for _, p in video_entries])
-        video_grid = create_video_grid_with_features(
-            valid_videos,
-            identifiers=identifiers,
-            grid_text=title,
-            output_filename=output_filename,
-            test=test,
+        clip = video.subclip(start, end)
+        temp_path = (
+            Path(CONFIG["temp_clip_dir"])
+            / f"{video_path.stem}_trial_{trial['trial_id']}.mp4"
         )
+        clip.write_videofile(str(temp_path), logger=None)
+        clips.append(temp_path)
 
-        if video_grid:
-            logger.info(f"Video grid created: {output_filename}")
+    video.close()
+    return clips
+
+
+def main(test=False, full_screen=False):
+
+    try:
+        transformed_data = load_dataset(DATA_PATH)
+        if transformed_data.empty:
+            logger.error("Empty dataset loaded")
+            return
+
+        ensure_output_directory_exists(CONFIG["output_dir"])
+
+        # Grouping logic based on mode
+        if CONFIG["trial_mode"]:
+            groups = transformed_data.groupby([CONFIG["trial_column"], groupby])
+            logger.info(f"Processing {len(groups)} trial-group combinations")
+        else:
+            groups = transformed_data.groupby(groupby)
+            logger.info(f"Processing {len(groups)} experimental groups")
+
+        for group_key, group_data in groups:
+            try:
+                # Handle trial-mode metadata
+                if CONFIG["trial_mode"]:
+                    trial_id, nickname = group_key
+                    output_filename = f"{nickname}_trial_{trial_id}_grid.mp4"
+                    trial_times = group_data[
+                        ["start_time", "end_time"]
+                    ].drop_duplicates()
+                else:
+                    nickname = group_key
+                    output_filename = f"{nickname}_grid.mp4"
+
+                # Skip existing outputs
+                output_path = Path(CONFIG["output_dir"]) / sanitize_filename(
+                    output_filename
+                )
+                if output_path.exists():
+                    logger.info(f"Skipping existing: {output_filename}")
+                    continue
+
+                # Get and validate video paths
+                flypaths = group_data["flypath"].unique()
+
+                invalid_paths = [fp for fp in flypaths if not Path(fp).exists()]
+                if invalid_paths:
+                    logger.error(f"Missing directories:\n{invalid_paths}")
+                    continue
+
+                video_paths = []
+                for fp in flypaths:
+                    path = Path(fp)
+                    if (
+                        path.is_file() and path.suffix == ".mp4"
+                    ):  # Handle direct file paths
+                        video_paths.append(path)
+                    else:
+                        matches = list(path.glob("*.mp4"))
+                        if matches:
+                            video_paths.append(sorted(matches)[0])  # Take latest file
+                        else:
+                            logger.warning(f"No videos found in {fp}")
+
+                # Trial-specific processing
+                if CONFIG["trial_mode"]:
+                    # Extract trial clips in parallel
+                    with ThreadPoolExecutor() as executor:
+                        clip_paths = list(
+                            executor.map(
+                                lambda p: extract_trial_clips(Path(p), trial_times),
+                                flypaths,
+                            )
+                        )
+                    video_paths = [clip for sublist in clip_paths for clip in sublist]
+
+                video_entries = load_videos(video_paths)
+                valid_videos = [
+                    v for v, path in video_entries if validate_video_duration(v, path)
+                ]
+
+                if not valid_videos:
+                    logger.warning(f"No valid videos for group: {group_key}")
+                    continue
+
+                # Generate identifiers and metadata
+                identifiers = generate_identifiers(
+                    group_data, [p for _, p in video_entries]
+                )
+                title = generate_metadata(group_data) + (
+                    f" | Trial {trial_id}" if CONFIG["trial_mode"] else ""
+                )
+
+                # Create video grid
+                video_grid = create_video_grid_with_features(
+                    valid_videos,
+                    identifiers=identifiers,
+                    grid_text=title,
+                    output_filename=output_filename,
+                    test=test,
+                )
+
+                if video_grid:
+                    logger.info(f"Successfully created: {output_filename}")
+
+            except Exception as e:
+                logger.error(
+                    f"Failed processing group {group_key}: {e}\n{traceback.format_exc()}"
+                )
+                continue
+            finally:
+                # Cleanup trial clips
+                if CONFIG["trial_mode"] and "clip_paths" in locals():
+                    for clip in clip_paths:
+                        for c in clip:
+                            c.unlink(missing_ok=True)
+    except Exception as e:
+        logger.error(f"Fatal error in main: {e}\n{traceback.format_exc()}")
 
 
 if __name__ == "__main__":
@@ -588,6 +772,168 @@ if __name__ == "__main__":
     parser.add_argument(
         "--full-screen", action="store_true", help="Process all experimental conditions"
     )
+    parser.add_argument(
+        "--trials", action="store_true", help="Enable trial-based clipping"
+    )
+    parser.add_argument(
+        "--filter-values",
+        type=str,
+        default=None,
+        help="Comma-separated list of values to process (e.g. Nicknames)",
+    )
+    parser.add_argument(
+        "--force-max",
+        action="store_true",
+        help="Force using all videos in a group, even if it requires reducing cell size or relaxing aspect ratio.",
+    )
     args = parser.parse_args()
 
-    main(test=args.test, full_screen=args.full_screen)
+    # Parse filter values if provided
+    filter_values = None
+    if args.filter_values:
+        filter_values = [v.strip() for v in args.filter_values.split(",") if v.strip()]
+
+    def filtered_groups(groups, filter_values):
+        if not filter_values:
+            return groups
+        for group_key, group_data in groups:
+            # group_key can be a tuple if grouped by multiple columns
+            if isinstance(group_key, tuple):
+                key_val = group_key[0] if len(group_key) == 1 else group_key
+            else:
+                key_val = group_key
+            if key_val in filter_values or (
+                isinstance(key_val, tuple) and any(k in filter_values for k in key_val)
+            ):
+                yield (group_key, group_data)
+
+    def main_with_filter(test=False, full_screen=False, force_max=False):
+        try:
+            transformed_data = load_dataset(DATA_PATH)
+            if transformed_data.empty:
+                logger.error("Empty dataset loaded")
+                return
+
+            ensure_output_directory_exists(CONFIG["output_dir"])
+
+            # Grouping logic based on mode
+            if CONFIG["trial_mode"]:
+                groups = transformed_data.groupby([CONFIG["trial_column"], groupby])
+                logger.info(f"Processing {len(groups)} trial-group combinations")
+            else:
+                groups = transformed_data.groupby(groupby)
+                logger.info(f"Processing {len(groups)} experimental groups")
+
+            # Filter groups if filter_values is set
+            group_iter = (
+                filtered_groups(groups, filter_values) if filter_values else groups
+            )
+
+            for group_key, group_data in group_iter:
+                try:
+                    # Handle trial-mode metadata
+                    if CONFIG["trial_mode"]:
+                        trial_id, nickname = group_key
+                        output_filename = f"{nickname}_trial_{trial_id}_grid.mp4"
+                        trial_times = group_data[
+                            ["start_time", "end_time"]
+                        ].drop_duplicates()
+                    else:
+                        nickname = group_key
+                        output_filename = f"{nickname}_grid.mp4"
+
+                    # Skip existing outputs
+                    output_path = Path(CONFIG["output_dir"]) / sanitize_filename(
+                        output_filename
+                    )
+                    if output_path.exists():
+                        logger.info(f"Skipping existing: {output_filename}")
+                        continue
+
+                    # Get and validate video paths
+                    flypaths = group_data["flypath"].unique()
+
+                    invalid_paths = [fp for fp in flypaths if not Path(fp).exists()]
+                    if invalid_paths:
+                        logger.error(f"Missing directories:\n{invalid_paths}")
+                        continue
+
+                    video_paths = []
+                    for fp in flypaths:
+                        path = Path(fp)
+                        if (
+                            path.is_file() and path.suffix == ".mp4"
+                        ):  # Handle direct file paths
+                            video_paths.append(path)
+                        else:
+                            matches = list(path.glob("*.mp4"))
+                            if matches:
+                                video_paths.append(
+                                    sorted(matches)[0]
+                                )  # Take latest file
+                            else:
+                                logger.warning(f"No videos found in {fp}")
+
+                    # Trial-specific processing
+                    if CONFIG["trial_mode"]:
+                        # Extract trial clips in parallel
+                        with ThreadPoolExecutor() as executor:
+                            clip_paths = list(
+                                executor.map(
+                                    lambda p: extract_trial_clips(Path(p), trial_times),
+                                    flypaths,
+                                )
+                            )
+                        video_paths = [
+                            clip for sublist in clip_paths for clip in sublist
+                        ]
+
+                    video_entries = load_videos(video_paths)
+                    valid_videos = [
+                        v
+                        for v, path in video_entries
+                        if validate_video_duration(v, path)
+                    ]
+
+                    if not valid_videos:
+                        logger.warning(f"No valid videos for group: {group_key}")
+                        continue
+
+                    # Generate identifiers and metadata
+                    identifiers = generate_identifiers(
+                        group_data, [p for _, p in video_entries]
+                    )
+                    title = generate_metadata(group_data) + (
+                        f" | Trial {trial_id}" if CONFIG["trial_mode"] else ""
+                    )
+
+                    # Create video grid
+                    video_grid = create_video_grid_with_features(
+                        valid_videos,
+                        identifiers=identifiers,
+                        grid_text=title,
+                        output_filename=output_filename,
+                        test=test,
+                        force_max=force_max,
+                    )
+
+                    if video_grid:
+                        logger.info(f"Successfully created: {output_filename}")
+
+                except Exception as e:
+                    logger.error(
+                        f"Failed processing group {group_key}: {e}\n{traceback.format_exc()}"
+                    )
+                    continue
+                finally:
+                    # Cleanup trial clips
+                    if CONFIG["trial_mode"] and "clip_paths" in locals():
+                        for clip in clip_paths:
+                            for c in clip:
+                                c.unlink(missing_ok=True)
+        except Exception as e:
+            logger.error(f"Fatal error in main: {e}\n{traceback.format_exc()}")
+
+    main_with_filter(
+        test=args.test, full_screen=args.full_screen, force_max=args.force_max
+    )

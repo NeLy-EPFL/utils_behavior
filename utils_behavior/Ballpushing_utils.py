@@ -31,8 +31,8 @@ import pygame
 
 import warnings
 
-import Utils
-import Sleap_utils
+from . import Utils
+from . import Sleap_utils
 
 from dataclasses import dataclass
 
@@ -362,7 +362,7 @@ class Config:
 
     # General configuration attributes
 
-    experiment_type: str = "Learning"
+    experiment_type: str = "Ctrl"
 
     time_range: tuple = None
     success_cutoff: bool = False

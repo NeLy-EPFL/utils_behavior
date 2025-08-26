@@ -12,7 +12,6 @@ from bokeh.palettes import Category10
 from bokeh.palettes import all_palettes
 from bokeh.io.export import export_svgs
 
-
 # My main template
 
 hv_main = {
@@ -28,7 +27,7 @@ hv_main = {
         # "color": "label",
         "alpha": 0.5,
         "size": 6,
-        "cmap": "Category10",
+        "cmap": "Category10",  # Former : Category10
         "framewise": True,
     },
     "plot": {
@@ -274,6 +273,8 @@ def sort_data(data, group_by, metric, sort_by="median", sort_order=None):
         sort_by (str): The method to sort the data. Either 'median' or 'original'.
         sort_order (list): The specified order for the groups.
     """
+    data = data.copy()  # Create a copy of the DataFrame to avoid modifying the original
+
     if sort_order is not None:
         if isinstance(group_by, list):
             # Ensure sort_order is a dictionary with keys for each group_by level
@@ -314,7 +315,7 @@ def sort_data(data, group_by, metric, sort_by="median", sort_order=None):
             )
 
             # Create a new category type for the groups with the calculated order
-            data[group_by[0]] = pd.Categorical(
+            data.loc[:, group_by[0]] = pd.Categorical(
                 data[group_by[0]], categories=group_order, ordered=True
             )
 
@@ -326,7 +327,7 @@ def sort_data(data, group_by, metric, sort_by="median", sort_order=None):
                 correct_order_global.extend(subgroup_order_within_group[group])
 
             # Convert the subgroups to a categorical type with the global order
-            data[group_by[1]] = pd.Categorical(
+            data.loc[:, group_by[1]] = pd.Categorical(
                 data[group_by[1]], categories=correct_order_global, ordered=True
             )
 
@@ -336,7 +337,7 @@ def sort_data(data, group_by, metric, sort_by="median", sort_order=None):
         elif isinstance(group_by, str):
             if sort_by == "median":
                 median_values = data.groupby(group_by)[metric].median().sort_values()
-                data["median"] = data[group_by].map(median_values)
+                data.loc[:, "median"] = data[group_by].map(median_values)
                 data = data.sort_values("median")
             else:
                 # Return the original order with a warning message
@@ -351,14 +352,15 @@ def create_jitterboxplot(
     data,
     metric,
     kdims,
-    plot_options,
-    y_min,
-    y_max,
-    hover,
+    plot_options=hv_main,
+    y_min=None,
+    y_max=None,
+    hover=None,
     metadata=None,
     scatter_color="black",
     control=False,
     colorby=None,
+    color_palette=None,  # New argument
 ):
     """
     Create a jitter boxplot with a scatterplot overlay for a given group.
@@ -375,6 +377,7 @@ def create_jitterboxplot(
         scatter_color (str): The color to use for the scatterplot.
         control (bool): Whether the group is the control group.
         colorby (str): The column to color by.
+        color_palette (dict): A dictionary mapping values to specific colors.
     """
     boxplot = hv.BoxWhisker(
         data=data,
@@ -396,25 +399,32 @@ def create_jitterboxplot(
         kdims=[kdims],
     ).opts(
         **plot_options["scatter"],
-        color=scatter_color,
         tools=[hover],
         ylim=(y_min, y_max),
     )
 
-    color_column = colorby if colorby else kdims
-    unique_values = data[color_column].unique()
-
-    # Get the colormap name from the plot options
-    cmap_name = plot_options["scatter"]["cmap"]
-
-    # Get the colormap from bokeh.palettes
-    cmap = all_palettes[cmap_name][10]  # Adjust the number as needed
-
-    color_mapping = {
-        value: cmap[i % len(cmap)] for i, value in enumerate(unique_values)
-    }
-
-    scatterplot = scatterplot.opts(color=hv.dim(color_column).categorize(color_mapping))
+    # Apply the color palette if provided
+    if colorby and color_palette:
+        try:
+            scatterplot = scatterplot.opts(
+                color=hv.dim(colorby).categorize(color_palette)
+            )
+        except KeyError as e:
+            print(
+                f"Warning: Some values in '{colorby}' are not in the provided color palette. Falling back to default colors."
+            )
+    elif colorby:
+        # Fallback to default colormap
+        color_column = colorby
+        unique_values = data[color_column].unique()
+        cmap_name = plot_options["scatter"]["cmap"]
+        cmap = all_palettes[cmap_name][10]  # Adjust the number as needed
+        color_mapping = {
+            value: cmap[i % len(cmap)] for i, value in enumerate(unique_values)
+        }
+        scatterplot = scatterplot.opts(
+            color=hv.dim(color_column).categorize(color_mapping)
+        )
 
     if control:
         boxplot = boxplot.opts(box_line_color="green")
@@ -427,7 +437,7 @@ def create_single_jitterboxplot(
     data,
     kdims,
     metric,
-    groupby,
+    groupby=None,
     control=None,
     sort_by=None,
     scale_max=False,
@@ -522,6 +532,7 @@ def create_groupby_jitterboxplots(
     colorby=None,
     layout=False,
     debug=False,
+    color_palette=None,  # New argument
 ):
     data = clean_data(data, metric, groupby)
 
@@ -581,6 +592,7 @@ def create_groupby_jitterboxplots(
             hover=hover,
             metadata=metadata,
             scatter_color=kdims,
+            color_palette=color_palette,  # Pass the color palette
         )
 
         if control and group != control_group and control_group:
@@ -594,6 +606,7 @@ def create_groupby_jitterboxplots(
                 hover=hover,
                 metadata=metadata,
                 scatter_color="green",
+                color_palette=color_palette,  # Pass the color palette
             )
 
         if hline_values is not None:
@@ -746,8 +759,8 @@ def jitter_boxplot(
     groupby=None,
     colorby=None,
     render="single",
+    color_palette=None,  # New argument
 ):
-
     if plot_options is None:
         if render == "pooled":
             plot_options = pooled_opts
@@ -782,6 +795,7 @@ def jitter_boxplot(
             plot_options,
             colorby=colorby,
             layout=False,
+            color_palette=color_palette,  # Pass the color palette
         )
     elif render == "layout":
         return create_groupby_jitterboxplots(
@@ -797,6 +811,7 @@ def jitter_boxplot(
             plot_options,
             colorby=colorby,
             layout=True,
+            color_palette=color_palette,  # Pass the color palette
         )
     elif render == "single":
         return create_single_jitterboxplot(

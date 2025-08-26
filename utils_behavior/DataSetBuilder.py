@@ -1,28 +1,16 @@
-from utils_behavior import Sleap_utils
-from utils_behavior import HoloviewsTemplates
-from utils_behavior import HoloviewsPlots
-from utils_behavior import Utils
-from utils_behavior import Processing
 from utils_behavior import Ballpushing_utils
-
-import importlib
-from pathlib import Path
-import json
-from matplotlib import pyplot as plt
-import pandas as pd
-import holoviews as hv
-from holoviews import opts
-
-hv.extension("bokeh")
-import seaborn as sns
-from shiny import App, Inputs, Outputs, Session, reactive, render, req, ui
-import numpy as np
-import h5py
-import re
-
 import gc
 import psutil
 import os
+
+from pathlib import Path
+
+import json
+import pandas as pd
+import holoviews as hv
+
+hv.extension("bokeh")
+
 
 # ==================================================================
 # CONFIGURATION SECTION - EDIT THESE VALUES TO MODIFY BEHAVIOR

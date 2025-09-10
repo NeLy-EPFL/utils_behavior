@@ -28,7 +28,7 @@ CONFIG = {
     "bottom_padding": 50,
     "rotate_videos": False,
     "rotation_angle": cv2.ROTATE_90_CLOCKWISE,  # Rotate videos by default
-    "output_dir": "/mnt/upramdya_data/MD/Balltypes_RawGrids",
+    "output_dir": "/mnt/upramdya_data/MD/TNT_Screen_RawGrids",
     "max_grid_width": 1920,  # 3840,
     "max_grid_height": 1080,  # 2160,
     "min_cell_width": 320,
@@ -45,11 +45,13 @@ CONFIG = {
 MIN_DURATION = 60  # 1 minute
 
 # Constants
-DATA_PATH = "/mnt/upramdya_data/MD/Ballpushing_Balltypes/Datasets/250815_17_summary_ball_types_Data/summary/pooled_summary.feather"
+DATA_PATH = "/mnt/upramdya_data/MD/Ballpushing_TNTScreen/Datasets/250414_summary_TNT_screen_Data/summary/pooled_summary.feather"
+MAPPING_CSV_PATH = "/mnt/upramdya_data/MD/Region_map_250908.csv" # Map if needed
+MISSING_VIDEOS_PATH = "/mnt/upramdya_data/MD/TNT_Screen_RawGrids/missing_videos.txt" # Path for missing videos list if needed
 
-groupby = "BallType"
+groupby = "Nickname"
 
-METADATA_COLUMNS = ["Date"]
+METADATA_COLUMNS = ["Date"]  # Arena and corridor will be extracted from flypath
 
 
 def ensure_output_directory_exists(output_dir: str):
@@ -66,6 +68,51 @@ def load_dataset(file_path: str) -> pd.DataFrame:
     except Exception as e:
         logger.error(f"Error loading dataset: {e}")
         return pd.DataFrame()
+
+
+def load_missing_videos_list() -> List[str]:
+    """Load the list of missing video identifiers from the text file."""
+    try:
+        if not Path(MISSING_VIDEOS_PATH).exists():
+            logger.warning(f"Missing videos file not found: {MISSING_VIDEOS_PATH}")
+            return []
+        
+        with open(MISSING_VIDEOS_PATH, 'r') as f:
+            lines = f.readlines()
+        
+        # Skip header lines and extract identifiers
+        missing_identifiers = []
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith('Missing Videos:') and not line.startswith('='):
+                missing_identifiers.append(line)
+        
+        logger.info(f"Loaded {len(missing_identifiers)} missing video identifiers")
+        return missing_identifiers
+    except Exception as e:
+        logger.error(f"Error loading missing videos list: {e}")
+        return []
+
+
+def create_nickname_mapping() -> dict:
+    """Create mapping from nicknames/genotypes to simplified nicknames."""
+    try:
+        mapping_data = pd.read_csv(MAPPING_CSV_PATH)
+        nickname_to_simplified = {}
+        
+        # Create mapping from both Nickname and Genotype columns
+        for _, row in mapping_data.iterrows():
+            if pd.notna(row.get('Nickname')) and pd.notna(row.get('Simplified Nickname')):
+                nickname_to_simplified[row['Nickname']] = row['Simplified Nickname']
+            
+            if pd.notna(row.get('Genotype')) and pd.notna(row.get('Simplified Nickname')):
+                nickname_to_simplified[row['Genotype']] = row['Simplified Nickname']
+        
+        logger.info(f"Created mapping for {len(nickname_to_simplified)} identifiers")
+        return nickname_to_simplified
+    except Exception as e:
+        logger.error(f"Error creating nickname mapping: {e}")
+        return {}
 
 
 def filter_by_column(data: pd.DataFrame, column_name: str, value: str) -> pd.DataFrame:
@@ -582,9 +629,16 @@ def generate_identifiers(data: pd.DataFrame, video_paths: List[Path]) -> List[st
     identifiers = []
     for path in video_paths:
         if path:
+            # Extract corridor and arena from flypath
             corridor = path.parent.name
             arena = path.parent.parent.name
-            date = data.loc[data["flypath"] == str(path.parent), "Date"].values[0]
+            
+            # Find matching row in data to get date
+            matching_rows = data.loc[data["flypath"] == str(path.parent)]
+            if not matching_rows.empty:
+                date = matching_rows["Date"].iloc[0]
+            else:
+                date = "Unknown"
 
             if CONFIG["rotate_videos"]:
                 # Single line format for rotated videos
@@ -600,12 +654,28 @@ def generate_identifiers(data: pd.DataFrame, video_paths: List[Path]) -> List[st
 
 
 def generate_metadata(data: pd.DataFrame) -> str:
-    # For each metadata column, get the first unique value and add it to the title along with the column name
-    title_elements = []
-    for column in METADATA_COLUMNS:
-        value = data[column].values[0]
-        title_elements.append(f"{column}: {value}")
-    title = f"{'_'.join(title_elements)}"
+    # Extract date from the data
+    date = data["Date"].iloc[0] if "Date" in data.columns else "Unknown"
+    
+    # Extract arena and corridor info from flypath if available
+    arena_corridor_info = ""
+    if "flypath" in data.columns and not data["flypath"].empty:
+        sample_path = Path(data["flypath"].iloc[0])
+        arena = sample_path.parent.name
+        corridor = sample_path.parent.parent.name
+        arena_corridor_info = f"_{arena}_{corridor}"
+    
+    # Create title with available metadata
+    title_elements = [f"Date: {date}"]
+    
+    # Add other interesting metadata if available
+    for column in ["experiment", "Period", "FeedingState", "Orientation", "Light"]:
+        if column in data.columns:
+            unique_values = data[column].unique()
+            if len(unique_values) == 1:  # Only add if all rows have the same value
+                title_elements.append(f"{column}: {unique_values[0]}")
+    
+    title = " | ".join(title_elements)
     return title
 
 
@@ -786,6 +856,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Force using all videos in a group, even if it requires reducing cell size or relaxing aspect ratio.",
     )
+    parser.add_argument(
+        "--missing-only",
+        action="store_true",
+        help="Process only the missing videos identified by the check_rename_videos.py script.",
+    )
     args = parser.parse_args()
 
     # Parse filter values if provided
@@ -807,7 +882,7 @@ if __name__ == "__main__":
             ):
                 yield (group_key, group_data)
 
-    def main_with_filter(test=False, full_screen=False, force_max=False):
+    def main_with_filter(test=False, full_screen=False, force_max=False, missing_only=False):
         try:
             transformed_data = load_dataset(DATA_PATH)
             if transformed_data.empty:
@@ -815,6 +890,18 @@ if __name__ == "__main__":
                 return
 
             ensure_output_directory_exists(CONFIG["output_dir"])
+            
+            # Load nickname mapping for simplified names
+            nickname_mapping = create_nickname_mapping()
+            
+            # Load missing videos list if processing missing only
+            missing_identifiers = []
+            if missing_only:
+                missing_identifiers = load_missing_videos_list()
+                if not missing_identifiers:
+                    logger.info("No missing videos to process")
+                    return
+                logger.info(f"Processing only missing videos: {missing_identifiers}")
 
             # Grouping logic based on mode
             if CONFIG["trial_mode"]:
@@ -824,23 +911,50 @@ if __name__ == "__main__":
                 groups = transformed_data.groupby(groupby)
                 logger.info(f"Processing {len(groups)} experimental groups")
 
-            # Filter groups if filter_values is set
-            group_iter = (
-                filtered_groups(groups, filter_values) if filter_values else groups
-            )
+            # Filter groups based on different criteria
+            if missing_only:
+                # Filter for missing identifiers (check both Nickname and Genotype)
+                def is_missing_group(group_key, group_data):
+                    if isinstance(group_key, tuple):
+                        identifier = group_key[-1]  # Last element is the groupby key
+                    else:
+                        identifier = group_key
+                    
+                    # Check if this identifier or any genotype in the group is missing
+                    if identifier in missing_identifiers:
+                        return True
+                    
+                    # Also check genotypes in the group data
+                    if 'Genotype' in group_data.columns:
+                        genotypes = group_data['Genotype'].unique()
+                        if any(genotype in missing_identifiers for genotype in genotypes):
+                            return True
+                    
+                    return False
+                
+                group_iter = [(key, data) for key, data in groups if is_missing_group(key, data)]
+                logger.info(f"Found {len(group_iter)} missing groups to process")
+            elif filter_values:
+                group_iter = filtered_groups(groups, filter_values)
+            else:
+                group_iter = groups
 
             for group_key, group_data in group_iter:
                 try:
                     # Handle trial-mode metadata
                     if CONFIG["trial_mode"]:
                         trial_id, nickname = group_key
-                        output_filename = f"{nickname}_trial_{trial_id}_grid.mp4"
+                        # Use simplified nickname if available
+                        display_name = nickname_mapping.get(nickname, nickname)
+                        output_filename = f"{display_name}_trial_{trial_id}_grid.mp4"
                         trial_times = group_data[
                             ["start_time", "end_time"]
                         ].drop_duplicates()
                     else:
                         nickname = group_key
-                        output_filename = f"{nickname}_grid.mp4"
+                        # Use simplified nickname if available, otherwise use original
+                        display_name = nickname_mapping.get(nickname, nickname)
+                        output_filename = f"{display_name}_grid.mp4"
 
                     # Skip existing outputs
                     output_path = Path(CONFIG["output_dir"]) / sanitize_filename(
@@ -903,7 +1017,10 @@ if __name__ == "__main__":
                     identifiers = generate_identifiers(
                         group_data, [p for _, p in video_entries]
                     )
-                    title = generate_metadata(group_data) + (
+                    
+                    # Use simplified name in title if available
+                    title_name = display_name if 'display_name' in locals() else nickname
+                    title = f"{title_name} | {generate_metadata(group_data)}" + (
                         f" | Trial {trial_id}" if CONFIG["trial_mode"] else ""
                     )
 
@@ -935,5 +1052,8 @@ if __name__ == "__main__":
             logger.error(f"Fatal error in main: {e}\n{traceback.format_exc()}")
 
     main_with_filter(
-        test=args.test, full_screen=args.full_screen, force_max=args.force_max
+        test=args.test, 
+        full_screen=args.full_screen, 
+        force_max=args.force_max,
+        missing_only=args.missing_only
     )

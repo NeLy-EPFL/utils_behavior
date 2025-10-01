@@ -505,6 +505,26 @@ class Sleap_Tracks:
                 self.edges_idx = h5file["edge_inds"][:].tolist()
                 self.tracks = h5file["tracks"][:].tolist()
                 self.video = Path(h5file["video_path"][()].decode("utf-8"))
+                
+                # Extract track names/identities if they exist
+                if "track_names" in h5file:
+                    self.track_names = [x.decode("utf-8") for x in h5file["track_names"][:]]
+                    if self.debug:
+                        print(f"Found track names: {self.track_names}")
+                else:
+                    self.track_names = []
+                    if self.debug:
+                        print("No track names found in H5 file")
+                
+                # Extract track occupancy (which frames have which tracks) if available
+                if "track_occupancy" in h5file:
+                    self.track_occupancy = h5file["track_occupancy"][:].tolist()
+                    if self.debug:
+                        print(f"Track occupancy shape: {h5file['track_occupancy'].shape}")
+                else:
+                    self.track_occupancy = []
+                    if self.debug:
+                        print("No track occupancy found in H5 file")
 
         except FileNotFoundError as e:
             print(f"Error while opening SLEAP tracking file: {e}")
@@ -533,6 +553,7 @@ class Sleap_Tracks:
             print(f"Loaded SLEAP tracking file: {filename}")
             print(f"N° of objects: {len(self.objects)}")
             print(f"Nodes: {self.node_names}")
+            print(f"Track names: {self.track_names if self.track_names else 'None'}")
             print(f"Video FPS: {self.fps}")
 
     def _handle_video_path(self, video_path):
@@ -583,8 +604,19 @@ class Sleap_Tracks:
 
             tracking_df["time"] = tracking_df["frame"] / self.fps
 
-            # Give each object some number
-            tracking_df["object"] = f"{self.object_type}_{i+1}"
+            # Assign track identity - use track name if available, otherwise use generic numbering
+            if self.track_names and i < len(self.track_names):
+                track_id = self.track_names[i]
+                tracking_df["track_id"] = track_id
+                tracking_df["object"] = f"{self.object_type}_{track_id}"
+                if self.debug:
+                    print(f"  Using track name: {track_id}")
+            else:
+                track_id = f"track_{i+1}"
+                tracking_df["track_id"] = track_id
+                tracking_df["object"] = f"{self.object_type}_{i+1}"
+                if self.debug:
+                    print(f"  Using generic track ID: {track_id}")
 
             for k, n in enumerate(self.node_names):
 

@@ -28,28 +28,33 @@ CONFIG = {
     "bottom_padding": 50,
     "rotate_videos": False,
     "rotation_angle": cv2.ROTATE_90_CLOCKWISE,  # Rotate videos by default
-    "output_dir": "/mnt/upramdya_data/MD/TNT_Screen_RawGrids",
-    "max_grid_width": 1920,  # 3840,
-    "max_grid_height": 1080,  # 2160,
+    "multiline_identifiers": False,  # True = use line breaks, False = use underscores
+    "output_dir": "/mnt/upramdya_data/MD/F1_Tracks/F1_New_Grids/Cleaned",
+    "max_grid_width": 3840,  # 1920,  # 3840,
+    "max_grid_height": 2160,  # 1080,  # 2160,
     "min_cell_width": 320,
     "min_cell_height": 180,
     "aspect_ratio_tolerance": 0.2,
     "test_duration": 10,
+    "test_start_time": 5000,  # Start time in seconds for test mode (None = beginning)
     "trial_mode": False,
     "trial_column": "trial",
     "clip_buffer": 2,  # seconds before/after trial
     "temp_clip_dir": "/tmp/video_clips",
-    "force_single_row": True,  # Set to True to always use a single row for the grid
+    "force_single_row": False,  # Set to True to always use a single row for the grid
+    "F1_experiments": (
+        True
+    ),  # Set to True for F1 corridor experiments (validates adjusted_time)
 }
 
 MIN_DURATION = 60  # 1 minute
 
 # Constants
-DATA_PATH = "/mnt/upramdya_data/MD/Ballpushing_TNTScreen/Datasets/250414_summary_TNT_screen_Data/summary/pooled_summary.feather"
-MAPPING_CSV_PATH = "/mnt/upramdya_data/MD/Region_map_250908.csv" # Map if needed
-MISSING_VIDEOS_PATH = "/mnt/upramdya_data/MD/TNT_Screen_RawGrids/missing_videos.txt" # Path for missing videos list if needed
+DATA_PATH = "/mnt/upramdya_data/MD/F1_Tracks/Datasets/251014_10_F1_coordinates_F1_New_Data/F1_coordinates/pooled_F1_coordinates.feather"
+MAPPING_CSV_PATH = "/mnt/upramdya_data/MD/Region_map_250908.csv"  # Map if needed
+MISSING_VIDEOS_PATH = None  # Path for missing videos list if needed
 
-groupby = "Nickname"
+groupby = "F1_condition"
 
 METADATA_COLUMNS = ["Date"]  # Arena and corridor will be extracted from flypath
 
@@ -76,17 +81,21 @@ def load_missing_videos_list() -> List[str]:
         if not Path(MISSING_VIDEOS_PATH).exists():
             logger.warning(f"Missing videos file not found: {MISSING_VIDEOS_PATH}")
             return []
-        
-        with open(MISSING_VIDEOS_PATH, 'r') as f:
+
+        with open(MISSING_VIDEOS_PATH, "r") as f:
             lines = f.readlines()
-        
+
         # Skip header lines and extract identifiers
         missing_identifiers = []
         for line in lines:
             line = line.strip()
-            if line and not line.startswith('Missing Videos:') and not line.startswith('='):
+            if (
+                line
+                and not line.startswith("Missing Videos:")
+                and not line.startswith("=")
+            ):
                 missing_identifiers.append(line)
-        
+
         logger.info(f"Loaded {len(missing_identifiers)} missing video identifiers")
         return missing_identifiers
     except Exception as e:
@@ -99,15 +108,19 @@ def create_nickname_mapping() -> dict:
     try:
         mapping_data = pd.read_csv(MAPPING_CSV_PATH)
         nickname_to_simplified = {}
-        
+
         # Create mapping from both Nickname and Genotype columns
         for _, row in mapping_data.iterrows():
-            if pd.notna(row.get('Nickname')) and pd.notna(row.get('Simplified Nickname')):
-                nickname_to_simplified[row['Nickname']] = row['Simplified Nickname']
-            
-            if pd.notna(row.get('Genotype')) and pd.notna(row.get('Simplified Nickname')):
-                nickname_to_simplified[row['Genotype']] = row['Simplified Nickname']
-        
+            if pd.notna(row.get("Nickname")) and pd.notna(
+                row.get("Simplified Nickname")
+            ):
+                nickname_to_simplified[row["Nickname"]] = row["Simplified Nickname"]
+
+            if pd.notna(row.get("Genotype")) and pd.notna(
+                row.get("Simplified Nickname")
+            ):
+                nickname_to_simplified[row["Genotype"]] = row["Simplified Nickname"]
+
         logger.info(f"Created mapping for {len(nickname_to_simplified)} identifiers")
         return nickname_to_simplified
     except Exception as e:
@@ -409,13 +422,35 @@ def create_video_grid_with_features(
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         out = cv2.VideoWriter(str(output_path), fourcc, fps, (grid_width, grid_height))
 
-        # Handle sample/test duration
+        # Handle sample/test duration and start time
         total_frames = min(int(v.get(cv2.CAP_PROP_FRAME_COUNT)) for v in videos)
+        start_frame = 0
+
         if test:
-            total_frames = min(
-                total_frames,
-                int(CONFIG["test_duration"] * fps),
-            )
+            # If test_start_time is specified, seek to that position
+            if CONFIG.get("test_start_time") is not None:
+                start_frame = int(CONFIG["test_start_time"] * fps)
+                logger.info(
+                    f"Test mode: Starting from {CONFIG['test_start_time']}s (frame {start_frame})"
+                )
+
+                # Seek all videos to the start position
+                for video in videos:
+                    video_frame_count = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+                    if start_frame >= video_frame_count:
+                        logger.warning(
+                            f"Start time {CONFIG['test_start_time']}s exceeds video duration"
+                        )
+                        start_frame = max(
+                            0, video_frame_count - int(CONFIG["test_duration"] * fps)
+                        )
+                    video.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+            # Calculate number of frames to process
+            total_frames = int(CONFIG["test_duration"] * fps)
+        else:
+            # For full videos, adjust total_frames to account for start position
+            total_frames = total_frames - start_frame
 
         with tqdm(total=total_frames, desc="Processing frames") as pbar:
             for frame_count in range(total_frames):
@@ -448,27 +483,26 @@ def create_video_grid_with_features(
                         logger.error(f"Frame placement failed: {e}")
                         continue
 
-                    # Add identifier text
-                    cv2.putText(
-                        grid_frame,
-                        identifier,
-                        (
-                            x_offset + 10,
-                            (
-                                y_offset + (cell_height + 10)
-                                if CONFIG["rotate_videos"]
-                                else y_offset + cell_height + 10
-                            ),
-                        ),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        CONFIG["font_scale"]
-                        * (
-                            1 if CONFIG["rotate_videos"] else 1
-                        ),  # Smaller text when rotated
-                        (255, 255, 255),
-                        1,
-                        cv2.LINE_AA,
+                    # Add identifier text (handle multi-line text)
+                    text_x = x_offset + 10
+                    text_y_base = (
+                        y_offset + cell_height + 10
+                        if not CONFIG["rotate_videos"]
+                        else y_offset + cell_height + 10
                     )
+
+                    # Split identifier into lines and render each line separately
+                    for line_idx, line in enumerate(identifier.split("\n")):
+                        cv2.putText(
+                            grid_frame,
+                            line,
+                            (text_x, text_y_base + line_idx * CONFIG["line_spacing"]),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            CONFIG["font_scale"],
+                            (255, 255, 255),
+                            1,
+                            cv2.LINE_AA,
+                        )
 
                 out.write(grid_frame)
                 pbar.update(1)
@@ -632,20 +666,21 @@ def generate_identifiers(data: pd.DataFrame, video_paths: List[Path]) -> List[st
             # Extract corridor and arena from flypath
             corridor = path.parent.name
             arena = path.parent.parent.name
-            
+
             # Find matching row in data to get date
             matching_rows = data.loc[data["flypath"] == str(path.parent)]
             if not matching_rows.empty:
-                date = matching_rows["Date"].iloc[0]
+                date = str(matching_rows["Date"].iloc[0])
             else:
                 date = "Unknown"
 
-            if CONFIG["rotate_videos"]:
-                # Single line format for rotated videos
-                identifier = f"{date}_{arena}_{corridor}"
-            else:
-                # Multi-line format
+            # Choose separator based on config
+            if CONFIG.get("multiline_identifiers", False):
+                # Multi-line format with line breaks
                 identifier = f"{date}\n{arena}\n{corridor}"
+            else:
+                # Single line format with underscores
+                identifier = f"{date}_{arena}_{corridor}"
 
             identifiers.append(identifier)
         else:
@@ -656,7 +691,7 @@ def generate_identifiers(data: pd.DataFrame, video_paths: List[Path]) -> List[st
 def generate_metadata(data: pd.DataFrame) -> str:
     # Extract date from the data
     date = data["Date"].iloc[0] if "Date" in data.columns else "Unknown"
-    
+
     # Extract arena and corridor info from flypath if available
     arena_corridor_info = ""
     if "flypath" in data.columns and not data["flypath"].empty:
@@ -664,17 +699,17 @@ def generate_metadata(data: pd.DataFrame) -> str:
         arena = sample_path.parent.name
         corridor = sample_path.parent.parent.name
         arena_corridor_info = f"_{arena}_{corridor}"
-    
+
     # Create title with available metadata
     title_elements = [f"Date: {date}"]
-    
+
     # Add other interesting metadata if available
     for column in ["experiment", "Period", "FeedingState", "Orientation", "Light"]:
         if column in data.columns:
             unique_values = data[column].unique()
             if len(unique_values) == 1:  # Only add if all rows have the same value
                 title_elements.append(f"{column}: {unique_values[0]}")
-    
+
     title = " | ".join(title_elements)
     return title
 
@@ -692,6 +727,43 @@ def validate_video_duration(video: cv2.VideoCapture, path: Path) -> bool:
     if duration < MIN_DURATION:
         logger.warning(f"Excluding short video: {path.name} ({duration//60:.0f}min)")
         return False
+    return True
+
+
+def validate_f1_entry(group_data: pd.DataFrame, flypath: str) -> bool:
+    """
+    Validate that the fly actually entered the F1 corridor.
+    Only performs validation if CONFIG["F1_experiments"] is True.
+
+    Args:
+        group_data: DataFrame with F1 coordinates data for the group
+        flypath: Path to the fly's data directory
+
+    Returns:
+        bool: True if fly has positive adjusted_time (entered F1) or F1 check is disabled, False otherwise
+    """
+    # Skip F1 validation if not an F1 experiment
+    if not CONFIG.get("F1_experiments", False):
+        return True
+
+    # Filter data for this specific flypath
+    fly_data = group_data[group_data["flypath"] == flypath]
+
+    if fly_data.empty:
+        logger.warning(f"No data found for flypath: {flypath}")
+        return False
+
+    # Check if there are any positive adjusted_time values
+    if "adjusted_time" not in fly_data.columns:
+        logger.warning(f"No adjusted_time column for {flypath}")
+        return False
+
+    has_positive_time = (fly_data["adjusted_time"] >= 0).any()
+
+    if not has_positive_time:
+        logger.warning(f"Excluding fly that never entered F1 corridor: {flypath}")
+        return False
+
     return True
 
 
@@ -804,7 +876,8 @@ def main(test=False, full_screen=False):
                 identifiers = generate_identifiers(
                     group_data, [p for _, p in video_entries]
                 )
-                title = generate_metadata(group_data) + (
+                # Main title is just the groupby value (nickname)
+                title = nickname + (
                     f" | Trial {trial_id}" if CONFIG["trial_mode"] else ""
                 )
 
@@ -840,6 +913,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--test", action="store_true", help="Enable test mode (10sec)")
     parser.add_argument(
+        "--test-start",
+        type=float,
+        default=None,
+        help="Start time in seconds for test mode (e.g., 5000 for 5000-5010s)",
+    )
+    parser.add_argument(
         "--full-screen", action="store_true", help="Process all experimental conditions"
     )
     parser.add_argument(
@@ -863,6 +942,10 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    # Override config with command-line argument
+    if args.test_start is not None:
+        CONFIG["test_start_time"] = args.test_start
+
     # Parse filter values if provided
     filter_values = None
     if args.filter_values:
@@ -882,7 +965,9 @@ if __name__ == "__main__":
             ):
                 yield (group_key, group_data)
 
-    def main_with_filter(test=False, full_screen=False, force_max=False, missing_only=False):
+    def main_with_filter(
+        test=False, full_screen=False, force_max=False, missing_only=False
+    ):
         try:
             transformed_data = load_dataset(DATA_PATH)
             if transformed_data.empty:
@@ -890,10 +975,10 @@ if __name__ == "__main__":
                 return
 
             ensure_output_directory_exists(CONFIG["output_dir"])
-            
+
             # Load nickname mapping for simplified names
             nickname_mapping = create_nickname_mapping()
-            
+
             # Load missing videos list if processing missing only
             missing_identifiers = []
             if missing_only:
@@ -919,20 +1004,24 @@ if __name__ == "__main__":
                         identifier = group_key[-1]  # Last element is the groupby key
                     else:
                         identifier = group_key
-                    
+
                     # Check if this identifier or any genotype in the group is missing
                     if identifier in missing_identifiers:
                         return True
-                    
+
                     # Also check genotypes in the group data
-                    if 'Genotype' in group_data.columns:
-                        genotypes = group_data['Genotype'].unique()
-                        if any(genotype in missing_identifiers for genotype in genotypes):
+                    if "Genotype" in group_data.columns:
+                        genotypes = group_data["Genotype"].unique()
+                        if any(
+                            genotype in missing_identifiers for genotype in genotypes
+                        ):
                             return True
-                    
+
                     return False
-                
-                group_iter = [(key, data) for key, data in groups if is_missing_group(key, data)]
+
+                group_iter = [
+                    (key, data) for key, data in groups if is_missing_group(key, data)
+                ]
                 logger.info(f"Found {len(group_iter)} missing groups to process")
             elif filter_values:
                 group_iter = filtered_groups(groups, filter_values)
@@ -972,21 +1061,42 @@ if __name__ == "__main__":
                         logger.error(f"Missing directories:\n{invalid_paths}")
                         continue
 
+                    logger.info(f"Group {group_key}: Found {len(flypaths)} total flies")
+
+                    # Validate F1 entry and collect video paths
                     video_paths = []
+                    valid_flypaths = []
                     for fp in flypaths:
+                        # First check if fly entered F1 corridor
+                        if not validate_f1_entry(group_data, fp):
+                            continue
+
                         path = Path(fp)
                         if (
                             path.is_file() and path.suffix == ".mp4"
                         ):  # Handle direct file paths
                             video_paths.append(path)
+                            valid_flypaths.append(fp)
                         else:
                             matches = list(path.glob("*.mp4"))
                             if matches:
                                 video_paths.append(
                                     sorted(matches)[0]
                                 )  # Take latest file
+                                valid_flypaths.append(fp)
                             else:
                                 logger.warning(f"No videos found in {fp}")
+
+                    # Check if we have any valid videos after F1 entry validation
+                    if not video_paths:
+                        logger.warning(
+                            f"No valid F1-entering flies for group: {group_key}"
+                        )
+                        continue
+
+                    logger.info(
+                        f"Group {group_key}: {len(valid_flypaths)} flies entered F1 corridor ({len(flypaths) - len(valid_flypaths)} excluded)"
+                    )
 
                     # Trial-specific processing
                     if CONFIG["trial_mode"]:
@@ -1017,10 +1127,13 @@ if __name__ == "__main__":
                     identifiers = generate_identifiers(
                         group_data, [p for _, p in video_entries]
                     )
-                    
+
                     # Use simplified name in title if available
-                    title_name = display_name if 'display_name' in locals() else nickname
-                    title = f"{title_name} | {generate_metadata(group_data)}" + (
+                    title_name = (
+                        display_name if "display_name" in locals() else nickname
+                    )
+                    # Main title is just the groupby value (display_name)
+                    title = title_name + (
                         f" | Trial {trial_id}" if CONFIG["trial_mode"] else ""
                     )
 
@@ -1052,8 +1165,8 @@ if __name__ == "__main__":
             logger.error(f"Fatal error in main: {e}\n{traceback.format_exc()}")
 
     main_with_filter(
-        test=args.test, 
-        full_screen=args.full_screen, 
+        test=args.test,
+        full_screen=args.full_screen,
         force_max=args.force_max,
-        missing_only=args.missing_only
+        missing_only=args.missing_only,
     )

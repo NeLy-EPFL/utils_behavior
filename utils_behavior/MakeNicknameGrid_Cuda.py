@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 import os
+import subprocess
 from tqdm import tqdm
 import re
 import math
@@ -29,9 +30,9 @@ CONFIG = {
     "rotate_videos": False,
     "rotation_angle": cv2.ROTATE_90_CLOCKWISE,  # Rotate videos by default
     "multiline_identifiers": False,  # True = use line breaks, False = use underscores
-    "output_dir": "/mnt/upramdya_data/MD/F1_Tracks/F1_New_Grids/Cleaned",
-    "max_grid_width": 3840,  # 1920,  # 3840,
-    "max_grid_height": 2160,  # 1080,  # 2160,
+    "output_dir": "/mnt/upramdya_data/MD/F1_Tracks/TNT_F1_Grids_Light",
+    "max_grid_width": 3840,  # 4K resolution - fits more cells in grid
+    "max_grid_height": 2160,  # 4K resolution - fits more cells in grid
     "min_cell_width": 320,
     "min_cell_height": 180,
     "aspect_ratio_tolerance": 0.2,
@@ -45,16 +46,29 @@ CONFIG = {
     "F1_experiments": (
         True
     ),  # Set to True for F1 corridor experiments (validates adjusted_time)
+    # Performance/Quality settings - DEFAULT: 4k_high_quality preset
+    "reduce_framerate": (
+        False
+    ),  # Set to True to halve the framerate (e.g., 30fps -> 15fps) - saves 50% space but reduces smoothness
+    "compression_preset": (
+        "medium"
+    ),  # Options: "ultrafast", "fast", "medium", "slow" - 'medium' gives better compression
+    "crf": (
+        23
+    ),  # Constant Rate Factor (18-28): 23=good quality (default). 20=better, 28=pixelated, 18=best
+    "use_ffmpeg_compression": (
+        True
+    ),  # Use ffmpeg for proper compression (recommended, much smaller files)
 }
 
 MIN_DURATION = 60  # 1 minute
 
 # Constants
-DATA_PATH = "/mnt/upramdya_data/MD/F1_Tracks/Datasets/251014_10_F1_coordinates_F1_New_Data/F1_coordinates/pooled_F1_coordinates.feather"
+DATA_PATH = "/mnt/upramdya_data/MD/F1_Tracks/Datasets/260123_16_F1_coordinates_F1_TNT_Full_Data/F1_coordinates/pooled_F1_coordinates.feather"
 MAPPING_CSV_PATH = "/mnt/upramdya_data/MD/Region_map_250908.csv"  # Map if needed
 MISSING_VIDEOS_PATH = None  # Path for missing videos list if needed
 
-groupby = "F1_condition"
+groupby = ["Genotype", "Pretraining"]
 
 METADATA_COLUMNS = ["Date"]  # Arena and corridor will be extracted from flypath
 
@@ -416,11 +430,33 @@ def create_video_grid_with_features(
             + CONFIG["vertical_padding"] * (rows + 1)
         )
 
-        # Initialize video writer
+        # Initialize video writer with optimized settings
         fps = videos[0].get(cv2.CAP_PROP_FPS)
+
+        # Optionally reduce framerate for faster processing
+        if CONFIG.get("reduce_framerate", False):
+            fps = fps / 2
+            frame_skip = 2
+        else:
+            frame_skip = 1
+
         output_path = Path(CONFIG["output_dir"]) / output_filename
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(str(output_path), fourcc, fps, (grid_width, grid_height))
+
+        # Use temporary file if ffmpeg compression is enabled
+        if CONFIG.get("use_ffmpeg_compression", True):
+            # Use .avi for temp file - MJPG codec works with AVI, not MP4
+            temp_output = output_path.parent / f"temp_{output_path.stem}.avi"
+            final_output = output_path
+            write_path = str(temp_output)
+            # MJPG works well with AVI for fast temporary encoding
+            fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+        else:
+            write_path = str(output_path)
+            final_output = None
+            # Use mp4v for final output if not using ffmpeg
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+
+        out = cv2.VideoWriter(write_path, fourcc, fps, (grid_width, grid_height))
 
         # Handle sample/test duration and start time
         total_frames = min(int(v.get(cv2.CAP_PROP_FRAME_COUNT)) for v in videos)
@@ -454,6 +490,14 @@ def create_video_grid_with_features(
 
         with tqdm(total=total_frames, desc="Processing frames") as pbar:
             for frame_count in range(total_frames):
+                # Skip frames if reducing framerate
+                if CONFIG.get("reduce_framerate", False) and frame_count % 2 != 0:
+                    # Still need to read frames to keep videos in sync
+                    for video in videos:
+                        video.read()
+                    pbar.update(1)
+                    continue
+
                 grid_frame = create_grid_frame(grid_height, grid_width, grid_text)
 
                 for idx, (video, identifier) in enumerate(zip(videos, identifiers)):
@@ -507,6 +551,54 @@ def create_video_grid_with_features(
                 out.write(grid_frame)
                 pbar.update(1)
 
+        # Compress with ffmpeg if enabled
+        if CONFIG.get("use_ffmpeg_compression", True) and final_output:
+            logger.info(f"Compressing video with ffmpeg (CRF={CONFIG['crf']})...")
+            try:
+                # Close the temp video first
+                out.release()
+                out = None  # Prevent double release in finally block
+
+                # Compress using ffmpeg with H.264
+                preset = CONFIG.get("compression_preset", "fast")
+                crf = CONFIG.get("crf", 28)
+
+                cmd = [
+                    "ffmpeg",
+                    "-i",
+                    str(temp_output),
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    preset,
+                    "-crf",
+                    str(crf),
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-y",  # Overwrite output file
+                    str(final_output),
+                ]
+
+                result = subprocess.run(cmd, capture_output=True, text=True)
+
+                if result.returncode == 0:
+                    # Delete temporary file
+                    temp_output.unlink()
+                    logger.info(f"Compression successful: {final_output.name}")
+
+                    # Log file sizes
+                    final_size_mb = final_output.stat().st_size / (1024 * 1024)
+                    logger.info(f"Final file size: {final_size_mb:.1f} MB")
+                else:
+                    logger.error(f"FFmpeg compression failed: {result.stderr}")
+                    # Keep temp file as fallback
+                    temp_output.rename(final_output)
+            except Exception as e:
+                logger.error(f"Error during ffmpeg compression: {e}")
+                # Rename temp file as fallback
+                if temp_output.exists():
+                    temp_output.rename(final_output)
+
         return out
 
     except Exception as e:
@@ -517,7 +609,7 @@ def create_video_grid_with_features(
     finally:
         for video in videos:
             video.release()
-        if "out" in locals():
+        if "out" in locals() and out is not None:
             out.release()
 
 
@@ -601,9 +693,19 @@ def read_and_process_frame(
         new_h = target_height
         new_w = int(target_height * aspect)
 
-    # Resize and pad
+    # Resize and pad using GPU for faster processing
     try:
-        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        # Upload to GPU
+        gpu_frame = cv2.cuda_GpuMat()
+        gpu_frame.upload(frame)
+
+        # Resize on GPU (faster than CPU)
+        gpu_resized = cv2.cuda.resize(
+            gpu_frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR
+        )
+        frame = gpu_resized.download()
+
+        # Add padding if needed
         if new_w != target_width or new_h != target_height:
             frame = cv2.copyMakeBorder(
                 frame,
@@ -812,14 +914,16 @@ def main(test=False, full_screen=False):
             try:
                 # Handle trial-mode metadata
                 if CONFIG["trial_mode"]:
-                    trial_id, nickname = group_key
-                    output_filename = f"{nickname}_trial_{trial_id}_grid.mp4"
+                    trial_id, genotype, pretraining = group_key
+                    output_filename = (
+                        f"{genotype}_{pretraining}_trial_{trial_id}_grid.mp4"
+                    )
                     trial_times = group_data[
                         ["start_time", "end_time"]
                     ].drop_duplicates()
                 else:
-                    nickname = group_key
-                    output_filename = f"{nickname}_grid.mp4"
+                    genotype, pretraining = group_key
+                    output_filename = f"{genotype}_{pretraining}_grid.mp4"
 
                 # Skip existing outputs
                 output_path = Path(CONFIG["output_dir"]) / sanitize_filename(
@@ -876,10 +980,11 @@ def main(test=False, full_screen=False):
                 identifiers = generate_identifiers(
                     group_data, [p for _, p in video_entries]
                 )
-                # Main title is just the groupby value (nickname)
-                title = nickname + (
-                    f" | Trial {trial_id}" if CONFIG["trial_mode"] else ""
-                )
+                # Main title includes genotype and pretraining
+                if CONFIG["trial_mode"]:
+                    title = f"{genotype} - {pretraining} | Trial {trial_id}"
+                else:
+                    title = f"{genotype} - {pretraining}"
 
                 # Create video grid
                 video_grid = create_video_grid_with_features(
@@ -931,6 +1036,12 @@ if __name__ == "__main__":
         help="Comma-separated list of values to process (e.g. Nicknames)",
     )
     parser.add_argument(
+        "--genotypes",
+        type=str,
+        default=None,
+        help="Comma-separated list of genotypes to process exclusively (e.g., 'TNT,SS02237')",
+    )
+    parser.add_argument(
         "--force-max",
         action="store_true",
         help="Force using all videos in a group, even if it requires reducing cell size or relaxing aspect ratio.",
@@ -940,16 +1051,128 @@ if __name__ == "__main__":
         action="store_true",
         help="Process only the missing videos identified by the check_rename_videos.py script.",
     )
+    parser.add_argument(
+        "--quality-preset",
+        type=str,
+        choices=[
+            "4k_high",
+            "4k_reduced_fps",
+            "1440p",
+            "1440p_reduced_fps",
+            "1080p_better",
+            "1080p_fast",
+        ],
+        default=None,
+        help="Quality preset: 4k_high (4K CRF23), 4k_reduced_fps (4K CRF23 15fps, RECOMMENDED), "
+        "1440p (2560x1440 CRF23), 1440p_reduced_fps (1440p CRF23 15fps), "
+        "1080p_better (1080p CRF20), 1080p_fast (1080p CRF28)",
+    )
+    parser.add_argument(
+        "--crf",
+        type=int,
+        default=None,
+        help="Override CRF value (18-28): lower=better quality, higher=smaller files",
+    )
+    parser.add_argument(
+        "--reduced-fps",
+        action="store_true",
+        help="Enable reduced framerate (halves FPS, saves ~50%% space)",
+    )
+    parser.add_argument(
+        "--resolution",
+        type=str,
+        choices=["4k", "1440p", "1080p"],
+        default=None,
+        help="Override output resolution: 4k (3840x2160), 1440p (2560x1440), 1080p (1920x1080)",
+    )
     args = parser.parse_args()
 
-    # Override config with command-line argument
+    # Apply quality preset if specified
+    QUALITY_PRESETS = {
+        "4k_high": {
+            "max_grid_width": 3840,
+            "max_grid_height": 2160,
+            "crf": 23,
+            "reduce_framerate": False,
+            "compression_preset": "medium",
+        },
+        "4k_reduced_fps": {
+            "max_grid_width": 3840,
+            "max_grid_height": 2160,
+            "crf": 23,
+            "reduce_framerate": True,
+            "compression_preset": "fast",
+        },
+        "1440p": {
+            "max_grid_width": 2560,
+            "max_grid_height": 1440,
+            "crf": 23,
+            "reduce_framerate": False,
+            "compression_preset": "medium",
+        },
+        "1440p_reduced_fps": {
+            "max_grid_width": 2560,
+            "max_grid_height": 1440,
+            "crf": 23,
+            "reduce_framerate": True,
+            "compression_preset": "fast",
+        },
+        "1080p_better": {
+            "max_grid_width": 1920,
+            "max_grid_height": 1080,
+            "crf": 20,
+            "reduce_framerate": False,
+            "compression_preset": "medium",
+        },
+        "1080p_fast": {
+            "max_grid_width": 1920,
+            "max_grid_height": 1080,
+            "crf": 28,
+            "reduce_framerate": True,
+            "compression_preset": "fast",
+        },
+    }
+
+    if args.quality_preset:
+        preset = QUALITY_PRESETS[args.quality_preset]
+        CONFIG.update(preset)
+        logger.info(f"Applied quality preset: {args.quality_preset}")
+        logger.info(
+            f"  Resolution: {CONFIG['max_grid_width']}x{CONFIG['max_grid_height']}"
+        )
+        logger.info(f"  CRF: {CONFIG['crf']}")
+        logger.info(f"  Reduced FPS: {CONFIG['reduce_framerate']}")
+
+    # Override config with command-line arguments
     if args.test_start is not None:
         CONFIG["test_start_time"] = args.test_start
+
+    # Individual parameter overrides (take precedence over presets)
+    if args.crf is not None:
+        CONFIG["crf"] = args.crf
+        logger.info(f"Override CRF: {args.crf}")
+
+    if args.reduced_fps:
+        CONFIG["reduce_framerate"] = True
+        logger.info("Enabled reduced framerate")
+
+    if args.resolution:
+        resolutions = {"4k": (3840, 2160), "1440p": (2560, 1440), "1080p": (1920, 1080)}
+        width, height = resolutions[args.resolution]
+        CONFIG["max_grid_width"] = width
+        CONFIG["max_grid_height"] = height
+        logger.info(f"Override resolution: {width}x{height}")
 
     # Parse filter values if provided
     filter_values = None
     if args.filter_values:
         filter_values = [v.strip() for v in args.filter_values.split(",") if v.strip()]
+
+    # Parse genotype filter if provided
+    genotype_filter = None
+    if args.genotypes:
+        genotype_filter = [v.strip() for v in args.genotypes.split(",") if v.strip()]
+        logger.info(f"Filtering for genotypes: {genotype_filter}")
 
     def filtered_groups(groups, filter_values):
         if not filter_values:
@@ -965,8 +1188,29 @@ if __name__ == "__main__":
             ):
                 yield (group_key, group_data)
 
+    def filtered_genotypes(groups, genotype_list):
+        """Filter groups to include only specified genotypes."""
+        if not genotype_list:
+            return groups
+        for group_key, group_data in groups:
+            # For groupby=['Genotype', 'Pretraining'], group_key is (genotype, pretraining)
+            # For trial mode, group_key is (trial_id, genotype, pretraining)
+            if CONFIG["trial_mode"]:
+                # Extract genotype from trial mode tuple
+                genotype = group_key[1] if len(group_key) > 1 else None
+            else:
+                # Extract genotype from normal mode tuple
+                genotype = group_key[0] if isinstance(group_key, tuple) else group_key
+
+            if genotype in genotype_list:
+                yield (group_key, group_data)
+
     def main_with_filter(
-        test=False, full_screen=False, force_max=False, missing_only=False
+        test=False,
+        full_screen=False,
+        force_max=False,
+        missing_only=False,
+        genotypes=None,
     ):
         try:
             transformed_data = load_dataset(DATA_PATH)
@@ -1023,6 +1267,11 @@ if __name__ == "__main__":
                     (key, data) for key, data in groups if is_missing_group(key, data)
                 ]
                 logger.info(f"Found {len(group_iter)} missing groups to process")
+            elif genotypes:
+                # Filter by genotypes first, then optionally by other filter values
+                group_iter = filtered_genotypes(groups, genotypes)
+                if filter_values:
+                    group_iter = filtered_groups(group_iter, filter_values)
             elif filter_values:
                 group_iter = filtered_groups(groups, filter_values)
             else:
@@ -1032,18 +1281,18 @@ if __name__ == "__main__":
                 try:
                     # Handle trial-mode metadata
                     if CONFIG["trial_mode"]:
-                        trial_id, nickname = group_key
+                        trial_id, genotype, pretraining = group_key
                         # Use simplified nickname if available
-                        display_name = nickname_mapping.get(nickname, nickname)
-                        output_filename = f"{display_name}_trial_{trial_id}_grid.mp4"
+                        display_genotype = nickname_mapping.get(genotype, genotype)
+                        output_filename = f"{display_genotype}_{pretraining}_trial_{trial_id}_grid.mp4"
                         trial_times = group_data[
                             ["start_time", "end_time"]
                         ].drop_duplicates()
                     else:
-                        nickname = group_key
+                        genotype, pretraining = group_key
                         # Use simplified nickname if available, otherwise use original
-                        display_name = nickname_mapping.get(nickname, nickname)
-                        output_filename = f"{display_name}_grid.mp4"
+                        display_genotype = nickname_mapping.get(genotype, genotype)
+                        output_filename = f"{display_genotype}_{pretraining}_grid.mp4"
 
                     # Skip existing outputs
                     output_path = Path(CONFIG["output_dir"]) / sanitize_filename(
@@ -1128,14 +1377,11 @@ if __name__ == "__main__":
                         group_data, [p for _, p in video_entries]
                     )
 
-                    # Use simplified name in title if available
-                    title_name = (
-                        display_name if "display_name" in locals() else nickname
-                    )
-                    # Main title is just the groupby value (display_name)
-                    title = title_name + (
-                        f" | Trial {trial_id}" if CONFIG["trial_mode"] else ""
-                    )
+                    # Main title includes genotype and pretraining
+                    if CONFIG["trial_mode"]:
+                        title = f"{display_genotype} - {pretraining} | Trial {trial_id}"
+                    else:
+                        title = f"{display_genotype} - {pretraining}"
 
                     # Create video grid
                     video_grid = create_video_grid_with_features(
@@ -1169,4 +1415,5 @@ if __name__ == "__main__":
         full_screen=args.full_screen,
         force_max=args.force_max,
         missing_only=args.missing_only,
+        genotypes=genotype_filter,
     )

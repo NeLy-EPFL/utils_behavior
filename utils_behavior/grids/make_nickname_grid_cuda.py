@@ -59,9 +59,23 @@ CONFIG = {
     "use_ffmpeg_compression": (
         True
     ),  # Use ffmpeg for proper compression (recommended, much smaller files)
+    "use_gpu_encoding": (
+        False
+    ),  # Use NVIDIA NVENC hardware acceleration for ffmpeg compression (5-10x faster)
 }
 
 MIN_DURATION = 60  # 1 minute
+
+
+def check_nvenc_support() -> bool:
+    """Check if NVIDIA NVENC hardware encoding is available."""
+    try:
+        cmd = ["ffmpeg", "-hide_banner", "-encoders"]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return "h264_nvenc" in result.stdout
+    except Exception:
+        return False
+
 
 # Constants
 DATA_PATH = "/mnt/upramdya_data/MD/F1_Tracks/Datasets/260123_16_F1_coordinates_F1_TNT_Full_Data/F1_coordinates/pooled_F1_coordinates.feather"
@@ -553,7 +567,11 @@ def create_video_grid_with_features(
 
         # Compress with ffmpeg if enabled
         if CONFIG.get("use_ffmpeg_compression", True) and final_output:
-            logger.info(f"Compressing video with ffmpeg (CRF={CONFIG['crf']})...")
+            use_gpu = CONFIG.get("use_gpu_encoding", False)
+            encoder = "GPU (NVENC)" if use_gpu else "CPU (libx264)"
+            logger.info(
+                f"Compressing video with ffmpeg using {encoder} (CRF/CQ={CONFIG['crf']})..."
+            )
             try:
                 # Close the temp video first
                 out.release()
@@ -563,21 +581,52 @@ def create_video_grid_with_features(
                 preset = CONFIG.get("compression_preset", "fast")
                 crf = CONFIG.get("crf", 28)
 
-                cmd = [
-                    "ffmpeg",
-                    "-i",
-                    str(temp_output),
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    preset,
-                    "-crf",
-                    str(crf),
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-y",  # Overwrite output file
-                    str(final_output),
-                ]
+                if use_gpu:
+                    # NVIDIA NVENC hardware encoding
+                    # preset mapping: p1 (fastest) to p7 (slowest)
+                    nvenc_preset_map = {
+                        "ultrafast": "p1",
+                        "fast": "p2",
+                        "medium": "p4",
+                        "slow": "p6",
+                        "slower": "p7",
+                    }
+                    nvenc_preset = nvenc_preset_map.get(preset, "p4")
+
+                    cmd = [
+                        "ffmpeg",
+                        "-hwaccel",
+                        "cuda",  # Enable CUDA hardware acceleration
+                        "-i",
+                        str(temp_output),
+                        "-c:v",
+                        "h264_nvenc",  # NVIDIA hardware encoder
+                        "-preset",
+                        nvenc_preset,
+                        "-cq",  # Constant quality (like CRF for CPU)
+                        str(crf),
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-y",  # Overwrite output file
+                        str(final_output),
+                    ]
+                else:
+                    # CPU encoding with libx264
+                    cmd = [
+                        "ffmpeg",
+                        "-i",
+                        str(temp_output),
+                        "-c:v",
+                        "libx264",
+                        "-preset",
+                        preset,
+                        "-crf",
+                        str(crf),
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-y",  # Overwrite output file
+                        str(final_output),
+                    ]
 
                 result = subprocess.run(cmd, capture_output=True, text=True)
 
@@ -1039,7 +1088,7 @@ if __name__ == "__main__":
         "--genotypes",
         type=str,
         default=None,
-        help="Comma-separated list of genotypes to process exclusively (e.g., 'TNT,SS02237')",
+        help="Comma-separated list of genotype patterns to match (substring matching, e.g., 'TNT' matches TNTxLC16-1)",
     )
     parser.add_argument(
         "--force-max",
@@ -1084,6 +1133,11 @@ if __name__ == "__main__":
         choices=["4k", "1440p", "1080p"],
         default=None,
         help="Override output resolution: 4k (3840x2160), 1440p (2560x1440), 1080p (1920x1080)",
+    )
+    parser.add_argument(
+        "--gpu",
+        action="store_true",
+        help="Use NVIDIA GPU hardware acceleration (NVENC) for ffmpeg compression - 5-10x faster",
     )
     args = parser.parse_args()
 
@@ -1143,6 +1197,17 @@ if __name__ == "__main__":
         logger.info(f"  CRF: {CONFIG['crf']}")
         logger.info(f"  Reduced FPS: {CONFIG['reduce_framerate']}")
 
+    # Check GPU support if requested
+    if args.gpu:
+        if check_nvenc_support():
+            CONFIG["use_gpu_encoding"] = True
+            logger.info("✓ NVIDIA NVENC hardware acceleration enabled")
+        else:
+            logger.warning("✗ NVENC not available, falling back to CPU encoding")
+            logger.warning(
+                "  Make sure you have NVIDIA GPU and recent ffmpeg with NVENC support"
+            )
+
     # Override config with command-line arguments
     if args.test_start is not None:
         CONFIG["test_start_time"] = args.test_start
@@ -1189,7 +1254,7 @@ if __name__ == "__main__":
                 yield (group_key, group_data)
 
     def filtered_genotypes(groups, genotype_list):
-        """Filter groups to include only specified genotypes."""
+        """Filter groups to include genotypes matching any pattern (substring matching)."""
         if not genotype_list:
             return groups
         for group_key, group_data in groups:
@@ -1202,7 +1267,8 @@ if __name__ == "__main__":
                 # Extract genotype from normal mode tuple
                 genotype = group_key[0] if isinstance(group_key, tuple) else group_key
 
-            if genotype in genotype_list:
+            # Substring matching: check if any pattern is contained in the genotype
+            if genotype and any(pattern in genotype for pattern in genotype_list):
                 yield (group_key, group_data)
 
     def main_with_filter(

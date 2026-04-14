@@ -5,7 +5,18 @@ import pandas as pd
 
 import cv2
 
-from utils_behavior import Processing
+# Try to import Processing for track smoothing, but don't fail if not available
+try:
+    from utils_behavior import Processing
+
+    PROCESSING_AVAILABLE = True
+except ImportError:
+    PROCESSING_AVAILABLE = False
+    import warnings
+
+    warnings.warn(
+        "utils_behavior.Processing not available. Track smoothing will be disabled."
+    )
 
 # TODO : Fix this import for integration with SleapTracker
 
@@ -492,6 +503,15 @@ class Sleap_Tracks:
 
         self.path = Path(filename)
         self.object_type = object_type
+
+        # Disable smoothing if Processing module is not available
+        if smoothed_tracks and not PROCESSING_AVAILABLE:
+            if debug:
+                print(
+                    "Warning: Track smoothing requested but Processing module not available. Using raw tracks."
+                )
+            smoothed_tracks = False
+
         self.smoothed_tracks = smoothed_tracks
         self.smoothing_params = smoothing_params
 
@@ -505,22 +525,26 @@ class Sleap_Tracks:
                 self.edges_idx = h5file["edge_inds"][:].tolist()
                 self.tracks = h5file["tracks"][:].tolist()
                 self.video = Path(h5file["video_path"][()].decode("utf-8"))
-                
+
                 # Extract track names/identities if they exist
                 if "track_names" in h5file:
-                    self.track_names = [x.decode("utf-8") for x in h5file["track_names"][:]]
+                    self.track_names = [
+                        x.decode("utf-8") for x in h5file["track_names"][:]
+                    ]
                     if self.debug:
                         print(f"Found track names: {self.track_names}")
                 else:
                     self.track_names = []
                     if self.debug:
                         print("No track names found in H5 file")
-                
+
                 # Extract track occupancy (which frames have which tracks) if available
                 if "track_occupancy" in h5file:
                     self.track_occupancy = h5file["track_occupancy"][:].tolist()
                     if self.debug:
-                        print(f"Track occupancy shape: {h5file['track_occupancy'].shape}")
+                        print(
+                            f"Track occupancy shape: {h5file['track_occupancy'].shape}"
+                        )
                 else:
                     self.track_occupancy = []
                     if self.debug:
@@ -620,7 +644,7 @@ class Sleap_Tracks:
 
             for k, n in enumerate(self.node_names):
 
-                if self.smoothed_tracks:
+                if self.smoothed_tracks and PROCESSING_AVAILABLE:
                     if self.debug:
                         print("smoothing tracks")
                     x_coords[k] = Processing.savgol_lowpass_filter(
@@ -633,6 +657,11 @@ class Sleap_Tracks:
                     # Replace NaNs with the previous value
                     Processing.replace_nans_with_previous_value(x_coords[k])
                     Processing.replace_nans_with_previous_value(y_coords[k])
+                elif self.smoothed_tracks and not PROCESSING_AVAILABLE:
+                    if self.debug:
+                        print(
+                            "Smoothing requested but Processing module not available, using raw tracks"
+                        )
 
                 tracking_df[f"x_{n}"] = x_coords[k]
                 tracking_df[f"y_{n}"] = y_coords[k]

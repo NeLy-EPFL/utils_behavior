@@ -32,22 +32,26 @@ def butter_lowpass_filter(data, cutoff, order):
 
 
 def savgol_lowpass_filter(data, window_length=221, polyorder=1):
+    """Savitzky-Golay low-pass filter, NaN-tolerant.
+
+    Linearly interpolates internal NaNs and uses
+    nearest-non-NaN values at the edges so scipy's
+    savgol_filter (which doesn't accept NaN/inf) can run
+    against tracks with dropped frames.
     """
-    Apply a Savitzky-Golay low-pass filter to the data. This is useful for removing high-frequency noise from data while
-    preserving sharp edges in the data.
+    import numpy as np
+    from scipy import signal
 
-    Args:
-        data (np.ndarray): The data to be filtered.
-        window_length (int): The length of the filter window (i.e., the number of coefficients). Must be an odd integer.
-        polyorder (int): The order of the polynomial used to fit the samples.
-
-    Returns:
-        y (np.ndarray): The filtered data.
-    """
-
-    # Apply the Savitzky-Golay filter
-    y = signal.savgol_filter(data, window_length, polyorder)
-    return y
+    data = np.asarray(data, dtype=float)
+    nans = np.isnan(data)
+    if nans.any():
+        if nans.all():
+            return data  # nothing usable to smooth
+        idx = np.arange(len(data))
+        data = data.copy()
+        # np.interp uses the first/last finite values as edge constants
+        data[nans] = np.interp(idx[nans], idx[~nans], data[~nans])
+    return signal.savgol_filter(data, window_length, polyorder)
 
 
 def cheby1_lowpass_filter(data, cutoff, order, rp):

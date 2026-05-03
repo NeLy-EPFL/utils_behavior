@@ -5,7 +5,6 @@ import re
 import os
 import platform
 from pathlib import Path
-import stdlib_list
 import subprocess
 
 
@@ -18,6 +17,9 @@ def generate_conda(project_dir, env_name):
     project_dir (str): The path to the project directory.
     env_name (str): The name of the conda environment to create.
     """
+    # Lazy import: stdlib_list is only needed by this helper, and we don't
+    # want ``import utils_behavior.utils`` to require it unconditionally.
+    import stdlib_list
 
     # Convert project_dir to a pathlib.Path object for easier path manipulation
     project_dir = Path(project_dir)

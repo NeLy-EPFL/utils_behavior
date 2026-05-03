@@ -2,7 +2,7 @@ from pathlib import Path
 import pandas as pd
 from typing import List, Optional
 
-from utils_behavior import Ballpushing_utils
+from ..ballpushing import core as Ballpushing_utils
 
 from moviepy.editor import VideoFileClip, clips_array, TextClip, CompositeVideoClip, vfx
 

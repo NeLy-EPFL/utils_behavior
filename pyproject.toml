@@ -1,0 +1,133 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "utils_behavior"
+version = "0.2.0"
+description = "Utility functions to manipulate and analyze behavior videos and associated data (tracking, SLEAP, etc.) acquired in various setups and settings."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Matthias Durrieu", email = "matthiasdurrieu@gmail.com" },
+]
+keywords = ["behavior", "neuroscience", "sleap", "tracking", "drosophila"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
+
+# Core dependencies — kept intentionally lean. Submodule-specific heavy
+# dependencies live under [project.optional-dependencies] below.
+dependencies = [
+    "numpy>=1.22",
+    "scipy>=1.9",
+    "pandas>=1.5",
+    "h5py>=3.7",
+    "tqdm>=4.64",
+    "matplotlib>=3.6",
+    "opencv-python>=4.6",
+    "requests>=2.28",
+    "pyyaml>=6.0",
+    "statsmodels>=0.13",
+]
+
+[project.optional-dependencies]
+# Video I/O / GUI playback
+video = [
+    "moviepy>=1.0",
+    "pygame>=2.1",
+]
+
+# Interactive and static plotting
+plots = [
+    "holoviews>=1.15",
+    "bokeh>=3.0",
+    "seaborn>=0.12",
+    "icecream>=2.1",
+]
+
+# Dimensionality reduction
+embedding = [
+    "umap-learn>=0.5",
+    "scikit-learn>=1.1",
+]
+
+# FlyWire / connectomics rendering (heavy, optional)
+flywire = [
+    "fafbseg>=3.0",
+    "navis>=1.4",
+    "flybrains>=0.2",
+]
+
+# Shiny-based data exploration dashboard
+dashboard = [
+    "shiny>=0.5",
+]
+
+# Helpers that scan projects to auto-generate conda environments
+conda = [
+    "stdlib_list>=0.8",
+]
+
+# Development / testing
+dev = [
+    "pytest>=7.2",
+    "pytest-cov>=4.0",
+    "ruff>=0.1",
+]
+
+# Everything except dev — convenience install
+all = [
+    "utils_behavior[video,plots,embedding,flywire,dashboard]",
+]
+
+[project.urls]
+Homepage = "https://github.com/NeLy-EPFL/utils_behavior"
+Repository = "https://github.com/NeLy-EPFL/utils_behavior"
+Issues = "https://github.com/NeLy-EPFL/utils_behavior/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["utils_behavior*"]
+exclude = ["tests*", "notebooks*", "scripts*", "Old*", "Others*", "Tests*", "Sleap_utils*"]
+
+[tool.setuptools.package-data]
+"utils_behavior.flywire" = ["data/*.yaml", "data/*.yml"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "E501",  # line too long — handled by formatter
+    "E402",  # module-level import not at top (legacy patterns in some modules)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # re-exports
+"tests/*" = ["B011"]

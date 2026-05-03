@@ -31,8 +31,8 @@ import pygame
 
 import warnings
 
-from . import Utils
-from . import Sleap_utils
+from .. import utils as Utils
+from ..sleap import tracks as Sleap_utils
 
 from dataclasses import dataclass
 

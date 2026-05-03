@@ -5,7 +5,9 @@ import pandas as pd
 
 import cv2
 
-from .. import processing as Processing
+# Try to import Processing for track smoothing, but don't fail if not available
+try:
+    from .. import processing as Processing
 
     PROCESSING_AVAILABLE = True
 except ImportError:

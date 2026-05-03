@@ -6,7 +6,7 @@ import re
 import random
 import subprocess
 
-import Utils
+from .. import utils as Utils
 
 
 from moviepy.editor import VideoFileClip, CompositeVideoClip, vfx

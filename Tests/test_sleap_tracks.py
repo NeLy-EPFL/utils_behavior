@@ -140,3 +140,114 @@ class TestPublicExports:
 
         assert callable(generate_annotated_frame)
         assert isinstance(Sleap_Tracks, type)
+
+
+class TestGetShades:
+    def test_returns_requested_count(self):
+        from utils_behavior.sleap.tracks import get_shades
+
+        assert len(get_shades("red", 5)) == 5
+        assert len(get_shades("blue", 3)) == 3
+        assert len(get_shades("green", 7)) == 7
+
+    def test_red_shades_keep_red_at_255(self):
+        from utils_behavior.sleap.tracks import get_shades
+
+        for r, _g, _b in get_shades("red", 5):
+            assert r == 255
+
+    def test_blue_shades_keep_blue_at_255(self):
+        from utils_behavior.sleap.tracks import get_shades
+
+        for _r, _g, b in get_shades("blue", 5):
+            assert b == 255
+
+    def test_green_shades_keep_green_at_255(self):
+        from utils_behavior.sleap.tracks import get_shades
+
+        for _r, g, _b in get_shades("green", 5):
+            assert g == 255
+
+    def test_unknown_color_returns_empty(self):
+        from utils_behavior.sleap.tracks import get_shades
+
+        # The function returns whatever it appended for unknown colors,
+        # which is nothing — so we get an empty list.
+        assert get_shades("magenta", 5) == []
+
+    def test_first_shade_is_pure_color(self):
+        from utils_behavior.sleap.tracks import get_shades
+
+        # i=0 means the lerp is 0 and the other channels collapse to 0
+        assert get_shades("red", 4)[0] == (255, 0, 0)
+        assert get_shades("green", 4)[0] == (0, 255, 0)
+        assert get_shades("blue", 4)[0] == (0, 0, 255)
+
+
+class TestCombinedSleapTracks:
+    def test_combines_datasets_from_multiple_tracks(
+        self, fake_sleap_h5, mock_cv2_capture
+    ):
+        from utils_behavior.sleap.tracks import CombinedSleapTracks
+
+        a = Sleap_Tracks(fake_sleap_h5, object_type="fly", smoothed_tracks=False)
+        b = Sleap_Tracks(fake_sleap_h5, object_type="ball", smoothed_tracks=False)
+
+        combined = CombinedSleapTracks("/tmp/dummy.mp4", [a, b])
+        assert combined.dataset is not None
+        # Each tracks contributes 2 objects * 100 frames = 200 rows; total 400.
+        assert len(combined.dataset) == len(a.objects[0].dataset) * (
+            len(a.objects) + len(b.objects)
+        )
+
+    def test_assigns_one_color_per_tracks(self, fake_sleap_h5, mock_cv2_capture):
+        from utils_behavior.sleap.tracks import CombinedSleapTracks
+
+        a = Sleap_Tracks(fake_sleap_h5, smoothed_tracks=False)
+        b = Sleap_Tracks(fake_sleap_h5, smoothed_tracks=False)
+
+        combined = CombinedSleapTracks("/tmp/dummy.mp4", [a, b])
+        # Two BGR colors, one per Sleap_Tracks object
+        assert set(combined.colors.keys()) == {a, b}
+        for color in combined.colors.values():
+            assert len(color) == 3
+            assert all(0 <= c <= 255 for c in color)
+
+
+class TestSleapTracksEdgeCases:
+    def test_handles_string_path(self, fake_sleap_h5, mock_cv2_capture):
+        # Should accept str or Path indistinguishably
+        t1 = Sleap_Tracks(str(fake_sleap_h5), smoothed_tracks=False)
+        t2 = Sleap_Tracks(fake_sleap_h5, smoothed_tracks=False)
+        assert t1.node_names == t2.node_names
+
+    def test_filter_data_outside_range_yields_empty(
+        self, fake_sleap_h5, mock_cv2_capture
+    ):
+        tracks = Sleap_Tracks(fake_sleap_h5, smoothed_tracks=False)
+        tracks.filter_data(time_range=(1000.0, 2000.0))
+        for obj in tracks.objects:
+            assert len(obj.dataset) == 0
+
+    def test_debug_mode_prints_summary(
+        self, fake_sleap_h5, mock_cv2_capture, capsys
+    ):
+        Sleap_Tracks(fake_sleap_h5, smoothed_tracks=False, debug=True)
+        captured = capsys.readouterr()
+        assert "Loaded SLEAP tracking file" in captured.out
+        assert "Nodes" in captured.out
+
+    def test_pickling_roundtrip(self, fake_sleap_h5, mock_cv2_capture):
+        """The Object inner class defines __getstate__/__setstate__ for pickling."""
+        import pickle
+
+        tracks = Sleap_Tracks(fake_sleap_h5, smoothed_tracks=False)
+        obj = tracks.objects[0]
+        head_before = list(obj.head)
+
+        roundtrip = pickle.loads(pickle.dumps(obj))
+        head_after = list(roundtrip.head)
+
+        # Coordinates after a pickle roundtrip should match exactly
+        assert head_before == head_after
+        assert roundtrip.node_names == obj.node_names

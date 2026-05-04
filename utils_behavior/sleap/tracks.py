@@ -484,6 +484,10 @@ class Sleap_Tracks:
             for node in self.node_names:
                 self._node_properties[node] = self._create_node_property(node)
 
+        def __reduce__(self):
+            """Support pickling of nested class instances via a module-level helper."""
+            return (_rebuild_sleap_object, (self.dataset, self.node_names))
+
     def __init__(
         self,
         filename,
@@ -699,6 +703,11 @@ class Sleap_Tracks:
         return self.objects
 
 
+def _rebuild_sleap_object(dataset, node_names):
+    """Module-level helper so pickle can reconstruct Sleap_Tracks.Object instances."""
+    return Sleap_Tracks.Object(dataset, node_names)
+
+
 class CombinedSleapTracks:
     """Class for handling and combining multiple SLEAP Tracks for the same video."""
 
@@ -730,7 +739,12 @@ class CombinedSleapTracks:
     def generate_dataset(self):
         """Generates a combined dataset from multiple Sleap_Tracks objects."""
         combined_dataset = pd.concat(
-            [tracks.dataset for tracks in self.sleap_tracks_list], ignore_index=True
+            [
+                obj.dataset
+                for tracks in self.sleap_tracks_list
+                for obj in tracks.objects
+            ],
+            ignore_index=True,
         )
         return combined_dataset
 

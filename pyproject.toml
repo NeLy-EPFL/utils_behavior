@@ -117,7 +117,8 @@ exclude = ["tests*", "notebooks*", "scripts*", "Old*", "Others*", "Tests*", "Sle
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-testpaths = ["tests"]
+testpaths = ["Tests"]
+norecursedirs = ["Sleap_utils", ".venv", ".git", "dist", "build"]
 addopts = [
     "-ra",
     "--strict-markers",

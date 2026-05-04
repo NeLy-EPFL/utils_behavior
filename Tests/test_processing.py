@@ -1,8 +1,10 @@
 """Tests for utils_behavior.processing — pure-function helpers."""
+
 from __future__ import annotations
 
 import h5py
 import numpy as np
+import pandas as pd
 import pytest
 
 from utils_behavior import processing
@@ -78,8 +80,12 @@ class TestLogisticFunction:
         assert val == pytest.approx(0.5)
 
     def test_asymptotes(self):
-        assert processing.logistic_function(-100.0, L=1.0, k=1.0, t0=0.0) == pytest.approx(0.0)
-        assert processing.logistic_function(100.0, L=1.0, k=1.0, t0=0.0) == pytest.approx(1.0)
+        assert processing.logistic_function(
+            -100.0, L=1.0, k=1.0, t0=0.0
+        ) == pytest.approx(0.0)
+        assert processing.logistic_function(
+            100.0, L=1.0, k=1.0, t0=0.0
+        ) == pytest.approx(1.0)
 
 
 class TestExtractCoordinates:

@@ -1,4 +1,5 @@
 """Static checks that catch stale or missing dependency declarations."""
+
 from __future__ import annotations
 
 import re
@@ -95,9 +96,7 @@ class TestDeclaredDepsAreUsed:
     # Tooling/dev deps are never imported by the package source itself
     TOOLING_ONLY = {"pytest", "pytest-cov", "ruff"}
 
-    def test_every_declared_dep_is_imported_somewhere(
-        self, all_declared_deps, imports
-    ):
+    def test_every_declared_dep_is_imported_somewhere(self, all_declared_deps, imports):
         """Every dep listed in pyproject.toml should be imported by at least one module.
 
         Catches stale deps left over after refactors.
@@ -113,6 +112,7 @@ class TestDeclaredDepsAreUsed:
 
 
 STDLIB = {
+    "__future__",
     "argparse",
     "ast",
     "base64",
@@ -148,6 +148,7 @@ STDLIB = {
     "signal",
     "subprocess",
     "sys",
+    "tarfile",
     "tempfile",
     "threading",
     "time",
@@ -165,12 +166,8 @@ class TestNoUndeclaredImports:
     """Every third-party import in the package source must be declared in
     ``pyproject.toml`` (in core deps or any optional extra)."""
 
-    def test_no_third_party_imports_outside_pyproject(
-        self, imports, all_declared_deps
-    ):
-        declared_import_names = {
-            DIST_TO_IMPORT.get(d, d) for d in all_declared_deps
-        }
+    def test_no_third_party_imports_outside_pyproject(self, imports, all_declared_deps):
+        declared_import_names = {DIST_TO_IMPORT.get(d, d) for d in all_declared_deps}
         permitted = STDLIB | declared_import_names
 
         unknown = sorted(name for name in imports if name not in permitted)

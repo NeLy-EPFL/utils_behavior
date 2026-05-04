@@ -35,7 +35,7 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-from archive_split_utils import archive_directory_with_split
+from .archive_split_utils import archive_directory_with_split
 
 # ---------------------------------------------------------------------------
 # Configuration

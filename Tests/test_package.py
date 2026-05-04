@@ -1,4 +1,5 @@
 """Structural / smoke tests for the top-level package."""
+
 from __future__ import annotations
 
 import importlib
@@ -41,19 +42,28 @@ def test_core_submodules_importable():
 
 def test_no_heavy_import_at_package_load():
     """Importing utils_behavior must not pull in moviepy, holoviews, or fafbseg."""
-    # Clear any prior imports to measure a fresh load
+    # Snapshot current modules so we can restore them afterwards (clearing
+    # sys.modules globally would break other tests that hold references to
+    # classes/functions from already-imported modules).
+    _before = dict(sys.modules)
     for name in list(sys.modules):
         if name.startswith(
             ("utils_behavior", "moviepy", "holoviews", "bokeh", "fafbseg", "navis")
         ):
             del sys.modules[name]
 
-    import utils_behavior  # noqa: F401
+    try:
+        import utils_behavior  # noqa: F401
 
-    assert "moviepy" not in sys.modules
-    assert "holoviews" not in sys.modules
-    assert "fafbseg" not in sys.modules
-    assert "bokeh" not in sys.modules
+        assert "moviepy" not in sys.modules
+        assert "holoviews" not in sys.modules
+        assert "fafbseg" not in sys.modules
+        assert "bokeh" not in sys.modules
+    finally:
+        # Remove any freshly imported modules and restore the originals.
+        for name in [k for k in sys.modules if k not in _before]:
+            del sys.modules[name]
+        sys.modules.update(_before)
 
 
 @pytest.mark.parametrize(
@@ -103,16 +113,22 @@ def test_lean_inits_have_no_heavy_imports():
 
 def test_top_level_package_has_no_print_side_effects(capsys):
     """Importing utils_behavior should be silent — no stray print/log output."""
+    _before = dict(sys.modules)
     for name in list(sys.modules):
         if name.startswith("utils_behavior"):
             del sys.modules[name]
     capsys.readouterr()  # clear any prior buffer
 
-    import utils_behavior  # noqa: F401
+    try:
+        import utils_behavior  # noqa: F401
 
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == ""
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+    finally:
+        for name in [k for k in sys.modules if k not in _before]:
+            del sys.modules[name]
+        sys.modules.update(_before)
 
 
 class TestPackageData:

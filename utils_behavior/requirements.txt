@@ -1,8 +1,0 @@
-pygobject
-pyserial
-networkx
-numpy
-imageio
-opencv
-matplotlib
-scikit-image

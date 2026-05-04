@@ -1,6 +1,6 @@
 from CheckProgress import load_directories_from_yaml
 
-from utils_behavior import Utils
+from utils_behavior import utils as Utils
 
 from pathlib import Path
 

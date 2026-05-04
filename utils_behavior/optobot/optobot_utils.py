@@ -1,10 +1,5 @@
-import sys
-
-sys.path.insert(0, "..")
-sys.path.insert(0, "../..")
-sys.path.append("/home/durrieu/Tracking_Analysis/Utilities")
-from .Utils import *
-from .Processing import *
+from ..utils import *
+from ..processing import *
 
 from scipy.signal import savgol_filter
 import numpy as np

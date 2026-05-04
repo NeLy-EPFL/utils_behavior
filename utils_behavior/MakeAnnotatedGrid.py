@@ -15,13 +15,7 @@ import subprocess
 import argparse
 import sys
 
-# Try to import Sleap_utils from utils_behavior package, or directly from same directory
-try:
-    from utils_behavior.Sleap_utils import Sleap_Tracks
-except ImportError:
-    # If utils_behavior is not installed, try importing from same directory
-    sys.path.insert(0, str(Path(__file__).parent))
-    from Sleap_utils import Sleap_Tracks
+from utils_behavior.sleap.tracks import Sleap_Tracks
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

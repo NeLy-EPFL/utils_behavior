@@ -10,7 +10,7 @@ import pandas as pd
 import os
 import re
 
-from . import Processing
+from .. import processing as Processing
 
 # Define styling templates
 styling_templates = {

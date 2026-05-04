@@ -2,7 +2,7 @@
 
 import argparse
 from pathlib import Path
-from Sleap_utils import Sleap_Tracks, generate_annotated_video
+from .tracks import Sleap_Tracks
 import subprocess
 
 class SleapTracker:

@@ -3,13 +3,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 import cv2
 
-import sys
-
-# Add the root directory to the Python path
-sys.path.append(str(Path(__file__).resolve().parent.parent))
-#print(sys.path)
-
-from utils_behavior.Sleap_utils import Sleap_Tracks, generate_annotated_video
+from utils_behavior.sleap.tracks import Sleap_Tracks, generate_annotated_video
 
 
 def process_video(

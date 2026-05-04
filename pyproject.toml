@@ -39,15 +39,13 @@ dependencies = [
     "requests>=2.28",
     "pyyaml>=6.0",
     "statsmodels>=0.13",
-    "pyarrow>=10.0",  # used by ballpushing.transform_contacts + embedding modules (feather I/O)
+    "pyarrow>=10.0",  # used by embedding modules (feather I/O)
 ]
 
 [project.optional-dependencies]
-# Video I/O / GUI playback (also covers ballpushing's runtime deps)
+# Video I/O for grid generation and the scripts/video helpers.
 video = [
     "moviepy>=1.0",
-    "pygame>=2.1",
-    "psutil>=5.9",
 ]
 
 # Interactive and static plotting
@@ -110,7 +108,7 @@ Issues = "https://github.com/NeLy-EPFL/utils_behavior/issues"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["utils_behavior*"]
-exclude = ["tests*", "notebooks*", "scripts*", "Old*", "Others*", "Tests*", "Sleap_utils*"]
+exclude = ["tests*", "notebooks*", "scripts*", "Old*", "Others*", "Tests*"]
 
 [tool.setuptools.package-data]
 "utils_behavior.flywire" = ["data/*.yaml", "data/*.yml"]
@@ -118,7 +116,7 @@ exclude = ["tests*", "notebooks*", "scripts*", "Old*", "Others*", "Tests*", "Sle
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["Tests"]
-norecursedirs = ["Sleap_utils", ".venv", ".git", "dist", "build"]
+norecursedirs = [".venv", ".git", "dist", "build"]
 addopts = [
     "-ra",
     "--strict-markers",

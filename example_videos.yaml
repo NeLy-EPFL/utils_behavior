@@ -1,0 +1,23 @@
+# Example YAML file for compress_videos_yaml.py
+# List videos to compress with max 2.5 GB output size
+
+# Simple format - just list video paths:
+videos:
+  - /path/to/your/video1.mp4
+  - /path/to/your/video2.mp4
+  - /path/to/your/video3.mkv
+
+# Advanced format - specify custom output paths:
+# videos:
+#   - input: /path/to/video1.mp4
+#     output: /custom/path/compressed_video1.mp4
+#   - input: /path/to/video2.mp4
+#     output: /custom/path/compressed_video2.mp4
+#   - input: /path/to/video3.mkv
+#     # If output is omitted, adds "_compressed" suffix in same directory
+
+# Usage examples:
+# python utils_behavior/compress_videos_yaml.py example_videos.yaml
+# python utils_behavior/compress_videos_yaml.py example_videos.yaml --gpu
+# python utils_behavior/compress_videos_yaml.py example_videos.yaml --max-size 3.0
+# python utils_behavior/compress_videos_yaml.py example_videos.yaml --output-dir ./compressed_videos

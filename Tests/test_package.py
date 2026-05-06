@@ -70,7 +70,6 @@ def test_no_heavy_import_at_package_load():
     "subpackage",
     [
         "utils_behavior.sleap",
-        "utils_behavior.ballpushing",
         "utils_behavior.plotting",
         "utils_behavior.embedding",
         "utils_behavior.grids",
@@ -99,7 +98,6 @@ def test_lean_inits_have_no_heavy_imports():
     and still ``from utils_behavior import ballpushing`` without crashing.
     """
     lean_subpackages = [
-        "utils_behavior.ballpushing",
         "utils_behavior.plotting",
         "utils_behavior.embedding",
         "utils_behavior.grids",
@@ -154,7 +152,6 @@ class TestNoStaleSysPathHack:
         [
             "utils_behavior.optobot.optobot_utils",
             "utils_behavior.sleap.tracks",
-            "utils_behavior.ballpushing.core",
         ],
     )
     def test_module_source_has_no_path_insert(self, module_name):

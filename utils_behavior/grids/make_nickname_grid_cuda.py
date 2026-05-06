@@ -13,10 +13,53 @@ import math
 import traceback
 
 import argparse
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# --- Sanitisation helpers (Dataverse-safe ASCII filenames) ---
+_GREEK_MAP: dict[str, str] = {
+    "α": "alpha",
+    "β": "beta",
+    "γ": "gamma",
+    "δ": "delta",
+    "ε": "epsilon",
+    "ζ": "zeta",
+    "η": "eta",
+    "θ": "theta",
+    "ι": "iota",
+    "κ": "kappa",
+    "λ": "lambda",
+    "μ": "mu",
+    "ν": "nu",
+    "ξ": "xi",
+    "ο": "omicron",
+    "π": "pi",
+    "ρ": "rho",
+    "σ": "sigma",
+    "τ": "tau",
+    "υ": "upsilon",
+    "φ": "phi",
+    "χ": "chi",
+    "ψ": "psi",
+    "ω": "omega",
+    "\u2032": "p",  # ′ prime → p
+    "\u2019": "",  # right single quote → removed
+    "'": "p",  # ASCII apostrophe as prime → p
+}
+
+
+def sanitize_for_dataverse(name: str) -> str:
+    """Sanitize a name for Dataverse upload: Greek → ASCII, no spaces/parens/non-ASCII."""
+    for ch, rep in _GREEK_MAP.items():
+        name = name.replace(ch, rep)
+    name = name.replace(" ", "-")
+    name = re.sub(r"[()]", "", name)
+    name = re.sub(r"[^\x00-\x7F]", "", name)
+    return name
+
 
 # TODO: Fix messed up labels in vertical orientation
 # Configuration parameters
@@ -66,6 +109,44 @@ CONFIG = {
 
 MIN_DURATION = 60  # 1 minute
 
+# --- Experiment profiles ---
+# Each profile sets data source, groupby column, output directory,
+# and the grid layout parameters that differ between experiment types.
+EXPERIMENT_PROFILES: dict[str, dict] = {
+    "tnt_screen": {
+        # Data
+        "data_path": (
+            "/mnt/upramdya_data/MD/Ballpushing_TNTScreen/Datasets/250414_summary_TNT_screen_Data/summary/pooled_summary.feather"
+        ),
+        "mapping_csv_path": "/mnt/upramdya_data/MD/Region_map_260506.csv",
+        "groupby": "Nickname",
+        # Output
+        "output_dir": "/mnt/upramdya_data/MD/TNT_Screen_RawGrids",
+        # Layout — 1080p single-row for regular multi-maze corridors
+        "max_grid_width": 1920,
+        "max_grid_height": 1080,
+        "force_single_row": True,
+        "rotate_videos": False,
+        "F1_experiments": False,
+    },
+    "F1": {
+        # Data
+        "data_path": (
+            "/mnt/upramdya_data/MD/F1_Tracks/Datasets/260123_16_F1_coordinates_F1_TNT_Full_Data/F1_coordinates/pooled_F1_coordinates.feather"
+        ),
+        "mapping_csv_path": "/mnt/upramdya_data/MD/Region_map_260506.csv",
+        "groupby": ["Genotype", "Pretraining"],
+        # Output
+        "output_dir": "/mnt/upramdya_data/MD/F1_Tracks/TNT_F1_Grids_Light",
+        # Layout — 4K multi-row for F1 corridors
+        "max_grid_width": 3840,
+        "max_grid_height": 2160,
+        "force_single_row": False,
+        "rotate_videos": False,
+        "F1_experiments": True,
+    },
+}
+
 
 def check_nvenc_support() -> bool:
     """Check if NVIDIA NVENC hardware encoding is available."""
@@ -75,6 +156,626 @@ def check_nvenc_support() -> bool:
         return "h264_nvenc" in result.stdout
     except Exception:
         return False
+
+
+def get_video_duration(video_path: Path) -> float:
+    """Get video duration in seconds using ffprobe."""
+    info = get_video_info_ffprobe(video_path)
+    return info["duration"] if info else 0.0
+
+
+def get_video_info_ffprobe(video_path: Path) -> Optional[dict]:
+    """Return width, height, fps, duration for a video file via ffprobe."""
+    try:
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "format=duration:stream=width,height,r_frame_rate",
+            "-of",
+            "json",
+            str(video_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        data = json.loads(result.stdout)
+        stream = data.get("streams", [{}])[0]
+        fmt = data.get("format", {})
+        fps_str = stream.get("r_frame_rate", "30/1")
+        num, den = map(int, fps_str.split("/")) if "/" in fps_str else (30, 1)
+        fps = num / den if den else 30.0
+        return {
+            "width": int(stream.get("width", 0)),
+            "height": int(stream.get("height", 0)),
+            "fps": fps,
+            "duration": float(fmt.get("duration", 0)),
+        }
+    except Exception as e:
+        logger.warning(f"Could not get info for {video_path}: {e}")
+        return None
+
+
+def detect_corridor_crop(
+    video_path: Path,
+    row_threshold: int = 80,
+    n_samples: int = 5,
+) -> Optional[tuple]:
+    """
+    Detect the vertical content region of a corridor video.
+
+    Samples n_samples frames from the middle half of the video, takes the
+    element-wise max (so a moving fly doesn't shadow rows), then finds the
+    first and last row whose mean brightness exceeds ``row_threshold``.
+
+    Returns (y_start, content_h, raw_w) — full frame width is kept; only
+    vertical cropping is done to remove black/dim background at top/bottom.
+    Returns None on failure.
+    """
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return None
+    try:
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total <= 0:
+            return None
+        raw_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        raw_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        start_f = total // 4
+        end_f = 3 * total // 4
+        indices = [
+            int(start_f + (end_f - start_f) * i / n_samples) for i in range(n_samples)
+        ]
+        frames = []
+        for fi in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
+            ret, frame = cap.read()
+            if ret:
+                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+        if not frames:
+            return None
+        projection = np.max(np.stack(frames, axis=0), axis=0)
+        row_means = projection.mean(axis=1)
+        bright = np.where(row_means > row_threshold)[0]
+        if len(bright) == 0:
+            return None
+        y_start = int(bright[0])
+        y_end = int(bright[-1])
+        content_h = y_end - y_start + 1
+        return (y_start, content_h, raw_w)
+    except Exception as e:
+        logger.warning(f"Corridor crop detection failed for {video_path.name}: {e}")
+        return None
+    finally:
+        cap.release()
+
+
+def _compute_layout(num_videos: int, ar: float) -> Optional[tuple]:
+    """Compute (cols, rows, cell_w, cell_h) using CONFIG constraints."""
+    if CONFIG.get("force_single_row"):
+        cols = num_videos
+        rows = 1
+        avail_w = CONFIG["max_grid_width"] - CONFIG["horizontal_padding"] * (cols + 1)
+        avail_h = (
+            CONFIG["max_grid_height"]
+            - CONFIG["top_padding"]
+            - CONFIG["bottom_padding"]
+            - CONFIG["vertical_padding"] * (rows + 1)
+        )
+        return (cols, rows, avail_w / cols, avail_h)
+
+    best_layout = None
+    best_util = 0
+    max_cols = min(num_videos, int(CONFIG["max_grid_width"] / CONFIG["min_cell_width"]))
+    for cols in range(1, max_cols + 1):
+        rows = math.ceil(num_videos / cols)
+        avail_w = CONFIG["max_grid_width"] - CONFIG["horizontal_padding"] * (cols + 1)
+        avail_h = (
+            CONFIG["max_grid_height"]
+            - CONFIG["top_padding"]
+            - CONFIG["bottom_padding"]
+            - CONFIG["vertical_padding"] * (rows + 1)
+        )
+        if avail_w <= 0 or avail_h <= 0:
+            continue
+        cw, ch = avail_w / cols, avail_h / rows
+        if cw < CONFIG["min_cell_width"] or ch < CONFIG["min_cell_height"]:
+            continue
+        if abs(cw / ch - ar) > CONFIG["aspect_ratio_tolerance"]:
+            continue
+        util = (
+            cw
+            * ch
+            * num_videos
+            / (CONFIG["max_grid_width"] * CONFIG["max_grid_height"])
+        )
+        if util > best_util:
+            best_util = util
+            best_layout = (cols, rows, cw, ch)
+    return best_layout
+
+
+def generate_grid_ffmpeg(
+    video_paths: List[Path],
+    identifiers: List[str],
+    grid_text: str,
+    output_path: Path,
+    test: bool = False,
+    compress: bool = False,
+    max_size_gb: float = 2.5,
+    use_gpu: bool = False,
+) -> bool:
+    """
+    Assemble a video grid entirely with ffmpeg (xstack + drawtext filters).
+    No OpenCV CUDA required. Supports GPU-accelerated encode via NVENC.
+
+    Layout mirrors the OpenCV backend: title bar at top, cells in rows/cols,
+    per-cell label (date / arena / corridor) drawn below each clip.
+    """
+    if not video_paths:
+        logger.error("No video paths provided")
+        return False
+
+    info = get_video_info_ffprobe(video_paths[0])
+    if not info:
+        logger.error(f"Cannot read video info from {video_paths[0]}")
+        return False
+
+    fps = info["fps"]
+
+    # --- Per-video corridor crop detection ----------------------------------
+    # Detect the actual corridor content region (strips dim background rows).
+    # Returns (y_start, content_h, raw_w) per video; falls back to full frame.
+    logger.info("Detecting corridor content regions…")
+    crop_results: List[tuple] = []  # (y_start, content_h, raw_w)
+    for p in video_paths:
+        vi = get_video_info_ffprobe(p)
+        raw_w = vi["width"] if vi else 0
+        raw_h = vi["height"] if vi else 0
+        cp = detect_corridor_crop(p)
+        if cp:
+            y_start, content_h, raw_w = cp
+            crop_results.append((y_start, content_h, raw_w))
+            logger.debug(
+                f"  {p.name}: y_start={y_start} content_h={content_h} raw={raw_w}×{raw_h}"
+            )
+        else:
+            crop_results.append((0, raw_h, raw_w))
+
+    raw_widths = [r[2] for r in crop_results]
+    content_hs = [r[1] for r in crop_results]
+
+    # cell_h = min detected content height — crops background from all corridors.
+    # cell_w = min raw width — wider corridors are center-cropped to this width
+    #          so every cell is identical and separators are always uniform.
+    cell_h = (min(content_hs) // 2) * 2
+    cell_w = (min(raw_widths) // 2) * 2
+
+    # Thin separator between columns
+    sep_px = 2
+
+    # Layout: cols/rows from the layout helper (force_single_row etc.)
+    ar = cell_w / cell_h
+    num_videos = len(video_paths)
+    layout = _compute_layout(num_videos, ar)
+    if not layout:
+        logger.error("No valid grid layout found — try --force-max or fewer videos")
+        return False
+    cols, rows, _, _ = layout
+
+    title_h = max(2, (CONFIG["top_padding"] // 2) * 2)
+
+    # NVDEC: need ≥144px in both dimensions (corridors are ~96px — use CPU decode)
+    _NVDEC_MIN = 144
+    can_hwdec = use_gpu and cell_w >= _NVDEC_MIN and cell_h >= _NVDEC_MIN
+    if use_gpu and not can_hwdec:
+        logger.info(
+            f"Corridor dimensions {cell_w}×{cell_h} below NVDEC minimum — "
+            "hardware decode disabled, GPU encode (h264_nvenc) still active"
+        )
+
+    logger.info(
+        f"Grid layout: {cols}×{rows}, corridor {cell_w}×{cell_h} (native), "
+        f"sep={sep_px}px, {num_videos} videos — output {output_path.name}"
+    )
+
+    def _esc(text: str) -> str:
+        """Escape special characters for ffmpeg drawtext."""
+        return text.replace("\\", "\\\\").replace("'", "\u2019").replace(":", "\\:")
+
+    def _wrap_label(text: str, max_chars: int) -> str:
+        """Hard-wrap each newline-separated segment to fit max_chars per line."""
+        result = []
+        for segment in text.split("\n"):
+            while len(segment) > max_chars:
+                wrap_at = max_chars
+                for sep in (" ", "-", "_"):
+                    pos = segment.rfind(sep, 0, max_chars)
+                    if pos > 0:
+                        wrap_at = pos + 1
+                        break
+                result.append(segment[:wrap_at].rstrip("_- "))
+                segment = segment[wrap_at:]
+            result.append(segment)
+        return "\n".join(result)
+
+    # Approximate monospace character width at fontsize=16 for label wrapping.
+    _label_fontsize = 16
+    _char_w_px = _label_fontsize * 0.6  # ~9.6 px/char for Mono
+    _max_chars = max(6, int(cell_w / _char_w_px))
+
+    # label_h from worst-case wrapped line count across all labels.
+    _max_label_lines = max(
+        (len(_wrap_label(lbl, _max_chars).split("\n")) for lbl in identifiers),
+        default=3,
+    )
+    label_h = max(2, ((_max_label_lines * CONFIG["line_spacing"]) // 2) * 2)
+
+    # Build per-input flags and filter_complex
+    filter_parts: List[str] = []
+    cmd_inputs: List[str] = []
+
+    for i, (path, label) in enumerate(zip(video_paths, identifiers)):
+        if can_hwdec:
+            cmd_inputs += ["-hwaccel", "cuda"]
+        if test:
+            raw_start = CONFIG.get("test_start_time") or 0
+            duration = get_video_duration(path)
+            test_dur = CONFIG["test_duration"]
+            if duration > 0:
+                t_start = min(raw_start, max(0.0, duration - test_dur))
+            else:
+                t_start = 0
+            cmd_inputs += ["-ss", str(t_start), "-t", str(test_dur)]
+        cmd_inputs += ["-i", str(path)]
+
+        rotate = "transpose=1," if CONFIG["rotate_videos"] else ""
+
+        # Center-crop to uniform cell_w×cell_h: strips background rows (y) and
+        # trims any extra width (x) symmetrically. No padding, no resizing.
+        y_start, content_h, raw_w = crop_results[i]
+        x_off = (raw_w - cell_w) // 2  # centre horizontal crop (0 when equal)
+        cell_filter = (
+            f"{rotate}"
+            f"crop={cell_w}:{cell_h}:{x_off}:{y_start},"  # uniform size, no borders
+            f"setsar=1,"
+            f"pad=iw:ih+{label_h}:0:0:black"  # label strip
+        )
+        # Per-line centered drawtext
+        label_lines = _wrap_label(label, _max_chars).split("\n")
+        for j, line in enumerate(label_lines):
+            y_txt = cell_h + 8 + j * CONFIG["line_spacing"]
+            cell_filter += (
+                f",drawtext=text='{_esc(line)}'"
+                f":x=(w-tw)/2:y={y_txt}"
+                f":fontsize={_label_fontsize}:fontcolor=white:font=Mono"
+            )
+        filter_parts.append(f"[{i}:v]{cell_filter}[cell{i}]")
+
+    # xstack: sep_px-wide black gap between columns
+    slot_h = cell_h + label_h
+    slot_w = cell_w + sep_px
+    xstack_layout = "|".join(
+        f"{(i % cols) * slot_w}_{(i // cols) * slot_h}" for i in range(num_videos)
+    )
+    xstack_inputs = "".join(f"[cell{i}]" for i in range(num_videos))
+    filter_parts.append(
+        f"{xstack_inputs}xstack=inputs={num_videos}:layout={xstack_layout}:fill=black[grid]"
+    )
+
+    # Title bar at top
+    filter_parts.append(
+        f"[grid]pad=iw:ih+{title_h}:0:{title_h}:black,"
+        f"drawtext=text='{_esc(grid_text)}':x=10:y=10:"
+        f"fontsize=22:fontcolor=white:font=Mono[out]"
+    )
+
+    filter_complex = "; ".join(filter_parts)
+
+    # Encoding arguments
+    if compress:
+        duration_s = (
+            CONFIG["test_duration"] if test else get_video_duration(video_paths[0])
+        )
+        bitrate = calculate_target_bitrate(
+            duration_s * num_videos / num_videos, max_size_gb
+        )
+        # For single-pass with bitrate control
+        if use_gpu:
+            enc_args = [
+                "-c:v",
+                "h264_nvenc",
+                "-preset",
+                "p4",
+                "-b:v",
+                f"{bitrate}k",
+                "-maxrate",
+                f"{int(bitrate * 1.5)}k",
+                "-bufsize",
+                f"{bitrate * 2}k",
+            ]
+        else:
+            enc_args = [
+                "-c:v",
+                "libx264",
+                "-preset",
+                CONFIG.get("compression_preset", "medium"),
+                "-b:v",
+                f"{bitrate}k",
+                "-maxrate",
+                f"{int(bitrate * 1.5)}k",
+                "-bufsize",
+                f"{bitrate * 2}k",
+            ]
+    else:
+        if use_gpu:
+            enc_args = [
+                "-c:v",
+                "h264_nvenc",
+                "-preset",
+                "p4",
+                "-cq",
+                str(CONFIG.get("crf", 23)),
+            ]
+        else:
+            enc_args = [
+                "-c:v",
+                "libx264",
+                "-preset",
+                CONFIG.get("compression_preset", "medium"),
+                "-crf",
+                str(CONFIG.get("crf", 23)),
+            ]
+
+    cmd = (
+        ["ffmpeg"]
+        + cmd_inputs
+        + ["-filter_complex", filter_complex, "-map", "[out]"]
+        + enc_args
+        + ["-pix_fmt", "yuv420p", "-r", str(fps), "-an", "-y", str(output_path)]
+    )
+
+    logger.info("Running ffmpeg grid assembly…")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        logger.error(f"ffmpeg failed:\n{result.stderr[-3000:]}")
+        return False
+
+    size_gb = output_path.stat().st_size / (1024**3)
+    logger.info(f"✓ Grid created: {output_path.name} ({size_gb:.2f} GB)")
+
+    # Strict size enforcement for compress mode: two-pass retry
+    if compress and size_gb > max_size_gb:
+        excess_mb = (size_gb - max_size_gb) * 1000
+        logger.warning(f"Exceeds limit by {excess_mb:.0f} MB — re-encoding (two-pass)…")
+        temp = output_path.with_suffix(".tmp.mp4")
+        output_path.rename(temp)
+        ok = compress_to_size_limit(
+            temp,
+            output_path,
+            max_size_gb=max_size_gb,
+            preset=CONFIG.get("compression_preset", "medium"),
+            use_gpu=use_gpu,
+        )
+        temp.unlink(missing_ok=True)
+        if not ok:
+            logger.error("Two-pass retry also failed")
+            return False
+
+    return True
+
+
+def calculate_target_bitrate(
+    duration: float, max_size_gb: float, safety_margin: float = 0.90
+) -> int:
+    """Calculate target video bitrate (kbps) to stay within max_size_gb."""
+    if duration <= 0:
+        return 5000
+    max_size_bits = max_size_gb * 1024 * 1024 * 1024 * 8
+    video_bitrate_bps = (max_size_bits / duration) * safety_margin
+    return max(1000, min(50000, int(video_bitrate_bps / 1000)))
+
+
+def compress_to_size_limit(
+    input_path: Path,
+    output_path: Path,
+    max_size_gb: float = 2.5,
+    preset: str = "medium",
+    use_gpu: bool = False,
+) -> bool:
+    """
+    Two-pass bitrate-constrained encode targeting max_size_gb.
+    If the output still exceeds the limit, retries once with a proportionally
+    lower bitrate (same strategy as compress_videos_yaml.py).
+    """
+    duration = get_video_duration(input_path)
+    if duration <= 0:
+        logger.error(f"Cannot compress {input_path.name}: unreadable duration")
+        return False
+
+    target_bitrate = calculate_target_bitrate(duration, max_size_gb)
+    logger.info(
+        f"  Target bitrate: {target_bitrate / 1000:.1f} Mbps "
+        f"(max {max_size_gb} GB, {duration / 60:.1f} min)"
+    )
+
+    pass_log = str(output_path.parent / f"ffmpeg2pass_{output_path.stem}")
+
+    def _run_two_pass(bitrate: int) -> bool:
+        try:
+            if use_gpu:
+                nvenc_preset = {
+                    "ultrafast": "p1",
+                    "fast": "p2",
+                    "medium": "p4",
+                    "slow": "p5",
+                }.get(preset, "p4")
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-hwaccel",
+                        "cuda",
+                        "-i",
+                        str(input_path),
+                        "-c:v",
+                        "h264_nvenc",
+                        "-preset",
+                        nvenc_preset,
+                        "-b:v",
+                        f"{bitrate}k",
+                        "-maxrate",
+                        f"{int(bitrate * 1.5)}k",
+                        "-bufsize",
+                        f"{bitrate * 2}k",
+                        "-pass",
+                        "1",
+                        "-passlogfile",
+                        pass_log,
+                        "-an",
+                        "-f",
+                        "null",
+                        "/dev/null",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=7200,
+                )
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-hwaccel",
+                        "cuda",
+                        "-i",
+                        str(input_path),
+                        "-c:v",
+                        "h264_nvenc",
+                        "-preset",
+                        nvenc_preset,
+                        "-b:v",
+                        f"{bitrate}k",
+                        "-maxrate",
+                        f"{int(bitrate * 1.5)}k",
+                        "-bufsize",
+                        f"{bitrate * 2}k",
+                        "-pass",
+                        "2",
+                        "-passlogfile",
+                        pass_log,
+                        "-movflags",
+                        "+faststart",
+                        "-an",
+                        "-y",
+                        str(output_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=7200,
+                )
+            else:
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-i",
+                        str(input_path),
+                        "-c:v",
+                        "libx264",
+                        "-preset",
+                        preset,
+                        "-b:v",
+                        f"{bitrate}k",
+                        "-maxrate",
+                        f"{int(bitrate * 1.5)}k",
+                        "-bufsize",
+                        f"{bitrate * 2}k",
+                        "-pass",
+                        "1",
+                        "-passlogfile",
+                        pass_log,
+                        "-threads",
+                        str(os.cpu_count()),
+                        "-tune",
+                        "grain",
+                        "-an",
+                        "-f",
+                        "null",
+                        "/dev/null",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=7200,
+                )
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-i",
+                        str(input_path),
+                        "-c:v",
+                        "libx264",
+                        "-preset",
+                        preset,
+                        "-b:v",
+                        f"{bitrate}k",
+                        "-maxrate",
+                        f"{int(bitrate * 1.5)}k",
+                        "-bufsize",
+                        f"{bitrate * 2}k",
+                        "-pass",
+                        "2",
+                        "-passlogfile",
+                        pass_log,
+                        "-threads",
+                        str(os.cpu_count()),
+                        "-tune",
+                        "grain",
+                        "-movflags",
+                        "+faststart",
+                        "-an",
+                        "-y",
+                        str(output_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=7200,
+                )
+            return True
+        except Exception as e:
+            logger.error(f"Two-pass encoding error: {e}")
+            return False
+        finally:
+            for f in output_path.parent.glob(f"ffmpeg2pass_{output_path.stem}*"):
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+
+    if not _run_two_pass(target_bitrate):
+        return False
+
+    actual_gb = output_path.stat().st_size / (1024**3)
+    logger.info(f"  Output size: {actual_gb:.2f} GB")
+
+    if actual_gb > max_size_gb:
+        excess_mb = (actual_gb - max_size_gb) * 1000
+        logger.warning(
+            f"  Exceeds limit by {excess_mb:.0f} MB — re-encoding at lower bitrate"
+        )
+        corrected_bitrate = int(target_bitrate / (actual_gb / max_size_gb) * 0.92)
+        output_path.unlink()
+        if not _run_two_pass(corrected_bitrate):
+            return False
+        actual_gb = output_path.stat().st_size / (1024**3)
+        if actual_gb > max_size_gb:
+            logger.error(f"  Still exceeds limit after retry ({actual_gb:.2f} GB)")
+            return False
+
+    logger.info(f"  ✓ Compression done: {actual_gb:.2f} GB")
+    return True
 
 
 # Constants
@@ -131,29 +832,93 @@ def load_missing_videos_list() -> List[str]:
         return []
 
 
-def create_nickname_mapping() -> dict:
+def create_nickname_mapping(csv_path: str = None) -> dict:
     """Create mapping from nicknames/genotypes to simplified nicknames."""
+    path = csv_path or MAPPING_CSV_PATH
     try:
-        mapping_data = pd.read_csv(MAPPING_CSV_PATH)
+        mapping_data = pd.read_csv(path)
         nickname_to_simplified = {}
 
-        # Create mapping from both Nickname and Genotype columns
         for _, row in mapping_data.iterrows():
-            if pd.notna(row.get("Nickname")) and pd.notna(
-                row.get("Simplified Nickname")
-            ):
-                nickname_to_simplified[row["Nickname"]] = row["Simplified Nickname"]
+            simplified = row.get("Simplified Nickname")
+            if pd.isna(simplified):
+                continue
 
-            if pd.notna(row.get("Genotype")) and pd.notna(
-                row.get("Simplified Nickname")
-            ):
-                nickname_to_simplified[row["Genotype"]] = row["Simplified Nickname"]
+            # Direct CSV columns already used by old code
+            for col in ("Nickname", "Genotype"):
+                key = row.get(col)
+                if pd.notna(key):
+                    nickname_to_simplified[key] = simplified
+
+            # Old Simplified Nickname matches feather Nickname in many cases
+            # (e.g. 'MBON-08-GaL4  MBON-09-GaL4 ' or 'MB310C')
+            old = row.get("Old Simplified Nickname")
+            if pd.notna(old) and old:
+                old = str(old).strip()  # strip trailing spaces present in the CSV
+                nickname_to_simplified[old] = simplified
+
+                # Feather often stores '{old} ({simplified})' as Nickname
+                # (e.g. 'MBON-01-GaL4 (MBON-γ5β′2a)')
+                constructed = f"{old} ({simplified})"
+                nickname_to_simplified[constructed] = simplified
 
         logger.info(f"Created mapping for {len(nickname_to_simplified)} identifiers")
         return nickname_to_simplified
     except Exception as e:
         logger.error(f"Error creating nickname mapping: {e}")
         return {}
+
+
+def lookup_simplified(nickname: str, mapping: dict) -> str:
+    """
+    Resolve a feather Nickname to its Simplified Nickname.
+
+    Tries in order:
+    1. Direct mapping lookup.
+    2. Parenthetical content: '51978 (AstA-GAL4 3M)' → look up 'AstA-GAL4 3M'.
+       Handles stock-number-prefixed keys where the content is the Old Simplified Nickname.
+    3. Prefix before first '(': 'R12B01-gal4 (R4d - distal (EB))' → look up 'R12B01-gal4'.
+       Handles cases where only the GAL4 stock name (Old Simplified) is in the mapping.
+    4. Newline normalization: 'JON-AB\\nJO-15"' → look up 'JON-AB'.
+       Handles multi-line Nickname strings in the feather.
+    5. Case-insensitive scan of the mapping (slow but rare fallback).
+    6. Falls back to the raw nickname if nothing matches.
+    """
+    if nickname in mapping:
+        return mapping[nickname]
+
+    # Try stripped key (feather strings sometimes carry trailing spaces)
+    stripped = nickname.strip()
+    if stripped != nickname and stripped in mapping:
+        return mapping[stripped]
+
+    # 2. Parenthetical content (last group)
+    m = re.search(r"\((.+)\)$", nickname.strip())
+    if m:
+        content = m.group(1)
+        if content in mapping:
+            return mapping[content]
+
+    # 3. Prefix before first '(' (strip trailing whitespace)
+    paren_pos = nickname.find("(")
+    if paren_pos > 0:
+        prefix = nickname[:paren_pos].strip()
+        if prefix in mapping:
+            return mapping[prefix]
+
+    # 4. First line of a multi-line nickname
+    if "\n" in nickname:
+        first_line = nickname.split("\n")[0].strip()
+        if first_line in mapping:
+            return mapping[first_line]
+
+    # 5. Case-insensitive scan (last resort)
+    lower = nickname.lower()
+    for key, val in mapping.items():
+        if key.lower() == lower:
+            return val
+
+    return nickname
 
 
 def filter_by_column(data: pd.DataFrame, column_name: str, value: str) -> pd.DataFrame:
@@ -240,6 +1005,8 @@ def create_video_grid_with_features(
     output_filename: str,
     test=False,
     force_max=False,
+    compress: bool = False,
+    max_size_gb: float = 2.5,
 ) -> Optional[cv2.VideoWriter]:
     if not videos:
         logger.error("No videos to create grid.")
@@ -567,84 +1334,96 @@ def create_video_grid_with_features(
 
         # Compress with ffmpeg if enabled
         if CONFIG.get("use_ffmpeg_compression", True) and final_output:
-            use_gpu = CONFIG.get("use_gpu_encoding", False)
-            encoder = "GPU (NVENC)" if use_gpu else "CPU (libx264)"
-            logger.info(
-                f"Compressing video with ffmpeg using {encoder} (CRF/CQ={CONFIG['crf']})..."
-            )
             try:
                 # Close the temp video first
                 out.release()
                 out = None  # Prevent double release in finally block
 
-                # Compress using ffmpeg with H.264
-                preset = CONFIG.get("compression_preset", "fast")
-                crf = CONFIG.get("crf", 28)
-
-                if use_gpu:
-                    # NVIDIA NVENC hardware encoding
-                    # preset mapping: p1 (fastest) to p7 (slowest)
-                    nvenc_preset_map = {
-                        "ultrafast": "p1",
-                        "fast": "p2",
-                        "medium": "p4",
-                        "slow": "p6",
-                        "slower": "p7",
-                    }
-                    nvenc_preset = nvenc_preset_map.get(preset, "p4")
-
-                    cmd = [
-                        "ffmpeg",
-                        "-hwaccel",
-                        "cuda",  # Enable CUDA hardware acceleration
-                        "-i",
-                        str(temp_output),
-                        "-c:v",
-                        "h264_nvenc",  # NVIDIA hardware encoder
-                        "-preset",
-                        nvenc_preset,
-                        "-cq",  # Constant quality (like CRF for CPU)
-                        str(crf),
-                        "-pix_fmt",
-                        "yuv420p",
-                        "-y",  # Overwrite output file
-                        str(final_output),
-                    ]
+                if compress:
+                    # Size-limited two-pass encoding (guarantees <= max_size_gb)
+                    logger.info(
+                        f"Compressing with size limit of {max_size_gb} GB "
+                        f"(two-pass bitrate-constrained)..."
+                    )
+                    success = compress_to_size_limit(
+                        temp_output,
+                        final_output,
+                        max_size_gb=max_size_gb,
+                        preset=CONFIG.get("compression_preset", "medium"),
+                        use_gpu=CONFIG.get("use_gpu_encoding", False),
+                    )
+                    if success:
+                        temp_output.unlink(missing_ok=True)
+                    else:
+                        logger.error(
+                            "Size-limited compression failed; keeping temp file"
+                        )
+                        if temp_output.exists():
+                            temp_output.rename(final_output)
                 else:
-                    # CPU encoding with libx264
-                    cmd = [
-                        "ffmpeg",
-                        "-i",
-                        str(temp_output),
-                        "-c:v",
-                        "libx264",
-                        "-preset",
-                        preset,
-                        "-crf",
-                        str(crf),
-                        "-pix_fmt",
-                        "yuv420p",
-                        "-y",  # Overwrite output file
-                        str(final_output),
-                    ]
+                    # CRF-based encoding (original quality-target behavior)
+                    use_gpu = CONFIG.get("use_gpu_encoding", False)
+                    encoder = "GPU (NVENC)" if use_gpu else "CPU (libx264)"
+                    logger.info(
+                        f"Compressing video with ffmpeg using {encoder} (CRF/CQ={CONFIG['crf']})..."
+                    )
+                    preset = CONFIG.get("compression_preset", "fast")
+                    crf = CONFIG.get("crf", 28)
 
-                result = subprocess.run(cmd, capture_output=True, text=True)
+                    if use_gpu:
+                        nvenc_preset_map = {
+                            "ultrafast": "p1",
+                            "fast": "p2",
+                            "medium": "p4",
+                            "slow": "p6",
+                            "slower": "p7",
+                        }
+                        nvenc_preset = nvenc_preset_map.get(preset, "p4")
+                        cmd = [
+                            "ffmpeg",
+                            "-hwaccel",
+                            "cuda",
+                            "-i",
+                            str(temp_output),
+                            "-c:v",
+                            "h264_nvenc",
+                            "-preset",
+                            nvenc_preset,
+                            "-cq",
+                            str(crf),
+                            "-pix_fmt",
+                            "yuv420p",
+                            "-y",
+                            str(final_output),
+                        ]
+                    else:
+                        cmd = [
+                            "ffmpeg",
+                            "-i",
+                            str(temp_output),
+                            "-c:v",
+                            "libx264",
+                            "-preset",
+                            preset,
+                            "-crf",
+                            str(crf),
+                            "-pix_fmt",
+                            "yuv420p",
+                            "-y",
+                            str(final_output),
+                        ]
 
-                if result.returncode == 0:
-                    # Delete temporary file
-                    temp_output.unlink()
-                    logger.info(f"Compression successful: {final_output.name}")
-
-                    # Log file sizes
-                    final_size_mb = final_output.stat().st_size / (1024 * 1024)
-                    logger.info(f"Final file size: {final_size_mb:.1f} MB")
-                else:
-                    logger.error(f"FFmpeg compression failed: {result.stderr}")
-                    # Keep temp file as fallback
-                    temp_output.rename(final_output)
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    if result.returncode == 0:
+                        temp_output.unlink()
+                        logger.info(f"Compression successful: {final_output.name}")
+                        final_size_mb = final_output.stat().st_size / (1024 * 1024)
+                        logger.info(f"Final file size: {final_size_mb:.1f} MB")
+                    else:
+                        logger.error(f"FFmpeg compression failed: {result.stderr}")
+                        temp_output.rename(final_output)
             except Exception as e:
                 logger.error(f"Error during ffmpeg compression: {e}")
-                # Rename temp file as fallback
                 if temp_output.exists():
                     temp_output.rename(final_output)
 
@@ -742,33 +1521,29 @@ def read_and_process_frame(
         new_h = target_height
         new_w = int(target_height * aspect)
 
-    # Resize and pad using GPU for faster processing
+    # Resize — GPU if available, CPU fallback
     try:
-        # Upload to GPU
         gpu_frame = cv2.cuda_GpuMat()
         gpu_frame.upload(frame)
-
-        # Resize on GPU (faster than CPU)
         gpu_resized = cv2.cuda.resize(
             gpu_frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR
         )
         frame = gpu_resized.download()
+    except (cv2.error, AttributeError):
+        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
-        # Add padding if needed
-        if new_w != target_width or new_h != target_height:
-            frame = cv2.copyMakeBorder(
-                frame,
-                (target_height - new_h) // 2,
-                (target_height - new_h + 1) // 2,
-                (target_width - new_w) // 2,
-                (target_width - new_w + 1) // 2,
-                cv2.BORDER_CONSTANT,
-                value=(0, 0, 0),
-            )
-        return cv2.resize(frame, (target_width, target_height))
-    except Exception as e:
-        logger.error(f"Frame processing error: {e}\n{traceback.format_exc()}")
-        return None
+    # Pad to exact target size
+    if new_w != target_width or new_h != target_height:
+        frame = cv2.copyMakeBorder(
+            frame,
+            (target_height - new_h) // 2,
+            (target_height - new_h + 1) // 2,
+            (target_width - new_w) // 2,
+            (target_width - new_w + 1) // 2,
+            cv2.BORDER_CONSTANT,
+            value=(0, 0, 0),
+        )
+    return cv2.resize(frame, (target_width, target_height))
 
 
 def place_frame_in_grid(grid_frame, frame, index, max_width, max_height, identifier):
@@ -811,28 +1586,21 @@ def place_frame_in_grid(grid_frame, frame, index, max_width, max_height, identif
 
 
 def generate_identifiers(data: pd.DataFrame, video_paths: List[Path]) -> List[str]:
+    """Build per-cell labels: date / arena / corridor extracted from flypath."""
     identifiers = []
     for path in video_paths:
         if path:
-            # Extract corridor and arena from flypath
+            # flypath structure: .../date/arena/corridor/
             corridor = path.parent.name
             arena = path.parent.parent.name
 
-            # Find matching row in data to get date
             matching_rows = data.loc[data["flypath"] == str(path.parent)]
             if not matching_rows.empty:
                 date = str(matching_rows["Date"].iloc[0])
             else:
                 date = "Unknown"
 
-            # Choose separator based on config
-            if CONFIG.get("multiline_identifiers", False):
-                # Multi-line format with line breaks
-                identifier = f"{date}\n{arena}\n{corridor}"
-            else:
-                # Single line format with underscores
-                identifier = f"{date}_{arena}_{corridor}"
-
+            identifier = f"{date}\n{arena}\n{corridor}"
             identifiers.append(identifier)
         else:
             identifiers.append("Unknown")
@@ -1139,7 +1907,84 @@ if __name__ == "__main__":
         action="store_true",
         help="Use NVIDIA GPU hardware acceleration (NVENC) for ffmpeg compression - 5-10x faster",
     )
+    parser.add_argument(
+        "--profile",
+        type=str,
+        choices=list(EXPERIMENT_PROFILES.keys()),
+        default=None,
+        help=(
+            "Experiment profile to use. Sets data path, groupby column, output dir, "
+            "and grid layout automatically. "
+            + " | ".join(
+                f"{k}: {v['output_dir']}" for k, v in EXPERIMENT_PROFILES.items()
+            )
+        ),
+    )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        choices=["ffmpeg", "opencv"],
+        default="ffmpeg",
+        help=(
+            "Grid assembly backend. 'ffmpeg' (default): pure ffmpeg xstack, no CUDA "
+            "OpenCV required, GPU-accelerated via NVDEC/NVENC. "
+            "'opencv': frame-by-frame Python loop with optional CUDA OpenCV."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Print the list of groups that would be processed (output filename, "
+            "video count) without generating any files."
+        ),
+    )
+    parser.add_argument(
+        "--compress",
+        action="store_true",
+        help=(
+            "Apply size-limited two-pass compression to the output. "
+            "Output will be saved as *_grid_compressed.mp4. "
+            "Use --max-size to set the size limit (default 2.5 GB)."
+        ),
+    )
+    parser.add_argument(
+        "--max-size",
+        type=float,
+        default=2.5,
+        help="Maximum output file size in GB when --compress is used (default: 2.5).",
+    )
     args = parser.parse_args()
+
+    # Apply experiment profile (sets data paths, groupby, output dir, and layout)
+    active_data_path = DATA_PATH
+    active_mapping_csv = MAPPING_CSV_PATH
+    active_groupby = groupby
+    active_output_dir = CONFIG["output_dir"]
+
+    if args.profile:
+        profile = EXPERIMENT_PROFILES[args.profile]
+        active_data_path = profile["data_path"]
+        active_mapping_csv = profile["mapping_csv_path"]
+        active_groupby = profile["groupby"]
+        active_output_dir = profile["output_dir"]
+        for key in [
+            "max_grid_width",
+            "max_grid_height",
+            "force_single_row",
+            "rotate_videos",
+            "F1_experiments",
+        ]:
+            if key in profile:
+                CONFIG[key] = profile[key]
+        logger.info(f"Applied profile '{args.profile}':")
+        logger.info(f"  data_path:  {active_data_path}")
+        logger.info(f"  output_dir: {active_output_dir}")
+        logger.info(f"  groupby:    {active_groupby}")
+        logger.info(
+            f"  grid size:  {CONFIG['max_grid_width']}x{CONFIG['max_grid_height']}, "
+            f"force_single_row={CONFIG['force_single_row']}"
+        )
 
     # Apply quality preset if specified
     QUALITY_PRESETS = {
@@ -1277,17 +2122,25 @@ if __name__ == "__main__":
         force_max=False,
         missing_only=False,
         genotypes=None,
+        compress=False,
+        max_size_gb=2.5,
+        dry_run=False,
+        backend="ffmpeg",
+        active_data_path=DATA_PATH,
+        active_mapping_csv=MAPPING_CSV_PATH,
+        active_output_dir=CONFIG["output_dir"],
+        active_groupby=groupby,
     ):
         try:
-            transformed_data = load_dataset(DATA_PATH)
+            transformed_data = load_dataset(active_data_path)
             if transformed_data.empty:
                 logger.error("Empty dataset loaded")
                 return
 
-            ensure_output_directory_exists(CONFIG["output_dir"])
+            ensure_output_directory_exists(active_output_dir)
 
-            # Load nickname mapping for simplified names
-            nickname_mapping = create_nickname_mapping()
+            # Load nickname mapping for simplified names (using active CSV)
+            nickname_mapping = create_nickname_mapping(active_mapping_csv)
 
             # Load missing videos list if processing missing only
             missing_identifiers = []
@@ -1300,10 +2153,12 @@ if __name__ == "__main__":
 
             # Grouping logic based on mode
             if CONFIG["trial_mode"]:
-                groups = transformed_data.groupby([CONFIG["trial_column"], groupby])
+                groups = transformed_data.groupby(
+                    [CONFIG["trial_column"], active_groupby]
+                )
                 logger.info(f"Processing {len(groups)} trial-group combinations")
             else:
-                groups = transformed_data.groupby(groupby)
+                groups = transformed_data.groupby(active_groupby)
                 logger.info(f"Processing {len(groups)} experimental groups")
 
             # Filter groups based on different criteria
@@ -1346,24 +2201,44 @@ if __name__ == "__main__":
             for group_key, group_data in group_iter:
                 try:
                     # Handle trial-mode metadata
+                    grid_suffix = "_grid_compressed.mp4" if compress else "_grid.mp4"
                     if CONFIG["trial_mode"]:
                         trial_id, genotype, pretraining = group_key
-                        # Use simplified nickname if available
-                        display_genotype = nickname_mapping.get(genotype, genotype)
-                        output_filename = f"{display_genotype}_{pretraining}_trial_{trial_id}_grid.mp4"
+                        display_genotype = lookup_simplified(genotype, nickname_mapping)
+                        display_name = sanitize_for_dataverse(display_genotype)
+                        output_filename = f"{display_name}_{pretraining}_trial_{trial_id}{grid_suffix}"
+                        title = f"{display_name} - {pretraining} | Trial {trial_id}"
                         trial_times = group_data[
                             ["start_time", "end_time"]
                         ].drop_duplicates()
+                    elif isinstance(group_key, str):
+                        # Single-key groupby (e.g., tnt_screen "Nickname")
+                        nickname = group_key
+                        simplified = lookup_simplified(nickname, nickname_mapping)
+                        display_name = sanitize_for_dataverse(simplified)
+                        output_filename = f"{display_name}{grid_suffix}"
+                        title = display_name
                     else:
                         genotype, pretraining = group_key
-                        # Use simplified nickname if available, otherwise use original
-                        display_genotype = nickname_mapping.get(genotype, genotype)
-                        output_filename = f"{display_genotype}_{pretraining}_grid.mp4"
+                        display_genotype = lookup_simplified(genotype, nickname_mapping)
+                        display_name = sanitize_for_dataverse(display_genotype)
+                        output_filename = f"{display_name}_{pretraining}{grid_suffix}"
+                        title = f"{display_name} - {pretraining}"
 
                     # Skip existing outputs
-                    output_path = Path(CONFIG["output_dir"]) / sanitize_filename(
+                    output_path = Path(active_output_dir) / sanitize_filename(
                         output_filename
                     )
+
+                    # --dry-run: describe what would be done and move on
+                    if dry_run:
+                        status = "EXISTS" if output_path.exists() else "PENDING"
+                        logger.info(
+                            f"[DRY RUN] {status:7s}  {output_filename}  "
+                            f"(key={group_key!r})"
+                        )
+                        continue
+
                     if output_path.exists():
                         logger.info(f"Skipping existing: {output_filename}")
                         continue
@@ -1443,21 +2318,32 @@ if __name__ == "__main__":
                         group_data, [p for _, p in video_entries]
                     )
 
-                    # Main title includes genotype and pretraining
-                    if CONFIG["trial_mode"]:
-                        title = f"{display_genotype} - {pretraining} | Trial {trial_id}"
+                    # Create video grid — dispatch to selected backend
+                    CONFIG["output_dir"] = active_output_dir
+                    if backend == "ffmpeg":
+                        use_gpu = check_nvenc_support()
+                        ok = generate_grid_ffmpeg(
+                            video_paths=video_paths,
+                            identifiers=identifiers,
+                            grid_text=title,
+                            output_path=output_path,
+                            test=test,
+                            compress=compress,
+                            max_size_gb=max_size_gb,
+                            use_gpu=use_gpu,
+                        )
+                        video_grid = ok
                     else:
-                        title = f"{display_genotype} - {pretraining}"
-
-                    # Create video grid
-                    video_grid = create_video_grid_with_features(
-                        valid_videos,
-                        identifiers=identifiers,
-                        grid_text=title,
-                        output_filename=output_filename,
-                        test=test,
-                        force_max=force_max,
-                    )
+                        video_grid = create_video_grid_with_features(
+                            valid_videos,
+                            identifiers=identifiers,
+                            grid_text=title,
+                            output_filename=output_filename,
+                            test=test,
+                            force_max=force_max,
+                            compress=compress,
+                            max_size_gb=max_size_gb,
+                        )
 
                     if video_grid:
                         logger.info(f"Successfully created: {output_filename}")
@@ -1482,4 +2368,12 @@ if __name__ == "__main__":
         force_max=args.force_max,
         missing_only=args.missing_only,
         genotypes=genotype_filter,
+        compress=args.compress,
+        max_size_gb=args.max_size,
+        dry_run=args.dry_run,
+        backend=args.backend,
+        active_data_path=active_data_path,
+        active_mapping_csv=active_mapping_csv,
+        active_output_dir=active_output_dir,
+        active_groupby=active_groupby,
     )

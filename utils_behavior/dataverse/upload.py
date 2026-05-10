@@ -22,6 +22,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from utils_behavior.dataverse.rename import fetch_remote_files, rename_file
+
 DEFAULT_JAR = Path.home() / "dataverse-uploader" / "DVUploader-v1.3.0-beta.jar"
 SIZE_LIMIT_BYTES = int(2.5 * 1024**3)  # 2.5 GiB — Dataverse per-file limit
 SIZE_LIMIT_HUMAN = "2.5 GiB"
@@ -76,8 +78,7 @@ def normalize_server_url(url: str) -> tuple[str, str | None]:
     if not (parsed.scheme and parsed.netloc):
         return url, None
     looks_like_dataset_url = (
-        "dataset.xhtml" in parsed.path.lower()
-        or "persistentid" in parsed.query.lower()
+        "dataset.xhtml" in parsed.path.lower() or "persistentid" in parsed.query.lower()
     )
     if looks_like_dataset_url:
         fixed = f"{parsed.scheme}://{parsed.netloc}"
@@ -120,7 +121,9 @@ class DatasetInfo:
     fetched: bool = False  # True iff the API call succeeded
 
 
-def fetch_dataset_info(server: str, key: str, doi: str, timeout: float = 30.0) -> DatasetInfo:
+def fetch_dataset_info(
+    server: str, key: str, doi: str, timeout: float = 30.0
+) -> DatasetInfo:
     """Best-effort lookup of dataset title and the filenames in its latest version.
 
     Returns DatasetInfo() with fetched=False on any failure (network, auth,
@@ -261,7 +264,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Glob applied to filenames, e.g. '*_compressed.mp4' or 'fly42_*.mp4'",
     )
     p.add_argument("--recurse", action="store_true", help="Recurse into subdirectories")
-    p.add_argument("--jar", type=Path, default=DEFAULT_JAR, help="Path to DVUploader jar")
+    p.add_argument(
+        "--jar", type=Path, default=DEFAULT_JAR, help="Path to DVUploader jar"
+    )
     p.add_argument(
         "--env-file",
         type=Path,
@@ -283,16 +288,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "(default: query the dataset and skip same-named files)"
         ),
     )
-    p.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation prompt")
+    p.add_argument(
+        "-y", "--yes", action="store_true", help="Skip the confirmation prompt"
+    )
     p.add_argument(
         "--dry-run",
         action="store_true",
         help="Show the manifest and exit without contacting Dataverse",
     )
+    p.add_argument(
+        "--add-prefix",
+        default="",
+        metavar="PREFIX",
+        help="Prepend PREFIX to each uploaded filename on the server (e.g. 'Ballscents-')",
+    )
+    p.add_argument(
+        "--add-suffix",
+        default="",
+        metavar="SUFFIX",
+        help="Insert SUFFIX before the file extension on the server (e.g. '_v2')",
+    )
     return p.parse_args(argv)
 
 
-def resolve_credentials(args: argparse.Namespace) -> tuple[str | None, str | None, str | None]:
+def resolve_credentials(
+    args: argparse.Namespace,
+) -> tuple[str | None, str | None, str | None]:
     env_file = args.env_file if args.env_file else Path.cwd() / ".env"
     load_env_file(env_file)
     return (
@@ -408,7 +429,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Directory not found: {args.directory}", file=sys.stderr)
         return 2
 
-    print(f"Scanning {args.directory} (filter: {args.filter}, recurse: {args.recurse})...")
+    print(
+        f"Scanning {args.directory} (filter: {args.filter}, recurse: {args.recurse})..."
+    )
     files = collect_files(args.directory, args.filter, args.recurse)
     if not files:
         print("No files matched the filter.")
@@ -427,9 +450,16 @@ def main(argv: list[str] | None = None) -> int:
         to_upload, already_present = ok, []
 
     print_manifest(
-        args.directory, args.filter, args.recurse,
-        to_upload, already_present, oversized,
-        server, doi, info, skip_existing_active,
+        args.directory,
+        args.filter,
+        args.recurse,
+        to_upload,
+        already_present,
+        oversized,
+        server,
+        doi,
+        info,
+        skip_existing_active,
     )
 
     if args.dry_run:
@@ -443,7 +473,11 @@ def main(argv: list[str] | None = None) -> int:
             print("Nothing to upload.")
         return 0
 
-    missing = [name for name, val in (("server", server), ("key", key), ("doi", doi)) if not val]
+    missing = [
+        name
+        for name, val in (("server", server), ("key", key), ("doi", doi))
+        if not val
+    ]
     if missing:
         print(
             f"Missing credentials: {', '.join(missing)}. "
@@ -463,7 +497,9 @@ def main(argv: list[str] | None = None) -> int:
 
     target = f'"{info.title}" ({doi})' if info.title else doi
     skipped_msg = (
-        f" (skipping {len(already_present)} already on server)" if already_present else ""
+        f" (skipping {len(already_present)} already on server)"
+        if already_present
+        else ""
     )
     prompt_msg = f"Upload {len(to_upload)} files{skipped_msg} to {target}? [y/N] "
     if not args.yes and not confirm(prompt_msg):
@@ -500,9 +536,39 @@ def main(argv: list[str] | None = None) -> int:
             failures.append((entry, output))
 
     print_summary(
-        successes, failures, list(oversized), list(already_present),
+        successes,
+        failures,
+        list(oversized),
+        list(already_present),
         time.time() - started,
     )
+
+    if (args.add_prefix or args.add_suffix) and successes:
+        uploaded_names = {e.path.name for e, _ in successes}
+        print()
+        print(f"Renaming {len(uploaded_names)} uploaded file(s) on server...")
+        print("-" * 70)
+        remote_files = fetch_remote_files(server, key, doi)
+        rename_ok = 0
+        rename_fail = 0
+        for rf in remote_files:
+            if rf.label not in uploaded_names:
+                continue
+            dot = rf.label.rfind(".")
+            if dot > 0:
+                stem, ext = rf.label[:dot], rf.label[dot:]
+            else:
+                stem, ext = rf.label, ""
+            new_label = args.add_prefix + stem + args.add_suffix + ext
+            try:
+                rename_file(server, key, rf, new_label)
+                print(f"  {rf.label!r}  →  {new_label!r}")
+                rename_ok += 1
+            except Exception as exc:
+                print(f"  FAILED rename {rf.label!r}: {exc}")
+                rename_fail += 1
+        print(f"Renamed: {rename_ok}   Failed: {rename_fail}")
+
     if failures:
         return 2
     if oversized:

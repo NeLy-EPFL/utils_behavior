@@ -145,6 +145,23 @@ EXPERIMENT_PROFILES: dict[str, dict] = {
         "rotate_videos": False,
         "F1_experiments": True,
     },
+    "ballpushing_learning": {
+        # Data — PR flies learning-trials dataset; all dates → single grid
+        "data_path": (
+            "/mnt/upramdya_data/MD/BallPushing_Learning/Datasets/250318_Datasets/250320_Annotated_data.feather"
+        ),
+        "mapping_csv_path": "/mnt/upramdya_data/MD/Region_map_260506.csv",
+        "groupby": None,  # None = entire dataset as one group
+        "group_name": "LearningTrials",  # output filename stem
+        # Output
+        "output_dir": "/mnt/upramdya_data/MD/BallPushing_Learning/Grids",
+        # Layout — 4K multi-row, rotated corridors (ball-pushing setup)
+        "max_grid_width": 3840,
+        "max_grid_height": 2160,
+        "force_single_row": False,
+        "rotate_videos": True,
+        "F1_experiments": False,
+    },
 }
 
 
@@ -296,6 +313,71 @@ def _compute_layout(num_videos: int, ar: float) -> Optional[tuple]:
     return best_layout
 
 
+def _run_ffmpeg_with_progress(
+    cmd: list,
+    total_frames: int,
+    label: str = "",
+) -> subprocess.CompletedProcess:
+    """
+    Run an ffmpeg command while showing a tqdm progress bar driven by
+    ``-progress pipe:1`` frame-count output.
+
+    Returns a CompletedProcess-like object with .returncode and .stderr.
+    ``total_frames`` is used to set the bar maximum; pass 0 to get a spinner.
+    """
+    # Inject -progress pipe:1 -nostats before the output path (last element)
+    progress_cmd = list(cmd)
+    progress_cmd[-1:] = ["-progress", "pipe:1", "-nostats", progress_cmd[-1]]
+
+    stderr_lines: list = []
+    bar = tqdm(
+        total=total_frames if total_frames > 0 else None,
+        unit="fr",
+        desc=label,
+        leave=False,
+        dynamic_ncols=True,
+    )
+    last_frame = 0
+    try:
+        proc = subprocess.Popen(
+            progress_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        # Read stdout (progress lines) and stderr concurrently via threads
+        import threading
+
+        def _drain_stderr():
+            for line in proc.stderr:
+                stderr_lines.append(line)
+
+        t = threading.Thread(target=_drain_stderr, daemon=True)
+        t.start()
+
+        for line in proc.stdout:
+            line = line.strip()
+            if line.startswith("frame="):
+                try:
+                    frame = int(line.split("=", 1)[1])
+                    bar.update(frame - last_frame)
+                    last_frame = frame
+                except ValueError:
+                    pass
+
+        proc.wait()
+        t.join()
+    finally:
+        bar.close()
+
+    return subprocess.CompletedProcess(
+        args=progress_cmd,
+        returncode=proc.returncode,
+        stdout="",
+        stderr="".join(stderr_lines),
+    )
+
+
 def generate_grid_ffmpeg(
     video_paths: List[Path],
     identifiers: List[str],
@@ -329,10 +411,12 @@ def generate_grid_ffmpeg(
     # Returns (y_start, content_h, raw_w) per video; falls back to full frame.
     logger.info("Detecting corridor content regions…")
     crop_results: List[tuple] = []  # (y_start, content_h, raw_w)
+    raw_h_list: List[int] = []  # raw frame height per video (for rotated layout)
     for p in video_paths:
         vi = get_video_info_ffprobe(p)
         raw_w = vi["width"] if vi else 0
         raw_h = vi["height"] if vi else 0
+        raw_h_list.append(raw_h)
         cp = detect_corridor_crop(p)
         if cp:
             y_start, content_h, raw_w = cp
@@ -355,14 +439,120 @@ def generate_grid_ffmpeg(
     # Thin separator between columns
     sep_px = 2
 
-    # Layout: cols/rows from the layout helper (force_single_row etc.)
-    ar = cell_w / cell_h
     num_videos = len(video_paths)
-    layout = _compute_layout(num_videos, ar)
-    if not layout:
-        logger.error("No valid grid layout found — try --force-max or fewer videos")
-        return False
-    cols, rows, _, _ = layout
+
+    # A rough label_h estimate (3 lines × line_spacing) for layout purposes;
+    # the precise value is recalculated below after _wrap_label is defined.
+    _label_h_est = CONFIG["line_spacing"] * 3
+
+    # ---------------------------------------------------------------------------
+    # Layout: compute (cols, rows) and effective cell size (eff_cell_w × eff_cell_h).
+    #
+    # For ROTATED videos (transpose=1 swaps axes, making portrait corridors lie
+    # landscape) we cannot use native pixel dims as the cell size — they are
+    # tiny (e.g. 94×500 → 500×94 after rotation) and would never fill 4 K.
+    # Instead we derive the target cell size from the aspect ratio and find
+    # the best (cols, rows) that maximises grid utilisation via scaling.
+    #
+    # For NON-ROTATED videos we keep the original approach: use native cropped
+    # dimensions as the cell size and tile them at that size.
+    # ---------------------------------------------------------------------------
+    if CONFIG["rotate_videos"]:
+        # Median raw dims (robust to outlier videos)
+        _sorted_rh = sorted(raw_h_list)
+        _sorted_rw = sorted(raw_widths)
+        _med_rh = _sorted_rh[len(_sorted_rh) // 2]  # becomes width after transpose
+        _med_rw = _sorted_rw[len(_sorted_rw) // 2]  # becomes height after transpose
+        ar = _med_rh / max(_med_rw, 1)  # width / height ratio in landscape
+
+        if CONFIG.get("force_single_row"):
+            cols, rows = num_videos, 1
+            _avail_w = (CONFIG["max_grid_width"] - sep_px * num_videos) / num_videos
+            _avail_h = CONFIG["max_grid_height"] - _label_h_est
+            # Scale to fit slot while preserving AR
+            if _avail_w / max(_avail_h, 1) > ar:
+                _ch = _avail_h
+                _cw = _ch * ar
+            else:
+                _cw = _avail_w
+                _ch = _cw / ar
+        else:
+            best_layout = None
+            best_util = 0.0
+            for c in range(1, num_videos + 1):
+                r = math.ceil(num_videos / c)
+                # Available space per cell (accounting for separators / labels)
+                _avail_w_c = (CONFIG["max_grid_width"] - sep_px * c) / c
+                _avail_h_c = (CONFIG["max_grid_height"] - _label_h_est * r) / r
+                if _avail_w_c <= 0 or _avail_h_c <= 0:
+                    continue
+                # Scale to fit while preserving AR
+                if _avail_w_c / _avail_h_c > ar:
+                    # height-constrained
+                    _ch = _avail_h_c
+                    _cw = _ch * ar
+                else:
+                    # width-constrained
+                    _cw = _avail_w_c
+                    _ch = _cw / ar
+                _total_w = c * (_cw + sep_px)
+                _total_h = r * (_ch + _label_h_est)
+                if (
+                    _total_w <= CONFIG["max_grid_width"]
+                    and _total_h <= CONFIG["max_grid_height"]
+                ):
+                    _util = (
+                        _cw
+                        * _ch
+                        * num_videos
+                        / (CONFIG["max_grid_width"] * CONFIG["max_grid_height"])
+                    )
+                    if _util > best_util:
+                        best_util = _util
+                        best_layout = (c, r, _cw, _ch)
+
+            if not best_layout:
+                logger.error(
+                    "No valid grid layout found — try --force-max or fewer videos"
+                )
+                return False
+            cols, rows, _cw, _ch = best_layout
+
+        eff_cell_w = (int(_cw) // 2) * 2
+        eff_cell_h = (int(_ch) // 2) * 2
+
+    else:
+        # Non-rotated: native cropped pixel dimensions define the cell size.
+        eff_cell_w, eff_cell_h = cell_w, cell_h
+
+        if CONFIG.get("force_single_row"):
+            cols, rows = num_videos, 1
+        else:
+            _slot_w = eff_cell_w + sep_px
+            _slot_h_est = eff_cell_h + _label_h_est
+            _max_cols = max(1, CONFIG["max_grid_width"] // _slot_w)
+            best_layout = None
+            best_util = 0.0
+            for c in range(1, _max_cols + 1):
+                r = math.ceil(num_videos / c)
+                total_w = c * _slot_w
+                total_h = r * _slot_h_est
+                if (
+                    total_w <= CONFIG["max_grid_width"]
+                    and total_h <= CONFIG["max_grid_height"]
+                ):
+                    util = (total_w * total_h) / (
+                        CONFIG["max_grid_width"] * CONFIG["max_grid_height"]
+                    )
+                    if util > best_util:
+                        best_util = util
+                        best_layout = (c, r)
+            if not best_layout:
+                logger.error(
+                    "No valid grid layout found — try --force-max or fewer videos"
+                )
+                return False
+            cols, rows = best_layout
 
     title_h = max(2, (CONFIG["top_padding"] // 2) * 2)
 
@@ -376,7 +566,7 @@ def generate_grid_ffmpeg(
         )
 
     logger.info(
-        f"Grid layout: {cols}×{rows}, corridor {cell_w}×{cell_h} (native), "
+        f"Grid layout: {cols}×{rows}, corridor {eff_cell_w}×{eff_cell_h} (post-rotation), "
         f"sep={sep_px}px, {num_videos} videos — output {output_path.name}"
     )
 
@@ -403,7 +593,7 @@ def generate_grid_ffmpeg(
     # Approximate monospace character width at fontsize=16 for label wrapping.
     _label_fontsize = 16
     _char_w_px = _label_fontsize * 0.6  # ~9.6 px/char for Mono
-    _max_chars = max(6, int(cell_w / _char_w_px))
+    _max_chars = max(6, int(eff_cell_w / _char_w_px))
 
     # label_h from worst-case wrapped line count across all labels.
     _max_label_lines = max(
@@ -432,20 +622,31 @@ def generate_grid_ffmpeg(
 
         rotate = "transpose=1," if CONFIG["rotate_videos"] else ""
 
-        # Center-crop to uniform cell_w×cell_h: strips background rows (y) and
-        # trims any extra width (x) symmetrically. No padding, no resizing.
-        y_start, content_h, raw_w = crop_results[i]
-        x_off = (raw_w - cell_w) // 2  # centre horizontal crop (0 when equal)
-        cell_filter = (
-            f"{rotate}"
-            f"crop={cell_w}:{cell_h}:{x_off}:{y_start},"  # uniform size, no borders
-            f"setsar=1,"
-            f"pad=iw:ih+{label_h}:0:0:black"  # label strip
-        )
+        if CONFIG["rotate_videos"]:
+            # After transpose=1 the frame is eff_cell_w×eff_cell_h (from raw dims).
+            # Use scale to guarantee EXACTLY eff_cell_w×eff_cell_h output — this
+            # is what the xstack slot dimensions are based on, so any size mismatch
+            # would cause cells to overlap.  For same-setup corridors the scale
+            # is effectively a no-op; for edge cases it rescales cleanly.
+            cell_filter = (
+                f"transpose=1,"
+                f"scale={eff_cell_w}:{eff_cell_h},"
+                f"setsar=1,"
+                f"pad=iw:ih+{label_h}:0:0:black"
+            )
+        else:
+            # Non-rotated: center-crop to uniform cell_w×cell_h using detection offsets.
+            y_start, content_h, raw_w = crop_results[i]
+            x_off = (raw_w - cell_w) // 2
+            cell_filter = (
+                f"crop={eff_cell_w}:{eff_cell_h}:{x_off}:{y_start},"
+                f"setsar=1,"
+                f"pad=iw:ih+{label_h}:0:0:black"
+            )
         # Per-line centered drawtext
         label_lines = _wrap_label(label, _max_chars).split("\n")
         for j, line in enumerate(label_lines):
-            y_txt = cell_h + 8 + j * CONFIG["line_spacing"]
+            y_txt = eff_cell_h + 8 + j * CONFIG["line_spacing"]
             cell_filter += (
                 f",drawtext=text='{_esc(line)}'"
                 f":x=(w-tw)/2:y={y_txt}"
@@ -454,8 +655,8 @@ def generate_grid_ffmpeg(
         filter_parts.append(f"[{i}:v]{cell_filter}[cell{i}]")
 
     # xstack: sep_px-wide black gap between columns
-    slot_h = cell_h + label_h
-    slot_w = cell_w + sep_px
+    slot_h = eff_cell_h + label_h
+    slot_w = eff_cell_w + sep_px
     xstack_layout = "|".join(
         f"{(i % cols) * slot_w}_{(i // cols) * slot_h}" for i in range(num_videos)
     )
@@ -537,7 +738,14 @@ def generate_grid_ffmpeg(
     )
 
     logger.info("Running ffmpeg grid assembly…")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    total_frames = (
+        int(get_video_duration(video_paths[0]) * fps)
+        if not test
+        else int(CONFIG["test_duration"] * fps)
+    )
+    result = _run_ffmpeg_with_progress(
+        cmd, total_frames=total_frames, label=output_path.stem
+    )
 
     if result.returncode != 0:
         logger.error(f"ffmpeg failed:\n{result.stderr[-3000:]}")
@@ -1932,6 +2140,16 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--max-videos",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Randomly sample at most N videos per group when the full set is too "
+            "large for a valid grid layout. Uses a fixed seed for reproducibility."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help=(
@@ -1960,6 +2178,7 @@ if __name__ == "__main__":
     active_data_path = DATA_PATH
     active_mapping_csv = MAPPING_CSV_PATH
     active_groupby = groupby
+    active_group_name = None
     active_output_dir = CONFIG["output_dir"]
 
     if args.profile:
@@ -1967,6 +2186,7 @@ if __name__ == "__main__":
         active_data_path = profile["data_path"]
         active_mapping_csv = profile["mapping_csv_path"]
         active_groupby = profile["groupby"]
+        active_group_name = profile.get("group_name", None)
         active_output_dir = profile["output_dir"]
         for key in [
             "max_grid_width",
@@ -2152,7 +2372,12 @@ if __name__ == "__main__":
                 logger.info(f"Processing only missing videos: {missing_identifiers}")
 
             # Grouping logic based on mode
-            if CONFIG["trial_mode"]:
+            if active_groupby is None:
+                # Entire dataset is one group; use the profile-supplied name
+                _name = active_group_name or "all"
+                groups = [(_name, transformed_data)]
+                logger.info(f"Processing 1 experimental group ('{_name}', all rows)")
+            elif CONFIG["trial_mode"]:
                 groups = transformed_data.groupby(
                     [CONFIG["trial_column"], active_groupby]
                 )
@@ -2190,15 +2415,20 @@ if __name__ == "__main__":
                 logger.info(f"Found {len(group_iter)} missing groups to process")
             elif genotypes:
                 # Filter by genotypes first, then optionally by other filter values
-                group_iter = filtered_genotypes(groups, genotypes)
+                group_iter = list(filtered_genotypes(groups, genotypes))
                 if filter_values:
-                    group_iter = filtered_groups(group_iter, filter_values)
+                    group_iter = list(filtered_groups(group_iter, filter_values))
             elif filter_values:
-                group_iter = filtered_groups(groups, filter_values)
+                group_iter = list(filtered_groups(groups, filter_values))
             else:
-                group_iter = groups
+                group_iter = list(groups)
 
-            for group_key, group_data in group_iter:
+            for group_key, group_data in tqdm(
+                group_iter,
+                desc="Groups",
+                unit="grp",
+                dynamic_ncols=True,
+            ):
                 try:
                     # Handle trial-mode metadata
                     grid_suffix = "_grid_compressed.mp4" if compress else "_grid.mp4"
@@ -2283,6 +2513,19 @@ if __name__ == "__main__":
                             f"No valid F1-entering flies for group: {group_key}"
                         )
                         continue
+
+                    # Optionally cap the number of videos to allow a valid layout
+                    if args.max_videos and len(video_paths) > args.max_videos:
+                        import random
+
+                        rng = random.Random(42)
+                        paired = list(zip(video_paths, valid_flypaths))
+                        paired = rng.sample(paired, args.max_videos)
+                        video_paths, valid_flypaths = map(list, zip(*paired))
+                        logger.info(
+                            f"Group {group_key}: sampled {args.max_videos} videos "
+                            f"(from {len(flypaths)} total, seed=42)"
+                        )
 
                     logger.info(
                         f"Group {group_key}: {len(valid_flypaths)} flies entered F1 corridor ({len(flypaths) - len(valid_flypaths)} excluded)"

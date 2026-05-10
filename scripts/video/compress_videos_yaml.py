@@ -5,13 +5,13 @@ Compress videos from a YAML file list while maintaining quality and size constra
 This script processes videos listed in a YAML file and creates compressed versions
 that do not exceed a specified maximum file size (default 2.5 GB).
 
-Optimizations:
-- Always uses two-pass bitrate-constrained encoding (predictable size)
-- Optional parallel processing for faster batch compression
-- FFmpeg flags for speed: -threads, -tune, -movflags +faststart
-- Optional H.265/HEVC support (40-50% smaller than H.264)
-- Proportional bitrate correction on retry (better than fixed margins)
-- Fast file size checks (avoids redundant ffprobe calls)
+Encoding strategy:
+- Default is single-pass ABR with a tight maxrate cap. Final size lands within
+  ~5% of target, which the retry-with-proportional-correction handles. This
+  avoids the full extra encode "analysis" pass that doubles runtime.
+- --two-pass switches to two-pass for stricter size accuracy. On GPU this uses
+  NVENC's built-in -multipass fullres (one ffmpeg invocation, internal two-pass);
+  on CPU it runs libx264/libx265 two-pass.
 
 YAML file format:
 ---
@@ -26,9 +26,9 @@ videos:
     output: /path/to/compressed/video1_compressed.mp4
 
 Usage:
-    python compress_videos_yaml.py videos.yaml
-    python compress_videos_yaml.py videos.yaml --max-size 2.5 --gpu
-    python compress_videos_yaml.py videos.yaml --hevc --parallel 4
+    python compress_videos_yaml.py videos.yaml --gpu
+    python compress_videos_yaml.py videos.yaml --gpu --hevc
+    python compress_videos_yaml.py videos.yaml --two-pass --parallel 4
 """
 
 import argparse
@@ -113,7 +113,10 @@ def get_video_info(video_path: Path) -> dict:
 
 
 def calculate_target_bitrate(
-    duration: float, max_size_gb: float, audio_bitrate_kbps: int = 0, safety_margin: float = 0.90
+    duration: float,
+    max_size_gb: float,
+    audio_bitrate_kbps: int = 0,
+    safety_margin: float = 0.90,
 ) -> int:
     """Calculate target video bitrate to achieve desired file size."""
     if duration <= 0:
@@ -139,6 +142,16 @@ def check_nvenc_support() -> bool:
         return False
 
 
+def _run_ffmpeg(cmd: list, label: str) -> None:
+    """Run ffmpeg, surfacing stderr on failure."""
+    logger.info(f"  {label}")
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=7200)
+    except subprocess.CalledProcessError as e:
+        tail = (e.stderr or "").strip().splitlines()[-15:]
+        raise RuntimeError(f"ffmpeg failed ({label}):\n" + "\n".join(tail)) from e
+
+
 def compress_video_bitrate(
     input_path: Path,
     output_path: Path,
@@ -147,88 +160,142 @@ def compress_video_bitrate(
     use_gpu: bool = False,
     use_hevc: bool = False,
     tune: str = "grain",
+    two_pass: bool = False,
 ) -> bool:
-    """Compress video using two-pass bitrate-constrained encoding."""
+    """Compress video using bitrate-constrained encoding.
+
+    Default is single-pass ABR with a tight maxrate cap (~5% size accuracy).
+    With two_pass=True: NVENC uses -multipass fullres (one ffmpeg run, internal
+    two-pass); libx264/libx265 use classic two-pass (two ffmpeg runs).
+    """
+    # Tight maxrate so peaks can't blow the size cap; small bufsize keeps it honest.
+    maxrate_kbps = int(target_bitrate_kbps * 1.10)
+    bufsize_kbps = int(target_bitrate_kbps * 1.50)
     pass_log = str(output_path.parent / f"ffmpeg2pass_{output_path.stem}")
+
     try:
         if use_gpu:
             nvenc_preset_map = {
-                "ultrafast": "p1", "fast": "p2", "medium": "p4", "slow": "p5", "slower": "p6",
+                "ultrafast": "p1",
+                "fast": "p2",
+                "medium": "p4",
+                "slow": "p5",
+                "slower": "p6",
             }
             nvenc_preset = nvenc_preset_map.get(preset, "p4")
             codec = "hevc_nvenc" if use_hevc else "h264_nvenc"
-            
-            logger.info("  Pass 1/2: Analyzing video...")
-            subprocess.run([
-                "ffmpeg", "-hwaccel", "cuda", "-i", str(input_path),
-                "-c:v", codec, "-preset", nvenc_preset,
-                "-b:v", f"{target_bitrate_kbps}k",
-                "-maxrate", f"{int(target_bitrate_kbps * 1.5)}k",
-                "-bufsize", f"{target_bitrate_kbps * 2}k",
-                "-pass", "1", "-passlogfile", pass_log, "-an", "-f", "null", "/dev/null",
-            ], capture_output=True, text=True, check=True, timeout=7200)
 
-            logger.info("  Pass 2/2: Encoding video...")
-            subprocess.run([
-                "ffmpeg", "-hwaccel", "cuda", "-i", str(input_path),
-                "-c:v", codec, "-preset", nvenc_preset,
+            cmd = [
+                "ffmpeg",
+                "-hwaccel", "cuda",
+                "-i", str(input_path),
+                "-c:v", codec,
+                "-preset", nvenc_preset,
+                "-rc", "vbr",
                 "-b:v", f"{target_bitrate_kbps}k",
-                "-maxrate", f"{int(target_bitrate_kbps * 1.5)}k",
-                "-bufsize", f"{target_bitrate_kbps * 2}k",
-                "-pass", "2", "-passlogfile", pass_log, "-movflags", "+faststart",
+                "-maxrate", f"{maxrate_kbps}k",
+                "-bufsize", f"{bufsize_kbps}k",
+            ]
+            if two_pass:
+                # NVENC's internal two-pass: one ffmpeg invocation, much cheaper
+                # than running the full encode twice.
+                cmd += ["-multipass", "fullres"]
+            cmd += [
+                "-movflags", "+faststart",
                 "-an", "-y", str(output_path),
-            ], capture_output=True, text=True, check=True, timeout=7200)
-        else:
-            if use_hevc:
-                x265_tune_map = {"film": "grain", "animation": "animation", "grain": "grain"}
-                x265_tune = x265_tune_map.get(tune)
-                tune_suffix = f":tune={x265_tune}" if x265_tune else ""
+            ]
+            label = "Encoding (NVENC two-pass)" if two_pass else "Encoding (NVENC single-pass)"
+            _run_ffmpeg(cmd, label)
 
-                logger.info("  Pass 1/2: Analyzing video...")
-                subprocess.run([
-                    "ffmpeg", "-i", str(input_path), "-c:v", "libx265",
-                    "-preset", preset, "-b:v", f"{target_bitrate_kbps}k",
-                    "-x265-params", f"pass=1:stats={pass_log}.x265log{tune_suffix}",
-                    "-threads", str(os.cpu_count()),
-                    "-an", "-f", "null", "/dev/null",
-                ], capture_output=True, text=True, check=True, timeout=7200)
+        elif use_hevc:
+            x265_tune_map = {"film": "grain", "animation": "animation", "grain": "grain"}
+            x265_tune = x265_tune_map.get(tune)
+            tune_suffix = f":tune={x265_tune}" if x265_tune else ""
+            vbv = (
+                f":vbv-maxrate={maxrate_kbps}:vbv-bufsize={bufsize_kbps}"
+            )
 
-                logger.info("  Pass 2/2: Encoding video...")
-                subprocess.run([
-                    "ffmpeg", "-i", str(input_path), "-c:v", "libx265",
-                    "-preset", preset, "-b:v", f"{target_bitrate_kbps}k",
-                    "-x265-params", f"pass=2:stats={pass_log}.x265log:vbv-maxrate={int(target_bitrate_kbps * 1.5)}:vbv-bufsize={target_bitrate_kbps * 2}{tune_suffix}",
-                    "-threads", str(os.cpu_count()),
-                    "-movflags", "+faststart",
-                    "-an", "-y", str(output_path),
-                ], capture_output=True, text=True, check=True, timeout=7200)
+            if two_pass:
+                _run_ffmpeg(
+                    [
+                        "ffmpeg", "-i", str(input_path),
+                        "-c:v", "libx265",
+                        "-preset", preset,
+                        "-b:v", f"{target_bitrate_kbps}k",
+                        "-x265-params", f"pass=1:stats={pass_log}.x265log{tune_suffix}",
+                        "-threads", str(min(os.cpu_count() or 1, 16)),
+                        "-an", "-f", "null", "/dev/null",
+                    ],
+                    "Pass 1/2: x265 stats",
+                )
+                _run_ffmpeg(
+                    [
+                        "ffmpeg", "-i", str(input_path),
+                        "-c:v", "libx265",
+                        "-preset", preset,
+                        "-b:v", f"{target_bitrate_kbps}k",
+                        "-x265-params",
+                        f"pass=2:stats={pass_log}.x265log{vbv}{tune_suffix}",
+                        "-threads", str(min(os.cpu_count() or 1, 16)),
+                        "-movflags", "+faststart",
+                        "-an", "-y", str(output_path),
+                    ],
+                    "Pass 2/2: x265 encode",
+                )
             else:
-                logger.info("  Pass 1/2: Analyzing video...")
-                subprocess.run([
-                    "ffmpeg", "-i", str(input_path), "-c:v", "libx264",
-                    "-preset", preset, "-b:v", f"{target_bitrate_kbps}k",
-                    "-maxrate", f"{int(target_bitrate_kbps * 1.5)}k",
-                    "-bufsize", f"{target_bitrate_kbps * 2}k",
-                    "-pass", "1", "-passlogfile", pass_log,
-                    "-threads", str(os.cpu_count()),
-                    "-tune", tune, "-an", "-f", "null", "/dev/null",
-                ], capture_output=True, text=True, check=True, timeout=7200)
+                _run_ffmpeg(
+                    [
+                        "ffmpeg", "-i", str(input_path),
+                        "-c:v", "libx265",
+                        "-preset", preset,
+                        "-b:v", f"{target_bitrate_kbps}k",
+                        "-x265-params", f"{vbv.lstrip(':')}{tune_suffix}",
+                        "-threads", str(min(os.cpu_count() or 1, 16)),
+                        "-movflags", "+faststart",
+                        "-an", "-y", str(output_path),
+                    ],
+                    "Encoding (x265 single-pass)",
+                )
 
-                logger.info("  Pass 2/2: Encoding video...")
-                subprocess.run([
-                    "ffmpeg", "-i", str(input_path), "-c:v", "libx264",
-                    "-preset", preset, "-b:v", f"{target_bitrate_kbps}k",
-                    "-maxrate", f"{int(target_bitrate_kbps * 1.5)}k",
-                    "-bufsize", f"{target_bitrate_kbps * 2}k",
-                    "-pass", "2", "-passlogfile", pass_log,
-                    "-threads", str(os.cpu_count()),
-                    "-tune", tune, "-movflags", "+faststart",
-                    "-an", "-y", str(output_path),
-                ], capture_output=True, text=True, check=True, timeout=7200)
+        else:
+            base = [
+                "ffmpeg", "-i", str(input_path),
+                "-c:v", "libx264",
+                "-preset", preset,
+                "-b:v", f"{target_bitrate_kbps}k",
+                "-maxrate", f"{maxrate_kbps}k",
+                "-bufsize", f"{bufsize_kbps}k",
+                "-threads", str(os.cpu_count()),
+                "-tune", tune,
+            ]
+            if two_pass:
+                _run_ffmpeg(
+                    base + [
+                        "-pass", "1", "-passlogfile", pass_log,
+                        "-an", "-f", "null", "/dev/null",
+                    ],
+                    "Pass 1/2: x264 stats",
+                )
+                _run_ffmpeg(
+                    base + [
+                        "-pass", "2", "-passlogfile", pass_log,
+                        "-movflags", "+faststart",
+                        "-an", "-y", str(output_path),
+                    ],
+                    "Pass 2/2: x264 encode",
+                )
+            else:
+                _run_ffmpeg(
+                    base + [
+                        "-movflags", "+faststart",
+                        "-an", "-y", str(output_path),
+                    ],
+                    "Encoding (x264 single-pass)",
+                )
 
         return True
     except Exception as e:
-        logger.error(f"Two-pass encoding error: {e}")
+        logger.error(f"Encoding error: {e}")
         return False
     finally:
         for log_file in Path(pass_log).parent.glob(f"ffmpeg2pass_{output_path.stem}*"):
@@ -247,9 +314,10 @@ def compress_video(
     use_hevc: bool = False,
     tune: str = "grain",
     overwrite: bool = False,
+    two_pass: bool = False,
 ) -> bool:
     """
-    Compress a video using two-pass bitrate-constrained encoding.
+    Compress a video using bitrate-constrained encoding.
     If output exceeds the size limit, re-encodes with a proportionally reduced bitrate.
     """
     if output_path.exists() and not overwrite:
@@ -259,21 +327,28 @@ def compress_video(
     logger.info(f"Processing: {input_path.name}")
 
     input_info = get_video_info(input_path)
-    logger.info(f"  Input: {input_info['size_gb']:.2f} GB, "
-                f"{input_info['width']}x{input_info['height']}, "
-                f"{input_info['duration']/60:.1f} min, "
-                f"{input_info['fps']:.1f} fps")
+    logger.info(
+        f"  Input: {input_info['size_gb']:.2f} GB, "
+        f"{input_info['width']}x{input_info['height']}, "
+        f"{input_info['duration']/60:.1f} min, "
+        f"{input_info['fps']:.1f} fps"
+    )
 
     # Abort if video is unreadable (corrupt file, missing moov atom, etc.)
-    if input_info['duration'] == 0:
-        logger.error(f"  \u2717 Cannot encode: duration is 0 (corrupt or unreadable file), skipping")
+    if input_info["duration"] == 0:
+        logger.error(
+            f"  \u2717 Cannot encode: duration is 0 (corrupt or unreadable file), skipping"
+        )
         return False
 
-    # Two-pass bitrate-constrained encoding
-    target_bitrate = calculate_target_bitrate(input_info['duration'], max_size_gb)
-    logger.info(f"  Target bitrate: {target_bitrate/1000:.1f} Mbps (max {max_size_gb} GB)")
+    target_bitrate = calculate_target_bitrate(input_info["duration"], max_size_gb)
+    logger.info(
+        f"  Target bitrate: {target_bitrate/1000:.1f} Mbps (max {max_size_gb} GB)"
+    )
 
-    if not compress_video_bitrate(input_path, output_path, target_bitrate, preset, use_gpu, use_hevc, tune):
+    if not compress_video_bitrate(
+        input_path, output_path, target_bitrate, preset, use_gpu, use_hevc, tune, two_pass
+    ):
         return False
 
     # Verify output - STRICT size enforcement
@@ -282,52 +357,60 @@ def compress_video(
 
     if output_size_gb > max_size_gb:
         excess_mb = (output_size_gb - max_size_gb) * 1000
-        logger.warning(f"  ⚠ Exceeds {max_size_gb} GB by {excess_mb:.0f} MB - re-encoding...")
-        
+        logger.warning(
+            f"  ⚠ Exceeds {max_size_gb} GB by {excess_mb:.0f} MB - re-encoding..."
+        )
+
         # Proportional correction based on actual overshoot
         actual_ratio = output_size_gb / max_size_gb
         corrected_bitrate = int(target_bitrate / actual_ratio * 0.92)
         logger.info(f"  Corrected bitrate: {corrected_bitrate/1000:.1f} Mbps")
-        
+
         output_path.unlink()
-        
-        if not compress_video_bitrate(input_path, output_path, corrected_bitrate, preset, use_gpu, use_hevc, tune):
+
+        if not compress_video_bitrate(
+            input_path, output_path, corrected_bitrate, preset, use_gpu, use_hevc, tune, two_pass
+        ):
             logger.error(f"  ✗ Re-encoding failed")
             return False
-        
+
         output_size_gb = output_path.stat().st_size / (1024**3)
         logger.info(f"  Final output: {output_size_gb:.2f} GB")
-        
+
         if output_size_gb > max_size_gb:
-            logger.error(f"  ✗ Still exceeds limit (by {(output_size_gb - max_size_gb)*1000:.0f} MB)")
+            logger.error(
+                f"  ✗ Still exceeds limit (by {(output_size_gb - max_size_gb)*1000:.0f} MB)"
+            )
             logger.error(f"  This video may need manual processing")
             return False
-    
-    ratio = (1 - output_size_gb / input_info['size_gb']) * 100
-    saved_gb = input_info['size_gb'] - output_size_gb
+
+    ratio = (1 - output_size_gb / input_info["size_gb"]) * 100
+    saved_gb = input_info["size_gb"] - output_size_gb
     logger.info(f"  Compression: {ratio:.1f}% reduction ({saved_gb:.2f} GB saved)")
     logger.info(f"✓ Successfully compressed: {output_path.name}")
-    
+
     return True
 
 
 def load_video_list(yaml_path: Path) -> List[Dict[str, str]]:
     """Load video list from YAML file."""
     try:
-        with open(yaml_path, 'r') as f:
+        with open(yaml_path, "r") as f:
             data = yaml.safe_load(f)
 
-        if not data or 'videos' not in data:
+        if not data or "videos" not in data:
             raise ValueError("YAML file must contain a 'videos' key")
 
         videos = []
-        for item in data['videos']:
+        for item in data["videos"]:
             if isinstance(item, str):
-                videos.append({'input': item, 'output': None})
+                videos.append({"input": item, "output": None})
             elif isinstance(item, dict):
-                if 'input' not in item:
+                if "input" not in item:
                     raise ValueError(f"Video entry must have 'input' key: {item}")
-                videos.append({'input': item['input'], 'output': item.get('output', None)})
+                videos.append(
+                    {"input": item["input"], "output": item.get("output", None)}
+                )
             else:
                 raise ValueError(f"Invalid video entry format: {item}")
 
@@ -340,8 +423,18 @@ def load_video_list(yaml_path: Path) -> List[Dict[str, str]]:
 
 def process_video_task(task_args):
     """Worker function for parallel processing."""
-    (index, input_path, output_path, max_size_gb, preset,
-     use_gpu, use_hevc, tune, overwrite) = task_args
+    (
+        index,
+        input_path,
+        output_path,
+        max_size_gb,
+        preset,
+        use_gpu,
+        use_hevc,
+        tune,
+        overwrite,
+        two_pass,
+    ) = task_args
 
     # Re-initialize logging in worker process (forked file handlers may not work correctly)
     logging.getLogger().handlers = []
@@ -353,8 +446,7 @@ def process_video_task(task_args):
 
     logger.info(f"\n[{index}]")
     success = compress_video(
-        input_path, output_path, max_size_gb, preset,
-        use_gpu, use_hevc, tune, overwrite
+        input_path, output_path, max_size_gb, preset, use_gpu, use_hevc, tune, overwrite, two_pass
     )
     return (index, success, input_path.name)
 
@@ -379,29 +471,73 @@ Examples:
         """,
     )
 
-    parser.add_argument("yaml_file", type=str, help="YAML file containing list of videos")
-    parser.add_argument("--output-dir", type=str, default=None, 
-                       help="Output directory (default: same as input)")
-    parser.add_argument("--suffix", type=str, default="_compressed",
-                       help="Suffix to add to filenames (default: _compressed)")
-    parser.add_argument("--max-size", type=float, default=2.5,
-                       help="Maximum output file size in GB (default: 2.5)")
-    parser.add_argument("--preset", type=str, default="medium",
-                       choices=["ultrafast", "fast", "medium", "slow", "slower"],
-                       help="Compression preset (default: medium for speed)")
-    parser.add_argument("--gpu", action="store_true",
-                       help="Use NVIDIA GPU hardware acceleration (NVENC)")
-    parser.add_argument("--hevc", action="store_true",
-                       help="Use H.265/HEVC (40-50%% smaller, slower encode)")
-    parser.add_argument("--tune", type=str, default="grain",
-                       choices=["film", "animation", "grain", "stillimage", "fastdecode"],
-                       help="FFmpeg tune for content type (default: grain, suited for high-detail/noisy sources)")
-    parser.add_argument("--parallel", type=int, default=1, metavar="N",
-                       help="Process N videos in parallel (default: 1)")
-    parser.add_argument("--overwrite", action="store_true",
-                       help="Overwrite existing compressed files")
-    parser.add_argument("--dry-run", action="store_true",
-                       help="Print what would be done without compressing")
+    parser.add_argument(
+        "yaml_file", type=str, help="YAML file containing list of videos"
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory (default: same as input)",
+    )
+    parser.add_argument(
+        "--suffix",
+        type=str,
+        default="_compressed",
+        help="Suffix to add to filenames (default: _compressed)",
+    )
+    parser.add_argument(
+        "--max-size",
+        type=float,
+        default=2.5,
+        help="Maximum output file size in GB (default: 2.5)",
+    )
+    parser.add_argument(
+        "--preset",
+        type=str,
+        default="medium",
+        choices=["ultrafast", "fast", "medium", "slow", "slower"],
+        help="Compression preset (default: medium for speed)",
+    )
+    parser.add_argument(
+        "--gpu",
+        action="store_true",
+        help="Use NVIDIA GPU hardware acceleration (NVENC)",
+    )
+    parser.add_argument(
+        "--hevc",
+        action="store_true",
+        help="Use H.265/HEVC (40-50%% smaller, slower encode)",
+    )
+    parser.add_argument(
+        "--tune",
+        type=str,
+        default="grain",
+        choices=["film", "animation", "grain", "stillimage", "fastdecode"],
+        help="FFmpeg tune for content type (default: grain, suited for high-detail/noisy sources)",
+    )
+    parser.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Process N videos in parallel (default: 1)",
+    )
+    parser.add_argument(
+        "--overwrite", action="store_true", help="Overwrite existing compressed files"
+    )
+    parser.add_argument(
+        "--two-pass",
+        action="store_true",
+        help="Use two-pass encoding for stricter size accuracy (slower). "
+        "Default is single-pass with a tight maxrate cap, which is ~2x faster "
+        "and lands within ~5%% of target.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would be done without compressing",
+    )
 
     args = parser.parse_args()
 
@@ -439,52 +575,80 @@ Examples:
         else:
             recommended = max(1, os.cpu_count() // 2)
             if max_workers > recommended:
-                logger.warning(f"--parallel {max_workers} may cause thrashing (recommended: {recommended})")
+                logger.warning(
+                    f"--parallel {max_workers} may cause thrashing (recommended: {recommended})"
+                )
 
     codec_info = "H.265/HEVC" if args.hevc else "H.264"
+    pass_info = "two-pass" if args.two_pass else "single-pass"
     logger.info(f"\nCompressing {len(video_list)} videos")
-    logger.info(f"Codec: {codec_info}, Preset: {args.preset}, Tune: {args.tune}")
+    logger.info(f"Codec: {codec_info} ({pass_info}), Preset: {args.preset}, Tune: {args.tune}")
     logger.info(f"Max size: {args.max_size} GB, Parallel: {max_workers}")
     logger.info("-" * 80)
 
     successful = 0
     failed = 0
     skipped = 0
-    
+
     tasks = []
     for i, video_entry in enumerate(video_list, 1):
-        input_path = Path(video_entry['input'])
-        
+        input_path = Path(video_entry["input"])
+
         if not input_path.exists():
             logger.error(f"✗ Input not found: {input_path}")
             failed += 1
             continue
 
-        if video_entry['output']:
-            output_path = Path(video_entry['output'])
+        if video_entry["output"]:
+            output_path = Path(video_entry["output"])
         elif args.output_dir:
-            output_path = Path(args.output_dir) / f"{input_path.stem}{args.suffix}{input_path.suffix}"
+            output_path = (
+                Path(args.output_dir)
+                / f"{input_path.stem}{args.suffix}{input_path.suffix}"
+            )
         else:
-            output_path = input_path.parent / f"{input_path.stem}{args.suffix}{input_path.suffix}"
+            output_path = (
+                input_path.parent / f"{input_path.stem}{args.suffix}{input_path.suffix}"
+            )
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Skip if already processed (fast file size check)
+        task_overwrite = args.overwrite
         if output_path.exists() and not args.overwrite:
             output_size_gb = output_path.stat().st_size / (1024**3)
             if output_size_gb <= args.max_size:
-                logger.info(f"⏭ Skipping (done, {output_size_gb:.2f} GB): {input_path.name}")
+                logger.info(
+                    f"⏭ Skipping (done, {output_size_gb:.2f} GB): {input_path.name}"
+                )
                 skipped += 1
                 continue
             else:
-                logger.info(f"♻ Re-processing (was {output_size_gb:.2f} GB): {input_path.name}")
+                logger.info(
+                    f"♻ Re-processing (was {output_size_gb:.2f} GB): {input_path.name}"
+                )
+                task_overwrite = True  # oversized output must be replaced
 
         if args.dry_run:
-            logger.info(f"[{i}/{len(video_list)}] Would compress: {input_path} → {output_path}")
+            logger.info(
+                f"[{i}/{len(video_list)}] Would compress: {input_path} → {output_path}"
+            )
             continue
 
-        tasks.append((i, input_path, output_path, args.max_size, args.preset,
-                     args.gpu, args.hevc, args.tune, args.overwrite))
+        tasks.append(
+            (
+                i,
+                input_path,
+                output_path,
+                args.max_size,
+                args.preset,
+                args.gpu,
+                args.hevc,
+                args.tune,
+                task_overwrite,
+                args.two_pass,
+            )
+        )
 
     if args.dry_run:
         logger.info(f"\nDry run complete. Would process {len(tasks)} videos.")
@@ -501,7 +665,9 @@ Examples:
                 failed += 1
     else:
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(process_video_task, task): task for task in tasks}
+            futures = {
+                executor.submit(process_video_task, task): task for task in tasks
+            }
             for future in as_completed(futures):
                 try:
                     index, success, name = future.result()
@@ -518,7 +684,9 @@ Examples:
     logger.info("\n" + "=" * 80)
     logger.info("COMPRESSION SUMMARY")
     logger.info("=" * 80)
-    logger.info(f"Total: {len(video_list)} | Successful: {successful} | Skipped: {skipped} | Failed: {failed}")
+    logger.info(
+        f"Total: {len(video_list)} | Successful: {successful} | Skipped: {skipped} | Failed: {failed}"
+    )
     logger.info("=" * 80)
 
     if failed > 0:

@@ -34,6 +34,19 @@ ENV_KEYS = {
     "doi": "DATAVERSE_DOI",
 }
 
+# Files that are never uploaded regardless of the glob filter. Covers OS
+# metadata files that have no scientific value on a repository.
+IGNORED_FILENAMES: frozenset[str] = frozenset(
+    {
+        ".DS_Store",  # macOS Finder metadata
+        "Thumbs.db",  # Windows Explorer thumbnail cache
+        "desktop.ini",  # Windows folder settings
+        ".Spotlight-V100",  # macOS Spotlight index
+        ".Trashes",  # macOS Trash
+        ".fseventsd",  # macOS FSEvents
+    }
+)
+
 # Tokens in DVUploader's stdout that indicate a per-file failure even when
 # the JVM exits 0. Conservative — better to flag a maybe-failed file for
 # the user to re-check than to silently miss it.
@@ -105,11 +118,30 @@ def load_env_file(path: Path) -> None:
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
-def collect_files(root: Path, pattern: str, recurse: bool) -> list[Path]:
+def collect_files(
+    root: Path,
+    pattern: str,
+    recurse: bool,
+    exclude_dirs: list[str] | None = None,
+) -> list[Path]:
     if root.is_file():
-        return [root] if fnmatch(root.name, pattern) else []
+        return (
+            [root]
+            if fnmatch(root.name, pattern) and root.name not in IGNORED_FILENAMES
+            else []
+        )
     walker = root.rglob(pattern) if recurse else root.glob(pattern)
-    return sorted(p for p in walker if p.is_file())
+    exclude_set = set(exclude_dirs or [])
+    return sorted(
+        p
+        for p in walker
+        if p.is_file()
+        and p.name not in IGNORED_FILENAMES
+        and not (
+            exclude_set
+            and any(part in exclude_set for part in p.relative_to(root).parts[:-1])
+        )
+    )
 
 
 @dataclass
@@ -264,6 +296,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Glob applied to filenames, e.g. '*_compressed.mp4' or 'fly42_*.mp4'",
     )
     p.add_argument("--recurse", action="store_true", help="Recurse into subdirectories")
+    p.add_argument(
+        "--exclude-dir",
+        action="append",
+        default=[],
+        metavar="DIR",
+        dest="exclude_dirs",
+        help="Skip any directory with this name during scanning (can be repeated)",
+    )
     p.add_argument(
         "--jar", type=Path, default=DEFAULT_JAR, help="Path to DVUploader jar"
     )
@@ -432,7 +472,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"Scanning {args.directory} (filter: {args.filter}, recurse: {args.recurse})..."
     )
-    files = collect_files(args.directory, args.filter, args.recurse)
+    files = collect_files(args.directory, args.filter, args.recurse, args.exclude_dirs)
     if not files:
         print("No files matched the filter.")
         return 0

@@ -51,6 +51,10 @@ class SleapTracker:
         batch_size=16,
         max_instances=3,
         max_tracks=None,
+        target_instances=None,
+        clean_instances=None,
+        pre_cull_iou=None,
+        clean_iou=None,
         tracker="flow",
         backend="auto",
         use_flow=True,
@@ -113,6 +117,10 @@ class SleapTracker:
         self.batch_size = batch_size
         self.max_instances = max_instances if max_instances else None
         self.max_tracks = max_tracks if max_tracks else None
+        self.target_instances = target_instances if target_instances else None
+        self.clean_instances = clean_instances if clean_instances else None
+        self.pre_cull_iou = pre_cull_iou
+        self.clean_iou = clean_iou
         self.tracker = tracker
         self.use_flow = use_flow
         self.video_filter = video_filter
@@ -258,6 +266,20 @@ class SleapTracker:
             # max_tracks only applies to the local_queues candidate method.
             cmd.extend(["--candidates_method", "local_queues",
                         "--max_tracks", str(self.max_tracks)])
+
+        # Instance-count culling: bound the number of instances *per frame* before
+        # and/or after tracking. Unlike --max_tracks (local_queues only), this is
+        # compatible with --use_flow and is the recommended fix for identity
+        # fragmentation (hundreds of short tracks for the same few flies).
+        if self.target_instances:
+            cmd.extend(["--tracking_target_instance_count", str(self.target_instances),
+                        "--tracking_pre_cull_to_target", str(self.target_instances)])
+            if self.pre_cull_iou is not None:
+                cmd.extend(["--tracking_pre_cull_iou_threshold", str(self.pre_cull_iou)])
+        if self.clean_instances:
+            cmd.extend(["--tracking_clean_instance_count", str(self.clean_instances)])
+            if self.clean_iou is not None:
+                cmd.extend(["--tracking_clean_iou_threshold", str(self.clean_iou)])
         return cmd
 
     def _build_legacy_cmd(self, video, slp_out):
@@ -364,6 +386,10 @@ def main():
     parser.add_argument("--batch_size", type=int, default=16, help="Frames per inference batch")
     parser.add_argument("--max_instances", type=int, default=3, help="Max instances detected per frame (sleap-nn -n)")
     parser.add_argument("--max_tracks", type=int, default=None, help="Max track identities (local_queues / legacy only)")
+    parser.add_argument("--target_instances", type=int, default=None, help="Cull to this many instances/frame BEFORE tracking (sleap-nn; flow-compatible). Recommended fix for identity fragmentation, e.g. 3.")
+    parser.add_argument("--clean_instances", type=int, default=None, help="Cull to this many instances/frame AFTER tracking (sleap-nn; flow-compatible), e.g. 3.")
+    parser.add_argument("--pre_cull_iou", type=float, default=None, help="IoU threshold for the pre-tracking cull (optional)")
+    parser.add_argument("--clean_iou", type=float, default=None, help="IoU threshold for the post-tracking cull (optional)")
     parser.add_argument("--tracker", type=str, default="flow", help="Legacy tracker name (legacy backend only)")
     parser.add_argument("--backend", type=str, default="auto", choices=["auto", "sleap-nn", "legacy"], help="SLEAP backend to use")
     parser.add_argument("--no_flow", action="store_true", help="Disable optical-flow candidates (sleap-nn backend)")
@@ -386,6 +412,10 @@ def main():
         batch_size=args.batch_size,
         max_instances=args.max_instances,
         max_tracks=args.max_tracks,
+        target_instances=args.target_instances,
+        clean_instances=args.clean_instances,
+        pre_cull_iou=args.pre_cull_iou,
+        clean_iou=args.clean_iou,
         tracker=args.tracker,
         backend=args.backend,
         use_flow=not args.no_flow,

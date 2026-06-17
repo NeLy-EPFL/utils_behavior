@@ -31,7 +31,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from utils_behavior.sleap import sequences
+from utils_behavior.sleap import sequences, stats
 from utils_behavior.sleap.kinematics import (
     CONTROL_GROUPS,
     kinematics_for_h5,
@@ -44,6 +44,27 @@ METRICS = {
     "backward_speed": "Backward speed (rectified)",
     "rotational_velocity": "Rotational velocity",
 }
+
+# Statistics config (distribution-free): permutation tests for group comparisons,
+# percentile bootstrap CIs for variability bands. Set from CLI args in main().
+SCFG = {"n_perm": 10000, "n_boot": 1000, "ci": 95.0, "alpha": 0.05, "seed": 0}
+
+
+def _ci_point(values):
+    """(point, lo, hi) percentile-bootstrap CI using the global stats config."""
+    return stats.bootstrap_ci(values, n_boot=SCFG["n_boot"], ci=SCFG["ci"], seed=SCFG["seed"])
+
+
+def _yerr_from_ci(point, lo, hi):
+    """Asymmetric yerr column for ax.errorbar from a (point, lo, hi) CI."""
+    return [[max(point - lo, 0.0)], [max(hi - point, 0.0)]]
+
+
+def _stars(p):
+    """Significance stars for a (corrected) p-value; '' if NS or undefined."""
+    if p is None or (isinstance(p, float) and np.isnan(p)):
+        return ""
+    return "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else ""
 
 
 # --------------------------------------------------------------------------- IO
@@ -98,6 +119,18 @@ def plot_summary(per_fly, metric, label, units, out_path):
     groups = order_groups(per_fly["group"].unique())
     data = [per_fly.loc[per_fly["group"] == g, col].dropna().to_numpy() for g in groups]
 
+    # Permutation test of each PG line vs the pooled control (BH-corrected).
+    ctrl_vals = per_fly.loc[per_fly["is_control"], col].dropna().to_numpy()
+    pvals = []
+    for g in groups:
+        gv = per_fly.loc[per_fly["group"] == g, col].dropna().to_numpy()
+        if g in CONTROL_GROUPS or ctrl_vals.size == 0 or gv.size == 0:
+            pvals.append(np.nan)
+        else:
+            _, p = stats.permutation_test(gv, ctrl_vals, n_perm=SCFG["n_perm"], seed=SCFG["seed"])
+            pvals.append(p)
+    p_adj = stats.bh_adjust(pvals)
+
     fig, ax = plt.subplots(figsize=(max(8, len(groups) * 0.45), 5))
     ax.boxplot(data, showfliers=False, medianprops=dict(color="black"))
     rng = np.random.default_rng(0)
@@ -107,34 +140,44 @@ def plot_summary(per_fly, metric, label, units, out_path):
         x = i + rng.uniform(-0.15, 0.15, size=len(vals))
         color = "tab:red" if g in CONTROL_GROUPS else "tab:blue"
         ax.scatter(x, vals, s=14, alpha=0.6, color=color, edgecolors="none")
+        star = _stars(p_adj[i - 1])
+        if star:
+            ax.annotate(star, (i, np.nanmax(vals)), ha="center", va="bottom",
+                        fontsize=11, color="black")
     ax.set_xticks(range(1, len(groups) + 1))
     ax.set_xticklabels(groups, rotation=90)
     yunit = "deg/s" if metric == "rotational_velocity" else units
     ax.set_ylabel(f"{label} [{yunit}]" + (" (|.|)" if metric == "rotational_velocity" else ""))
-    ax.set_title(f"Per-fly {label} by group (red = control)")
+    ax.set_title(f"Per-fly {label} by group (red = control; * = BH perm test vs pooled control)")
     ax.axhline(0, color="grey", lw=0.6)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
 
-def group_timeseries(tidy, metric, bin_s):
-    """Per-group mean/sem of a metric over binned time, averaged across flies."""
-    df = tidy.dropna(subset=[metric])[["group", "video", "track", "time", metric]].copy()
-    df["tbin"] = (df["time"] // bin_s) * bin_s
-    per_fly = df.groupby(["group", "video", "track", "tbin"], dropna=False)[metric].mean().reset_index()
-    agg = per_fly.groupby(["group", "tbin"])[metric].agg(["mean", "sem", "count"]).reset_index()
-    return agg
+def _fly_bin_matrix(df_group, metric, bin_s, bins):
+    """Per-fly x per-time-bin matrix (rows = flies) aligned to a common ``bins`` grid."""
+    d = df_group.dropna(subset=[metric])[["video", "track", "time", metric]].copy()
+    if d.empty:
+        return np.empty((0, len(bins)))
+    d["tbin"] = (d["time"] // bin_s) * bin_s
+    pf = d.groupby(["video", "track", "tbin"])[metric].mean().reset_index()
+    mat = pf.pivot_table(index=["video", "track"], columns="tbin", values=metric)
+    return mat.reindex(columns=bins).to_numpy()
 
 
 def plot_timeseries(tidy, metric, label, units, out_path, bin_s=0.25, stim_on=None):
-    """Per-group small-multiples of mean+/-sem over time vs pooled-control mean."""
-    agg = group_timeseries(tidy, metric, bin_s)
-    groups = order_groups(agg["group"].unique())
+    """Per-group small-multiples of mean + bootstrap-CI band vs pooled-control mean."""
+    df_all = tidy.dropna(subset=[metric])
+    if df_all.empty:
+        return
+    bins = np.sort(((df_all["time"] // bin_s) * bin_s).unique())
+    groups = order_groups(df_all["group"].unique())
 
-    # Pooled control reference.
-    ctrl = agg[agg["group"].isin(CONTROL_GROUPS)]
-    ctrl_ref = ctrl.groupby("tbin")["mean"].mean() if not ctrl.empty else None
+    # Pooled control reference (mean over control flies per bin).
+    ctrl_mat = _fly_bin_matrix(df_all[df_all["is_control"]], metric, bin_s, bins)
+    with np.errstate(invalid="ignore"):
+        ctrl_ref = np.nanmean(ctrl_mat, axis=0) if ctrl_mat.shape[0] else None
 
     ncols = min(4, len(groups)) or 1
     nrows = math.ceil(len(groups) / ncols)
@@ -144,17 +187,16 @@ def plot_timeseries(tidy, metric, label, units, out_path, bin_s=0.25, stim_on=No
 
     for idx, g in enumerate(groups):
         ax = axes[idx // ncols][idx % ncols]
-        gd = agg[agg["group"] == g].sort_values("tbin")
+        mat = _fly_bin_matrix(df_all[df_all["group"] == g], metric, bin_s, bins)
         if ctrl_ref is not None:
-            ax.plot(ctrl_ref.index, ctrl_ref.values, color="grey", lw=1,
-                    ls="--", label="pooled control")
+            ax.plot(bins, ctrl_ref, color="grey", lw=1, ls="--", label="pooled control")
         color = "tab:red" if g in CONTROL_GROUPS else "tab:blue"
-        ax.plot(gd["tbin"], gd["mean"], color=color, lw=1.2)
-        ax.fill_between(gd["tbin"], gd["mean"] - gd["sem"], gd["mean"] + gd["sem"],
-                        color=color, alpha=0.25)
+        point, lo, hi = stats.bootstrap_ci_matrix(mat, n_boot=SCFG["n_boot"],
+                                                  ci=SCFG["ci"], seed=SCFG["seed"])
+        ax.plot(bins, point, color=color, lw=1.2)
+        ax.fill_between(bins, lo, hi, color=color, alpha=0.25)
         ax.axhline(0, color="grey", lw=0.5)
-        n_flies = tidy.loc[tidy["group"] == g, ["video", "track"]].drop_duplicates().shape[0]
-        ax.set_title(f"{g} (n={n_flies})", fontsize=9)
+        ax.set_title(f"{g} (n={mat.shape[0]})", fontsize=9)
         if stim_on:
             for s, e in stim_on:
                 ax.axvspan(s, e, color="gold", alpha=0.2, lw=0)
@@ -163,7 +205,8 @@ def plot_timeseries(tidy, metric, label, units, out_path, bin_s=0.25, stim_on=No
         axes[j // ncols][j % ncols].axis("off")
     fig.supxlabel("Time (s)")
     fig.supylabel(f"{label} [{yunit}]")
-    fig.suptitle(f"{label} over time by group (grey dashed = pooled control)")
+    fig.suptitle(f"{label} over time by group (mean +/- {int(SCFG['ci'])}% bootstrap CI; "
+                 f"grey dashed = pooled control)")
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -198,7 +241,8 @@ def summarize_on_off(sub):
 
 
 def plot_on_off(onoff, base_metric, label, units, out_path):
-    """Per-group paired box of ON vs OFF for a metric."""
+    """Per-group paired box of ON vs OFF with raw per-fly points and a paired
+    permutation test (ON vs OFF, BH-corrected across groups)."""
     groups = order_groups(onoff["group"].unique())
     fig, ax = plt.subplots(figsize=(max(8, len(groups) * 0.6), 5))
     positions_on = [i * 2.0 for i in range(len(groups))]
@@ -211,21 +255,47 @@ def plot_on_off(onoff, base_metric, label, units, out_path):
         box.set_facecolor("gold")
     for box in b2["boxes"]:
         box.set_facecolor("lightgrey")
+
+    # Raw per-fly points (jittered) + paired ON-vs-OFF permutation test per group.
+    rng = np.random.default_rng(0)
+    for i, g in enumerate(groups):
+        sub = onoff[onoff["group"] == g]
+        on_v = sub[f"{base_metric}_on"].to_numpy()
+        off_v = sub[f"{base_metric}_off"].to_numpy()
+        ax.scatter(positions_on[i] + rng.uniform(-0.18, 0.18, on_v.size), on_v,
+                   s=12, alpha=0.6, color="darkgoldenrod", edgecolors="none")
+        ax.scatter(positions_off[i] + rng.uniform(-0.18, 0.18, off_v.size), off_v,
+                   s=12, alpha=0.6, color="dimgrey", edgecolors="none")
+    pvals = []
+    for g in groups:
+        sub = onoff[onoff["group"] == g]
+        _, p = stats.paired_permutation_test(sub[f"{base_metric}_on"].to_numpy(),
+                                             sub[f"{base_metric}_off"].to_numpy(),
+                                             n_perm=SCFG["n_perm"], seed=SCFG["seed"])
+        pvals.append(p)
+    p_adj = stats.bh_adjust(pvals)
+    for i, g in enumerate(groups):
+        star = _stars(p_adj[i])
+        if star:
+            top = np.nanmax(np.concatenate([data_on[i].to_numpy(), data_off[i].to_numpy(), [0]]))
+            ax.annotate(star, (positions_on[i] + 0.4, top), ha="center", va="bottom", fontsize=11)
+
     ax.set_xticks([p + 0.4 for p in positions_on])
     ax.set_xticklabels(groups, rotation=90)
     ax.axhline(0, color="grey", lw=0.6)
     ax.set_ylabel(f"{label} [{units}]")
     ax.legend([b1["boxes"][0], b2["boxes"][0]], ["ON", "OFF"], loc="best")
-    ax.set_title(f"{label}: stimulus ON vs OFF by group")
+    ax.set_title(f"{label}: stimulus ON vs OFF by group (* = BH paired perm test)")
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
 
 def onset_locked(sub, metric, on_iv, pre, post, bin_s):
-    """Average a metric in a window around each pulse onset, per group.
+    """Per-fly onset-locked means, pooling pulses (t=0 = pulse onset).
 
-    Pools pulses and flies; returns group, rel-time bin, mean, sem, count.
+    Returns a long table (group, video, track, rb, value) — one row per fly per
+    rel-time bin — so downstream plotting can bootstrap CIs over flies.
     """
     recs = []
     for s, _e in on_iv:
@@ -238,28 +308,34 @@ def onset_locked(sub, metric, on_iv, pre, post, bin_s):
         return None
     allw = pd.concat(recs, ignore_index=True)
     allw["rb"] = (allw["rel"] // bin_s) * bin_s
-    per_fly = allw.groupby(["group", "video", "track", "rb"])[metric].mean().reset_index()
-    return per_fly.groupby(["group", "rb"])[metric].agg(["mean", "sem", "count"]).reset_index()
+    return (allw.groupby(["group", "video", "track", "rb"])[metric].mean()
+            .reset_index().rename(columns={metric: "value"}))
 
 
 def plot_psth(agg, label, units, out_path, on_dur):
-    """Per-group small-multiples of the onset-locked mean+/-sem (t=0 = pulse on)."""
+    """Per-group onset-locked mean + bootstrap-CI band (pooled over pulses)."""
     if agg is None or agg.empty:
         return
     groups = order_groups(agg["group"].unique())
+    bins = np.sort(agg["rb"].unique())
     fig, axes = _facet_axes(groups)
     for ax, g in zip(axes, groups):
-        gd = agg[agg["group"] == g].sort_values("rb")
+        gd = agg[agg["group"] == g]
+        mat = (gd.pivot_table(index=["video", "track"], columns="rb", values="value")
+               .reindex(columns=bins).to_numpy())
         color = "tab:red" if g in CONTROL_GROUPS else "tab:blue"
         ax.axvspan(0, on_dur, color="gold", alpha=0.18, lw=0)
         ax.axvline(0, color="k", lw=0.6)
         ax.axhline(0, color="grey", lw=0.5)
-        ax.plot(gd["rb"], gd["mean"], color=color, lw=1.2)
-        ax.fill_between(gd["rb"], gd["mean"] - gd["sem"], gd["mean"] + gd["sem"], color=color, alpha=0.25)
-        ax.set_title(g, fontsize=9)
+        point, lo, hi = stats.bootstrap_ci_matrix(mat, n_boot=SCFG["n_boot"],
+                                                  ci=SCFG["ci"], seed=SCFG["seed"])
+        ax.plot(bins, point, color=color, lw=1.2)
+        ax.fill_between(bins, lo, hi, color=color, alpha=0.25)
+        ax.set_title(f"{g} (n={mat.shape[0]})", fontsize=9)
     fig.supxlabel("Time from stimulus onset (s)")
     fig.supylabel(f"{label} [{units}]")
-    fig.suptitle(f"{label} aligned to stimulus onset (gold = ON; pooled over pulses)")
+    fig.suptitle(f"{label} aligned to stimulus onset (mean +/- {int(SCFG['ci'])}% bootstrap CI; "
+                 f"gold = ON; pooled over pulses)")
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -331,30 +407,62 @@ def per_pulse_means(sub, metric_cols):
             [metric_cols].mean().reset_index())
 
 
+def _ci_by_pulse(df, metric, pulses):
+    """Per-pulse (point, lo, hi) bootstrap CI arrays for one group's per-fly table."""
+    pts, los, his = [], [], []
+    for pulse in pulses:
+        vals = df.loc[df["on_index"] == pulse, metric].to_numpy()
+        point, lo, hi = _ci_point(vals)
+        pts.append(point); los.append(lo); his.append(hi)
+    return np.array(pts), np.array(los), np.array(his)
+
+
 def plot_per_pulse_trend(per_pulse, metric, label, units, out_path, rot=False):
-    """Per-group mean+/-sem of a metric during each ON pulse vs pulse #, with the
-    pooled control as a grey dashed reference."""
+    """Per-group mean + bootstrap-CI of a metric during each ON pulse vs pulse #,
+    with the pooled control reference and a per-pulse permutation test vs control."""
     if per_pulse.empty:
         return
+    pulses = sorted(per_pulse["on_index"].dropna().unique())
     ctrl = per_pulse[per_pulse["is_control"]]
-    ctrl_agg = (ctrl.groupby("on_index")[metric].agg(["mean", "sem"]).reset_index()
-                if not ctrl.empty else None)
+    ctrl_pt, ctrl_lo, ctrl_hi = (_ci_by_pulse(ctrl, metric, pulses)
+                                 if not ctrl.empty else (None, None, None))
     groups = order_groups(per_pulse["group"].unique())
+
+    # Permutation test PG vs pooled control per (group, pulse), BH across all.
+    pg_groups = [g for g in groups if g not in CONTROL_GROUPS]
+    raw_p, keys = [], []
+    for g in pg_groups:
+        gd = per_pulse[per_pulse["group"] == g]
+        for pulse in pulses:
+            a = gd.loc[gd["on_index"] == pulse, metric].to_numpy()
+            b = ctrl.loc[ctrl["on_index"] == pulse, metric].to_numpy() if not ctrl.empty else np.array([])
+            _, p = stats.permutation_test(a, b, n_perm=SCFG["n_perm"], seed=SCFG["seed"])
+            raw_p.append(p); keys.append((g, pulse))
+    p_adj = stats.bh_adjust(raw_p)
+    sig = {k: pa for k, pa in zip(keys, p_adj)}
+
     fig, axes = _facet_axes(groups, panel=(3.6, 2.6))
     for ax, g in zip(axes, groups):
-        gd = per_pulse[per_pulse["group"] == g].groupby("on_index")[metric].agg(["mean", "sem"]).reset_index()
+        gd = per_pulse[per_pulse["group"] == g]
+        pt, lo, hi = _ci_by_pulse(gd, metric, pulses)
         ax.axhline(0, color="grey", lw=0.5)
-        if ctrl_agg is not None:
-            ax.errorbar(ctrl_agg["on_index"], ctrl_agg["mean"], yerr=ctrl_agg["sem"],
+        if ctrl_pt is not None:
+            ax.errorbar(pulses, ctrl_pt, yerr=[ctrl_pt - ctrl_lo, ctrl_hi - ctrl_pt],
                         color="grey", marker="o", ms=3, lw=1, ls="--", capsize=2)
         color = "tab:red" if g in CONTROL_GROUPS else "tab:blue"
-        ax.errorbar(gd["on_index"], gd["mean"], yerr=gd["sem"], color=color,
+        ax.errorbar(pulses, pt, yerr=[pt - lo, hi - pt], color=color,
                     marker="o", ms=3, lw=1.2, capsize=2)
+        for j, pulse in enumerate(pulses):
+            star = _stars(sig.get((g, pulse), np.nan))
+            if star:
+                ax.annotate(star, (pulse, max(hi[j], ctrl_hi[j] if ctrl_hi is not None else hi[j])),
+                            ha="center", va="bottom", fontsize=10)
         ax.set_title(g, fontsize=9)
     yunit = "deg/s" if rot else units
     fig.supxlabel("Stimulation (pulse #)")
     fig.supylabel(f"mean {label} during ON [{yunit}]")
-    fig.suptitle(f"{label}: mean during each ON pulse, per group (grey dashed = pooled control)")
+    fig.suptitle(f"{label}: mean during each ON pulse +/- {int(SCFG['ci'])}% bootstrap CI "
+                 f"(grey dashed = pooled control; * = BH perm test vs control)")
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -383,35 +491,27 @@ def per_stim_metrics(sub):
 
 
 def per_stim_stats(per_stim, value_col, min_n=3):
-    """Mann-Whitney U (two-sided) per (PG line, pulse) vs pooled control.
+    """Two-sided permutation test per (PG line, pulse) vs pooled control.
 
-    p-values are Benjamini-Hochberg corrected across all valid tests.
+    Distribution-free (difference of means); p-values are Benjamini-Hochberg
+    corrected across all valid tests.
     """
-    from scipy.stats import mannwhitneyu
-    from statsmodels.stats.multitest import multipletests
-
     ctrl = per_stim[per_stim["is_control"]]
     pulses = sorted(per_stim["on_index"].dropna().unique())
     rows = []
     for g in per_stim.loc[~per_stim["is_control"], "group"].unique():
         gd = per_stim[per_stim["group"] == g]
         for pulse in pulses:
-            a = gd.loc[gd["on_index"] == pulse, value_col].dropna()
-            b = ctrl.loc[ctrl["on_index"] == pulse, value_col].dropna()
-            U, p = np.nan, np.nan
+            a = gd.loc[gd["on_index"] == pulse, value_col].dropna().to_numpy()
+            b = ctrl.loc[ctrl["on_index"] == pulse, value_col].dropna().to_numpy()
+            diff, p = np.nan, np.nan
             if len(a) >= min_n and len(b) >= min_n:
-                try:
-                    U, p = mannwhitneyu(a, b, alternative="two-sided")
-                except ValueError:
-                    pass
+                diff, p = stats.permutation_test(a, b, n_perm=SCFG["n_perm"], seed=SCFG["seed"])
             rows.append({"group": g, "on_index": pulse, "metric": value_col,
-                         "n_pg": len(a), "n_ctrl": len(b), "U": U, "p": p})
+                         "n_pg": len(a), "n_ctrl": len(b), "diff": diff, "p": p})
     df = pd.DataFrame(rows)
-    df["p_adj"] = np.nan
-    mask = df["p"].notna()
-    if mask.any():
-        df.loc[mask, "p_adj"] = multipletests(df.loc[mask, "p"], method="fdr_bh")[1]
-    df["significant"] = df["p_adj"] < 0.05
+    df["p_adj"] = stats.bh_adjust(df["p"].to_numpy()) if not df.empty else []
+    df["significant"] = df["p_adj"] < SCFG["alpha"]
     return df
 
 
@@ -420,40 +520,38 @@ def plot_per_stim(per_stim, stats_df, value_col, label, units, out_path):
     with significant pulses (BH-corrected Mann-Whitney) starred."""
     dist_unit = "mm" if units == "mm/s" else "px"
     ctrl = per_stim[per_stim["is_control"]]
-    ctrl_agg = (
-        ctrl.groupby("on_index")[value_col].agg(["mean", "sem"]).reset_index()
-        if not ctrl.empty else None
-    )
+    pulses = sorted(per_stim["on_index"].dropna().unique())
+    ctrl_pt, ctrl_lo, ctrl_hi = (_ci_by_pulse(ctrl, value_col, pulses)
+                                 if not ctrl.empty else (None, None, None))
     pg_groups = order_groups(per_stim.loc[~per_stim["is_control"], "group"].unique())
     if not pg_groups:
         return
     n_ctrl_flies = ctrl[["video", "track"]].drop_duplicates().shape[0]
     fig, axes = _facet_axes(pg_groups, panel=(3.6, 2.6))
     for ax, g in zip(axes, pg_groups):
-        gd = per_stim[per_stim["group"] == g].groupby("on_index")[value_col].agg(["mean", "sem", "count"]).reset_index()
+        gd = per_stim[per_stim["group"] == g]
+        pt, lo, hi = _ci_by_pulse(gd, value_col, pulses)
         ax.axhline(0, color="grey", lw=0.5)
-        if ctrl_agg is not None:
-            ax.errorbar(ctrl_agg["on_index"], ctrl_agg["mean"], yerr=ctrl_agg["sem"],
+        if ctrl_pt is not None:
+            ax.errorbar(pulses, ctrl_pt, yerr=[ctrl_pt - ctrl_lo, ctrl_hi - ctrl_pt],
                         color="grey", marker="o", ms=3, lw=1, ls="--", capsize=2)
-        ax.errorbar(gd["on_index"], gd["mean"], yerr=gd["sem"], color="tab:blue",
+        ax.errorbar(pulses, pt, yerr=[pt - lo, hi - pt], color="tab:blue",
                     marker="o", ms=3, lw=1.2, capsize=2)
-        # significance stars
+        # significance stars (BH-corrected permutation test)
         sig = stats_df[(stats_df["group"] == g) & stats_df["significant"]]
         for _, r in sig.iterrows():
-            row = gd[gd["on_index"] == r["on_index"]]
-            if row.empty:
+            j = pulses.index(r["on_index"]) if r["on_index"] in pulses else None
+            if j is None:
                 continue
-            y = row["mean"].iloc[0] + row["sem"].iloc[0]
-            yc = ctrl_agg.loc[ctrl_agg["on_index"] == r["on_index"], "mean"]
-            top = max(y, (yc.iloc[0] if not yc.empty else y))
-            ax.annotate("*", (r["on_index"], top), ha="center", va="bottom",
-                        fontsize=12, color="black")
-        n = int(gd["count"].max()) if not gd.empty else 0
+            top = max(hi[j], ctrl_hi[j] if ctrl_hi is not None else hi[j])
+            ax.annotate(_stars(r["p_adj"]) or "*", (r["on_index"], top),
+                        ha="center", va="bottom", fontsize=11, color="black")
+        n = int(gd.groupby("on_index").size().max()) if not gd.empty else 0
         ax.set_title(f"{g} (n<={n})", fontsize=9)
     fig.supxlabel("Stimulation (pulse #)")
     fig.supylabel(f"{label} per pulse [{dist_unit}]")
-    fig.suptitle(f"{label} per stimulation: PG line (blue) vs pooled control (grey, "
-                 f"n={n_ctrl_flies}); * = BH-corrected p<0.05")
+    fig.suptitle(f"{label} per stimulation: PG line (blue) +/- {int(SCFG['ci'])}% bootstrap CI "
+                 f"vs pooled control (grey, n={n_ctrl_flies}); * = BH perm test")
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -482,7 +580,14 @@ def main():
                         help="Skip h5 files with more tracks than this — they were not "
                              "successfully cleaned (identity fragmentation); 0 disables the check")
     parser.add_argument("--no-plots", action="store_true", help="Only write the tables, skip figures")
+    parser.add_argument("--n-perm", type=int, default=10000, help="Permutation-test resamples")
+    parser.add_argument("--n-boot", type=int, default=1000, help="Bootstrap resamples for CI bands/points")
+    parser.add_argument("--ci", type=float, default=95.0, help="Bootstrap CI percentage")
+    parser.add_argument("--alpha", type=float, default=0.05, help="Significance level for stars")
+    parser.add_argument("--seed", type=int, default=0, help="RNG seed for permutation/bootstrap reproducibility")
     args = parser.parse_args()
+
+    SCFG.update(n_perm=args.n_perm, n_boot=args.n_boot, ci=args.ci, alpha=args.alpha, seed=args.seed)
 
     files = collect_h5_files(args.paths)
     if args.exclude_name_contains:
@@ -609,7 +714,7 @@ def main():
                                      rot=metric == "rotational_velocity")
 
         # Path integrals per stimulation: PG lines vs pooled control, with
-        # per-pulse Mann-Whitney tests (BH-corrected).
+        # per-pulse permutation tests (BH-corrected).
         per_stim = per_stim_metrics(sub)
         per_stim.to_feather(outdir / "per_stim_metrics.feather")
         stats_all = []

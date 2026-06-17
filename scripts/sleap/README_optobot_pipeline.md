@@ -60,6 +60,28 @@ uv run python -m utils_behavior.sleap.clean_tracks "$YAML" --inplace
 > `clean_tracks` accepts the video-list YAML (maps each video to its
 > `*_tracked.h5`), a directory (with `--recursive`), or explicit `.h5` paths.
 
+### Re-tracking fragmented videos
+
+`-n 3` caps instances *per frame* but not the number of track *identities*: with
+`--use_flow` a new track ID is spawned whenever a fly can't be linked across a
+gap, so some videos fragment into tens–thousands of short tracks. `clean_tracks`
+leaves those untouched (it refuses to write a 0-track file) and lists them; the
+plotting step skips any h5 with `> --max-clean-tracks` (default 6) tracks.
+
+To fix at the source, re-track with per-frame instance culling (flow-compatible,
+unlike `--max_tracks` which needs `local_queues`). Delete the stale outputs first
+— the run is resumable and skips videos that already have `.slp`+`.h5`:
+
+```bash
+# Remove the fragmented files so they get re-tracked (paths from clean_tracks' report):
+#   rm -f <video>_tracked.slp <video>_tracked.h5
+uv run python -m utils_behavior.sleap.tracker "$CENTROID" \
+    --model_centered_instance_path "$CINST" \
+    --yaml_file "$YAML" \
+    --max_instances 3 --batch_size 16 \
+    --target_instances 3 --clean_instances 3   # cull to 3 instances/frame before & after tracking
+```
+
 ## Raw single-video commands (what the tracker runs per video)
 
 ```bash

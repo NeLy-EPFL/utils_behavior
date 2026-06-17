@@ -21,9 +21,16 @@ from pathlib import Path
 
 # sleap_io >=0.7 exposes ``save_analysis_h5`` (older ``Labels.export`` does not
 # exist). Passed to ``python -c`` so paths arrive via argv with no quoting pain.
+# A ``.slp`` with no labeled frames (the model tracked nothing) cannot become an
+# analysis ``.h5`` — ``save_analysis_h5`` raises "No labeled frames in video".
+# We detect that up front and exit with ``_EMPTY_EXIT`` so the caller can skip
+# the video instead of aborting the whole batch.
+_EMPTY_EXIT = 2
 _EXPORT = (
     "import sys, sleap_io as sio; "
-    "sio.save_analysis_h5(sio.load_file(sys.argv[1]), sys.argv[2])"
+    "labels = sio.load_file(sys.argv[1]); "
+    "sys.exit(2) if not labels.labeled_frames "
+    "else sio.save_analysis_h5(labels, sys.argv[2])"
 )
 
 
@@ -40,28 +47,33 @@ def clean_env() -> dict:
     return env
 
 
-def slp_to_analysis_h5(slp_path, h5_path=None, check=True) -> Path:
+def slp_to_analysis_h5(slp_path, h5_path=None, check=True):
     """Convert one ``.slp`` to an analysis ``.h5``.
 
     Args:
         slp_path: Path to the ``.slp`` file.
         h5_path: Output path. Defaults to the ``.slp`` path with a ``.h5``
             suffix (e.g. ``foo_tracked.slp`` -> ``foo_tracked.h5``).
-        check: Raise on a non-zero exit (default True).
+        check: Raise on a genuine non-zero exit (default True).
 
     Returns:
-        The output ``.h5`` path.
+        The output ``.h5`` path, or ``None`` if the ``.slp`` had no labeled
+        frames (nothing was tracked) and so no analysis ``.h5`` was written.
     """
     slp_path = Path(slp_path)
     h5_path = slp_path.with_suffix(".h5") if h5_path is None else Path(h5_path)
-    subprocess.run(
+    result = subprocess.run(
         [
             "uv", "run", "--no-project", "--with", "sleap-io",
             "python", "-c", _EXPORT, str(slp_path), str(h5_path),
         ],
-        check=check,
+        check=False,
         env=clean_env(),
     )
+    if result.returncode == _EMPTY_EXIT:
+        return None
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, result.args)
     return h5_path
 
 

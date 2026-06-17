@@ -212,8 +212,11 @@ class SleapTracker:
             out_dir = video.parent
             slp_file = out_dir / f"{video.stem}_tracked.slp"
             h5_file = out_dir / f"{video.stem}_tracked.h5"
+            empty_marker = out_dir / f"{video.stem}_tracked.empty"
             annotated_file = out_dir / f"{video.stem}_tracked_annotated.mp4"
-            already_processed = slp_file.exists() and h5_file.exists()
+            # An .empty marker means a prior run tracked nothing for this video;
+            # re-tracking would just fail the same way, so treat it as done.
+            already_processed = (slp_file.exists() and h5_file.exists()) or empty_marker.exists()
             if render:
                 already_processed = already_processed and annotated_file.exists()
             if not already_processed:
@@ -279,16 +282,27 @@ class SleapTracker:
         Delegates to :func:`utils_behavior.sleap.convert.slp_to_analysis_h5`,
         which runs ``sleap_io.save_analysis_h5`` in an isolated
         ``uv run --with sleap-io`` env — robust to the launching interpreter.
+
+        Returns the ``.h5`` path, or ``None`` when the ``.slp`` had no labeled
+        frames (nothing was tracked) so no analysis ``.h5`` could be written.
         """
-        slp_to_analysis_h5(slp_out, h5_out)
+        return slp_to_analysis_h5(slp_out, h5_out)
 
     def process_videos(self):
-        """Run inference + h5 export for every collected video."""
+        """Run inference + h5 export for every collected video.
+
+        Per-video failures are recorded and the batch continues, so one bad
+        video can't abort a long resumable run. Videos whose ``.slp`` has no
+        labeled frames (nothing tracked) get a ``*_tracked.empty`` marker so
+        they're skipped on resume instead of re-tracked indefinitely.
+        """
         print(
             f"Processing {len(self.videos_to_process)} videos with the "
             f"'{self.backend}' backend..."
         )
 
+        self.empty_videos = []
+        self.failed_videos = []
         env = _clean_env()
         for video in self.videos_to_process:
             out_dir = video.parent
@@ -301,10 +315,28 @@ class SleapTracker:
                 track_cmd = self._build_legacy_cmd(video, slp_out)
 
             print(f"  Tracking: {video.name}")
-            subprocess.run(track_cmd, check=True, env=env)
-            self._export_h5(slp_out, h5_out)
+            try:
+                subprocess.run(track_cmd, check=True, env=env)
+                h5 = self._export_h5(slp_out, h5_out)
+                if h5 is None:
+                    marker = out_dir / f"{video.stem}_tracked.empty"
+                    marker.touch()
+                    self.empty_videos.append(video)
+                    print(
+                        f"    [empty] no instances tracked; wrote {marker.name} "
+                        "(delete it to retry this video)"
+                    )
+            except Exception as exc:
+                self.failed_videos.append((video, exc))
+                print(f"    [fail] {video.name}: {exc}")
 
         print("Video processing complete.")
+        if self.empty_videos:
+            print(f"  {len(self.empty_videos)} video(s) tracked nothing (marked .empty).")
+        if self.failed_videos:
+            print(f"  {len(self.failed_videos)} video(s) failed:")
+            for video, exc in self.failed_videos:
+                print(f"    - {video}: {exc}")
 
     def run(self, video_extension=".mp4", render=False, dry_run=False):
         """Collect, filter, and track videos.
@@ -340,7 +372,12 @@ class SleapTracker:
         if render:
             from .tracks import generate_annotated_video
 
+            skip = set(getattr(self, "empty_videos", [])) | {
+                v for v, _ in getattr(self, "failed_videos", [])
+            }
             for video in self.videos_to_process:
+                if video in skip:
+                    continue
                 h5_path = video.parent / f"{video.stem}_tracked.h5"
                 sleap_tracks = Sleap_Tracks(h5_path)
                 if getattr(sleap_tracks, "video", None) is None:

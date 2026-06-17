@@ -5,9 +5,10 @@ alone) plus the `PG` directory with the new **sleap-nn** (SLEAP 1.6) top-down
 model, then denoise the resulting tracks.
 
 Everything runs through **uv** — no conda/mamba. The SLEAP CLIs
-(`sleap-nn-track`, `sleap-convert`) are the uv-installed `sleap` tool (v1.6.x) on
+(`sleap track`, `sleap-convert`) are the uv-installed `sleap` tool (v1.6.x) on
 PATH; the `utils_behavior` tools run via `uv run` against this repo's
-`pyproject.toml`.
+`pyproject.toml`. (`sleap-nn-track` still works but prints a deprecation note
+pointing to the unified `sleap track` subcommand.)
 
 ## Models (sleap-nn, top-down)
 
@@ -59,10 +60,32 @@ uv run python -m utils_behavior.sleap.clean_tracks "$YAML" --inplace
 > `clean_tracks` accepts the video-list YAML (maps each video to its
 > `*_tracked.h5`), a directory (with `--recursive`), or explicit `.h5` paths.
 
+### Re-tracking fragmented videos
+
+`-n 3` caps instances *per frame* but not the number of track *identities*: with
+`--use_flow` a new track ID is spawned whenever a fly can't be linked across a
+gap, so some videos fragment into tens–thousands of short tracks. `clean_tracks`
+leaves those untouched (it refuses to write a 0-track file) and lists them; the
+plotting step skips any h5 with `> --max-clean-tracks` (default 6) tracks.
+
+To fix at the source, re-track with per-frame instance culling (flow-compatible,
+unlike `--max_tracks` which needs `local_queues`). Delete the stale outputs first
+— the run is resumable and skips videos that already have `.slp`+`.h5`:
+
+```bash
+# Remove the fragmented files so they get re-tracked (paths from clean_tracks' report):
+#   rm -f <video>_tracked.slp <video>_tracked.h5
+uv run python -m utils_behavior.sleap.tracker "$CENTROID" \
+    --model_centered_instance_path "$CINST" \
+    --yaml_file "$YAML" \
+    --max_instances 3 --batch_size 16 \
+    --target_instances 3 --clean_instances 3   # cull to 3 instances/frame before & after tracking
+```
+
 ## Raw single-video commands (what the tracker runs per video)
 
 ```bash
-sleap-nn-track -i <video_80fps.mp4> \
+sleap track -i <video_80fps.mp4> \
     -m "$CENTROID" -m "$CINST" \
     -o <video_80fps_tracked.slp> \
     -b 16 -t -n 3 --use_flow -d auto
@@ -97,17 +120,27 @@ uv run python scripts/sleap/directional_velocity.py "$YAML" \
   window (5 ON bands shaded).
 - `dv_figs/long/` — long-protocol flies over the full timeline (15 ON bands).
 
+Metrics: `speed`, `forward_velocity` (signed, +fwd/−back), `backward_speed`
+(rectified backward component, 0 while moving forward), `rotational_velocity`.
+
 Each scope directory contains:
 - `summary_<metric>.png` — per-group box+strip (controls in red).
 - `timeseries_<metric>.png` — per-group mean±sem over time, pooled-control
   reference, stim shading.
 - `onoff_speed.png`, `onoff_forward.png` — per-group **stimulus ON vs OFF** box plots.
-- `psth_<metric>.png` — **onset-locked** averages (metric vs time-from-pulse-onset,
-  pooled over pulses; ON window shaded), one panel per group.
-- `backward_per_stim.png` — **cumulated backward walking per stimulation**: for each
-  PG line, the per-pulse backward distance (integral of backward speed) vs the
-  pooled control, one panel per line. Directly compares each PG line to controls.
-- Tables: `per_fly.feather`, `per_fly_on_off.feather`, `backward_per_stim.feather`.
+- `psth_<metric>.png` — **onset-locked** averages **pooled over pulses** (metric vs
+  time-from-pulse-onset; ON window shaded), one panel per group.
+- `psth_per_pulse_<metric>.png` — **non-pooled** onset-locked overlay: one trace
+  **per stimulation**, colored by pulse # (viridis), one panel per group. Shows how
+  the response evolves across the train (habituation/sensitization).
+- `per_pulse_<metric>.png` — **per-pulse scalar trend**: mean of the metric during
+  each ON pulse vs pulse #, per group, with the pooled control as a grey dashed
+  reference.
+- `back_dist_per_stim.png`, `net_forward_per_stim.png` — per-pulse path integrals
+  (cumulated backward distance / net forward displacement) vs pooled control, with
+  BH-corrected Mann-Whitney stars.
+- Tables: `per_fly.feather`, `per_fly_on_off.feather`, `per_pulse_means.feather`,
+  `per_stim_metrics.feather`, `per_stim_stats.feather`.
 
 The full per-frame tidy table (`directional_velocity_frames.feather`) carries
 `sequence`, `stim_on`, `on_index`, `dt` for any further custom analysis.

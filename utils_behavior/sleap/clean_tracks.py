@@ -48,11 +48,13 @@ class CleanResult:
     n_tracks_out: int
     kept_indices: list = field(default_factory=list)
     stats: list = field(default_factory=list)
+    skipped_empty: bool = False  # selection kept 0 tracks -> file left untouched
 
     def summary(self) -> str:
-        lines = [
-            f"{self.input_path.name}: {self.n_tracks_in} -> {self.n_tracks_out} tracks",
-        ]
+        head = f"{self.input_path.name}: {self.n_tracks_in} -> {self.n_tracks_out} tracks"
+        if self.skipped_empty:
+            head += "  !! SKIPPED (0 tracks survived: likely identity fragmentation; re-track)"
+        lines = [head]
         for s in self.stats:
             flag = "KEEP" if s.kept else "drop"
             lines.append(
@@ -311,6 +313,14 @@ def clean_h5(
     if dry_run:
         return result
 
+    # Never emit an empty file: keeping 0 tracks means the selection policy could
+    # not find a real fly (usually severe identity fragmentation). Writing it would
+    # silently drop the fly and break downstream analysis, so leave the input
+    # untouched and flag it for re-tracking instead.
+    if not kept_indices:
+        result.skipped_empty = True
+        return result
+
     if not inplace and output_path.exists() and not overwrite:
         raise FileExistsError(
             f"{output_path} exists. Pass overwrite=True or choose another path."
@@ -396,6 +406,7 @@ def main():
         return
 
     print(f"Cleaning {len(files)} file(s){' (dry run)' if args.dry_run else ''}...\n")
+    empty = []
     for f in files:
         out = None if args.inplace else f.with_name(f"{f.stem}{args.suffix}.h5")
         result = clean_h5(
@@ -412,9 +423,18 @@ def main():
             dry_run=args.dry_run,
         )
         print(result.summary())
-        if not args.dry_run:
+        if result.n_tracks_out == 0:
+            empty.append(result.input_path)
+        elif not args.dry_run:
             print(f"  -> wrote {result.output_path}")
         print()
+
+    if empty:
+        verb = "would be" if args.dry_run else "were"
+        print(f"\n!! {len(empty)} file(s) {verb} left UNCHANGED (0 tracks survived "
+              f"cleaning -> likely identity fragmentation, need re-tracking):")
+        for p in empty:
+            print(f"   {p}")
 
 
 if __name__ == "__main__":

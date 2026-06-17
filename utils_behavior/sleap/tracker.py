@@ -5,13 +5,16 @@ Supports two backends that coexist so older experiments keep working:
 
 - ``sleap-nn`` (SLEAP 1.6 PyTorch backend). Models are directories containing
   ``best.ckpt`` + ``training_config.yaml``. Tracking runs via
-  ``sleap-nn-track -i <video> -m <model> -t [--use_flow] [-n N]``.
+  ``sleap track -i <video> -m <model> -t [--use_flow] [-n N]`` (the unified
+  ``sleap`` CLI subcommand; the standalone ``sleap-nn-track`` still works but
+  prints a deprecation note pointing to ``sleap track``).
 - ``legacy`` (classic TensorFlow ``sleap-track``). Models contain
   ``best_model.h5`` + ``training_config.json``. Tracking uses
   ``sleap-track <video> -m <model> --tracking.tracker flow ...``.
 
-All SLEAP CLIs (``sleap-nn-track``, ``sleap-track``, ``sleap-convert``) are the
-uv-installed ``sleap`` tool on PATH — there is **no** conda/mamba dependency.
+All SLEAP CLIs (``sleap track``, the legacy ``sleap-track``, ``sleap-convert``)
+are the uv-installed ``sleap`` tool on PATH — there is **no** conda/mamba
+dependency.
 ``.slp`` -> analysis ``.h5`` conversion runs ``sleap_io.save_analysis_h5`` inside
 an isolated ``uv run --with sleap-io`` environment, which is immune to whatever
 interpreter launched the tracker (a conda env's Qt libs used to crash
@@ -42,7 +45,7 @@ class SleapTracker:
         data_folder=None,
         model_centered_instance_path=None,
         output_folder=None,
-        sleap_nn_executable="sleap-nn-track",
+        sleap_nn_executable="sleap track",
         legacy_executable="sleap-track",
         sleap_convert_executable="sleap-convert",
         batch_size=16,
@@ -355,7 +358,7 @@ def main():
     parser.add_argument("--data_folder", type=str, help="Directory containing videos to track")
     parser.add_argument("--model_centered_instance_path", type=str, help="Centered-instance model for top-down pipelines")
     parser.add_argument("--output_folder", type=str, help="(Compatibility) outputs are written next to each video")
-    parser.add_argument("--sleap_nn_executable", type=str, default="sleap-nn-track", help="sleap-nn track entry point on PATH")
+    parser.add_argument("--sleap_nn_executable", type=str, default="sleap track", help="sleap-nn track entry point on PATH (unified 'sleap track' subcommand; 'sleap-nn-track' is deprecated)")
     parser.add_argument("--legacy_executable", type=str, default="sleap-track", help="Legacy sleap-track entry point on PATH")
     parser.add_argument("--sleap_convert_executable", type=str, default="sleap-convert", help="Legacy sleap-convert entry point on PATH")
     parser.add_argument("--batch_size", type=int, default=16, help="Frames per inference batch")

@@ -41,6 +41,7 @@ from utils_behavior.sleap.kinematics import (
 METRICS = {
     "speed": "Speed",
     "forward_velocity": "Forward velocity (+fwd / -back)",
+    "backward_speed": "Backward speed (rectified)",
     "rotational_velocity": "Rotational velocity",
 }
 
@@ -91,6 +92,7 @@ def plot_summary(per_fly, metric, label, units, out_path):
     col = {
         "speed": "mean_speed",
         "forward_velocity": "mean_forward_velocity",
+        "backward_speed": "mean_backward_speed_rect",
         "rotational_velocity": "mean_abs_rotational",
     }[metric]
     groups = order_groups(per_fly["group"].unique())
@@ -263,6 +265,101 @@ def plot_psth(agg, label, units, out_path, on_dur):
     plt.close(fig)
 
 
+def onset_locked_per_pulse(sub, metric, on_iv, pre, post, bin_s):
+    """Onset-locked average of a metric for EACH pulse separately (not pooled).
+
+    Like :func:`onset_locked` but keeps the 1-based pulse number so the response
+    can be compared across the stimulation train. Returns group, pulse, rel-time
+    bin, and the flies-averaged ``value``.
+    """
+    recs = []
+    for pulse, (s, _e) in enumerate(on_iv, start=1):
+        w = sub[(sub["time"] >= s - pre) & (sub["time"] < s + post)]
+        w = w[["group", "video", "track", "time", metric]].dropna(subset=[metric]).copy()
+        if w.empty:
+            continue
+        w["rel"] = w["time"] - s
+        w["pulse"] = pulse
+        recs.append(w)
+    if not recs:
+        return None
+    allw = pd.concat(recs, ignore_index=True)
+    allw["rb"] = (allw["rel"] // bin_s) * bin_s
+    per_fly = allw.groupby(["group", "pulse", "video", "track", "rb"])[metric].mean().reset_index()
+    return (per_fly.groupby(["group", "pulse", "rb"])[metric].mean()
+            .reset_index().rename(columns={metric: "value"}))
+
+
+def plot_psth_per_pulse(agg, label, units, out_path, on_dur, rot=False):
+    """Per-group onset-locked traces, one line per pulse colored by pulse number."""
+    if agg is None or agg.empty:
+        return
+    groups = order_groups(agg["group"].unique())
+    pulses = sorted(int(p) for p in agg["pulse"].unique())
+    cmap = plt.get_cmap("viridis")
+    norm = plt.Normalize(min(pulses), max(pulses) if len(pulses) > 1 else min(pulses) + 1)
+    fig, axes = _facet_axes(groups)
+    for ax, g in zip(axes, groups):
+        gd = agg[agg["group"] == g]
+        ax.axvspan(0, on_dur, color="gold", alpha=0.15, lw=0)
+        ax.axvline(0, color="k", lw=0.5)
+        ax.axhline(0, color="grey", lw=0.5)
+        for p in pulses:
+            d = gd[gd["pulse"] == p].sort_values("rb")
+            if d.empty:
+                continue
+            ax.plot(d["rb"], d["value"], color=cmap(norm(p)), lw=1.0)
+        ax.set_title(g, fontsize=9)
+    yunit = "deg/s" if rot else units
+    fig.supxlabel("Time from stimulus onset (s)")
+    fig.supylabel(f"{label} [{yunit}]")
+    fig.suptitle(f"{label} onset-locked, per stimulation (color = pulse #; gold = ON)")
+    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=axes[:len(groups)], fraction=0.025, pad=0.01)
+    cbar.set_label("pulse #")
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def per_pulse_means(sub, metric_cols):
+    """Per (group, fly, pulse) mean of each metric over that pulse's ON frames."""
+    on = sub[sub["stim_on"] & sub["on_index"].notna()]
+    if on.empty:
+        return pd.DataFrame()
+    return (on.groupby(["group", "is_control", "video", "track", "on_index"], dropna=False)
+            [metric_cols].mean().reset_index())
+
+
+def plot_per_pulse_trend(per_pulse, metric, label, units, out_path, rot=False):
+    """Per-group mean+/-sem of a metric during each ON pulse vs pulse #, with the
+    pooled control as a grey dashed reference."""
+    if per_pulse.empty:
+        return
+    ctrl = per_pulse[per_pulse["is_control"]]
+    ctrl_agg = (ctrl.groupby("on_index")[metric].agg(["mean", "sem"]).reset_index()
+                if not ctrl.empty else None)
+    groups = order_groups(per_pulse["group"].unique())
+    fig, axes = _facet_axes(groups, panel=(3.6, 2.6))
+    for ax, g in zip(axes, groups):
+        gd = per_pulse[per_pulse["group"] == g].groupby("on_index")[metric].agg(["mean", "sem"]).reset_index()
+        ax.axhline(0, color="grey", lw=0.5)
+        if ctrl_agg is not None:
+            ax.errorbar(ctrl_agg["on_index"], ctrl_agg["mean"], yerr=ctrl_agg["sem"],
+                        color="grey", marker="o", ms=3, lw=1, ls="--", capsize=2)
+        color = "tab:red" if g in CONTROL_GROUPS else "tab:blue"
+        ax.errorbar(gd["on_index"], gd["mean"], yerr=gd["sem"], color=color,
+                    marker="o", ms=3, lw=1.2, capsize=2)
+        ax.set_title(g, fontsize=9)
+    yunit = "deg/s" if rot else units
+    fig.supxlabel("Stimulation (pulse #)")
+    fig.supylabel(f"mean {label} during ON [{yunit}]")
+    fig.suptitle(f"{label}: mean during each ON pulse, per group (grey dashed = pooled control)")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 def per_stim_metrics(sub):
     """Per (group, fly, pulse) path integrals over each stimulation pulse.
 
@@ -381,6 +478,9 @@ def main():
                         help="'shared': pool short+long flies over the common 360.5s window; "
                              "'long': long-protocol flies over the full timeline; 'both' writes both.")
     parser.add_argument("--exclude-name-contains", nargs="*", default=[], help="Skip files whose genotype dir contains any of these (e.g. BAD)")
+    parser.add_argument("--max-clean-tracks", type=int, default=6,
+                        help="Skip h5 files with more tracks than this — they were not "
+                             "successfully cleaned (identity fragmentation); 0 disables the check")
     parser.add_argument("--no-plots", action="store_true", help="Only write the tables, skip figures")
     args = parser.parse_args()
 
@@ -397,6 +497,29 @@ def main():
 
     if not files:
         raise SystemExit("No *_tracked.h5 files found.")
+
+    # Skip files that were never successfully cleaned (still have many tracks from
+    # identity fragmentation) — they would inject hundreds of spurious "flies".
+    if args.max_clean_tracks:
+        import h5py
+
+        kept, skipped = [], []
+        for f in files:
+            try:
+                with h5py.File(f, "r") as fh:
+                    n = fh["tracks"].shape[0]
+            except (OSError, KeyError):
+                n = -1
+            (skipped if n > args.max_clean_tracks else kept).append((f, n))
+        if skipped:
+            print(f"Skipping {len(skipped)} un-cleaned file(s) (> {args.max_clean_tracks} "
+                  f"tracks — fragmented, re-track these):")
+            for f, n in skipped:
+                print(f"   [{n} tracks] {f}")
+        files = [f for f, _ in kept]
+        if not files:
+            raise SystemExit("All files exceeded --max-clean-tracks; nothing to plot.")
+
     if not args.px_per_mm:
         print("WARNING: --px-per-mm=0; translational units will be px/s.")
 
@@ -468,10 +591,22 @@ def main():
         plot_on_off(onoff, "speed", "Speed", units, outdir / "onoff_speed.png")
         plot_on_off(onoff, "forward", "Forward velocity", units, outdir / "onoff_forward.png")
 
-        # Onset-locked averages (PSTH-style), per metric.
+        # Onset-locked averages (PSTH-style), per metric: pooled over pulses, plus
+        # the non-pooled per-pulse overlay (one trace per stimulation).
         for metric, label in METRICS.items():
             agg = onset_locked(sub, metric, on_iv, args.psth_pre, args.psth_post, args.bin_s)
             plot_psth(agg, label, units, outdir / f"psth_{metric}.png", on_dur=60.0)
+            agg_pp = onset_locked_per_pulse(sub, metric, on_iv, args.psth_pre, args.psth_post, args.bin_s)
+            plot_psth_per_pulse(agg_pp, label, units, outdir / f"psth_per_pulse_{metric}.png",
+                                on_dur=60.0, rot=metric == "rotational_velocity")
+
+        # Per-pulse scalar trend: mean of each metric during each ON pulse vs pulse #.
+        pp = per_pulse_means(sub, list(METRICS.keys()))
+        if not pp.empty:
+            pp.to_feather(outdir / "per_pulse_means.feather")
+            for metric, label in METRICS.items():
+                plot_per_pulse_trend(pp, metric, label, units, outdir / f"per_pulse_{metric}.png",
+                                     rot=metric == "rotational_velocity")
 
         # Path integrals per stimulation: PG lines vs pooled control, with
         # per-pulse Mann-Whitney tests (BH-corrected).

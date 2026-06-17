@@ -5,9 +5,10 @@ alone) plus the `PG` directory with the new **sleap-nn** (SLEAP 1.6) top-down
 model, then denoise the resulting tracks.
 
 Everything runs through **uv** — no conda/mamba. The SLEAP CLIs
-(`sleap-nn-track`, `sleap-convert`) are the uv-installed `sleap` tool (v1.6.x) on
+(`sleap track`, `sleap-convert`) are the uv-installed `sleap` tool (v1.6.x) on
 PATH; the `utils_behavior` tools run via `uv run` against this repo's
-`pyproject.toml`.
+`pyproject.toml`. (`sleap-nn-track` still works but prints a deprecation note
+pointing to the unified `sleap track` subcommand.)
 
 ## Models (sleap-nn, top-down)
 
@@ -62,7 +63,7 @@ uv run python -m utils_behavior.sleap.clean_tracks "$YAML" --inplace
 ## Raw single-video commands (what the tracker runs per video)
 
 ```bash
-sleap-nn-track -i <video_80fps.mp4> \
+sleap track -i <video_80fps.mp4> \
     -m "$CENTROID" -m "$CINST" \
     -o <video_80fps_tracked.slp> \
     -b 16 -t -n 3 --use_flow -d auto
@@ -97,17 +98,27 @@ uv run python scripts/sleap/directional_velocity.py "$YAML" \
   window (5 ON bands shaded).
 - `dv_figs/long/` — long-protocol flies over the full timeline (15 ON bands).
 
+Metrics: `speed`, `forward_velocity` (signed, +fwd/−back), `backward_speed`
+(rectified backward component, 0 while moving forward), `rotational_velocity`.
+
 Each scope directory contains:
 - `summary_<metric>.png` — per-group box+strip (controls in red).
 - `timeseries_<metric>.png` — per-group mean±sem over time, pooled-control
   reference, stim shading.
 - `onoff_speed.png`, `onoff_forward.png` — per-group **stimulus ON vs OFF** box plots.
-- `psth_<metric>.png` — **onset-locked** averages (metric vs time-from-pulse-onset,
-  pooled over pulses; ON window shaded), one panel per group.
-- `backward_per_stim.png` — **cumulated backward walking per stimulation**: for each
-  PG line, the per-pulse backward distance (integral of backward speed) vs the
-  pooled control, one panel per line. Directly compares each PG line to controls.
-- Tables: `per_fly.feather`, `per_fly_on_off.feather`, `backward_per_stim.feather`.
+- `psth_<metric>.png` — **onset-locked** averages **pooled over pulses** (metric vs
+  time-from-pulse-onset; ON window shaded), one panel per group.
+- `psth_per_pulse_<metric>.png` — **non-pooled** onset-locked overlay: one trace
+  **per stimulation**, colored by pulse # (viridis), one panel per group. Shows how
+  the response evolves across the train (habituation/sensitization).
+- `per_pulse_<metric>.png` — **per-pulse scalar trend**: mean of the metric during
+  each ON pulse vs pulse #, per group, with the pooled control as a grey dashed
+  reference.
+- `back_dist_per_stim.png`, `net_forward_per_stim.png` — per-pulse path integrals
+  (cumulated backward distance / net forward displacement) vs pooled control, with
+  BH-corrected Mann-Whitney stars.
+- Tables: `per_fly.feather`, `per_fly_on_off.feather`, `per_pulse_means.feather`,
+  `per_stim_metrics.feather`, `per_stim_stats.feather`.
 
 The full per-frame tidy table (`directional_velocity_frames.feather`) carries
 `sequence`, `stim_on`, `on_index`, `dt` for any further custom analysis.

@@ -202,6 +202,11 @@ def compute_track_kinematics(
     heading_out = np.degrees(heading)
     heading_out[absent] = np.nan
 
+    # Rectified backward speed: magnitude of motion against the body axis, 0 while
+    # moving forward (NaN frames stay NaN). A dedicated, always-positive channel
+    # for "how fast is the fly walking backward" (vs the signed forward_velocity).
+    backward_speed = np.clip(-forward, 0.0, None)
+
     return pd.DataFrame(
         {
             "frame": dataset["frame"].to_numpy(),
@@ -212,6 +217,7 @@ def compute_track_kinematics(
             "heading_deg": heading_out,
             "speed": speed,
             "forward_velocity": forward,
+            "backward_speed": backward_speed,
             "lateral_velocity": lateral,
             "rotational_velocity": rotational,
             "units": units,
@@ -287,6 +293,11 @@ def summarize_per_fly(tidy: pd.DataFrame) -> pd.DataFrame:
                 "mean_forward_velocity": fwd.mean(),
                 "mean_forward_speed": fwd[fwd > 0].mean(),
                 "mean_backward_speed": fwd[fwd < 0].mean(),
+                # Rectified backward speed averaged over ALL present frames
+                # (0 while moving forward) -> overall backward-walking effort.
+                "mean_backward_speed_rect": g["backward_speed"].mean()
+                if "backward_speed" in g
+                else np.nan,
                 "frac_forward": float((fwd > 0).sum()) / n,
                 "frac_backward": float((fwd < 0).sum()) / n,
                 "mean_abs_rotational": g["rotational_velocity"].abs().mean(),

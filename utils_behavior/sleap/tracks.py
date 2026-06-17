@@ -528,7 +528,38 @@ class Sleap_Tracks:
                 ]
                 self.edges_idx = h5file["edge_inds"][:].tolist()
                 self.tracks = h5file["tracks"][:].tolist()
-                self.video = Path(h5file["video_path"][()].decode("utf-8"))
+
+                # Video path. sleap-nn / sleap_io analysis exports may store this
+                # as a 0-d bytes scalar, a length-1 array, or omit it entirely.
+                if "video_path" in h5file:
+                    raw_path = h5file["video_path"][()]
+                    if isinstance(raw_path, np.ndarray):
+                        raw_path = raw_path.flat[0]
+                    if isinstance(raw_path, bytes):
+                        raw_path = raw_path.decode("utf-8")
+                    self.video = Path(raw_path)
+                else:
+                    # Fall back to a video sitting next to the .h5 file.
+                    self.video = self.path.parent / (
+                        self.path.stem.replace("_tracked", "") + ".mp4"
+                    )
+                    if self.debug:
+                        print("No video_path in H5; inferring from .h5 location.")
+
+                # Optional confidence scores (present in sleap-nn / analysis
+                # exports). Kept as numpy arrays for downstream track cleanup.
+                #   point_scores:    (n_tracks, n_nodes, n_frames)
+                #   instance_scores: (n_tracks, n_frames)
+                #   tracking_scores: (n_tracks, n_frames)
+                self.point_scores = (
+                    h5file["point_scores"][:] if "point_scores" in h5file else None
+                )
+                self.instance_scores = (
+                    h5file["instance_scores"][:] if "instance_scores" in h5file else None
+                )
+                self.tracking_scores = (
+                    h5file["tracking_scores"][:] if "tracking_scores" in h5file else None
+                )
 
                 # Extract track names/identities if they exist
                 if "track_names" in h5file:

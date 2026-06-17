@@ -207,6 +207,7 @@ class SleapTracker:
     def filter_tracked_videos(self, render=False):
         """Drop videos that already have a ``.slp`` + ``.h5`` (and annotated video)."""
         videos_filtered = []
+        skipped = []
         for video in self.videos_to_process:
             out_dir = video.parent
             slp_file = out_dir / f"{video.stem}_tracked.slp"
@@ -217,9 +218,15 @@ class SleapTracker:
                 already_processed = already_processed and annotated_file.exists()
             if not already_processed:
                 videos_filtered.append(video)
+            else:
+                skipped.append(video)
 
+        self.skipped_videos = skipped
         self.videos_to_process = videos_filtered
-        print(f"Filtered to {len(self.videos_to_process)} videos needing tracking.")
+        print(
+            f"Filtered to {len(self.videos_to_process)} videos needing tracking "
+            f"({len(skipped)} already tracked, skipped)."
+        )
         return self.videos_to_process
 
     def _build_sleap_nn_cmd(self, video, slp_out):
@@ -299,10 +306,31 @@ class SleapTracker:
 
         print("Video processing complete.")
 
-    def run(self, video_extension=".mp4", render=False):
-        """Collect, filter, and track videos."""
+    def run(self, video_extension=".mp4", render=False, dry_run=False):
+        """Collect, filter, and track videos.
+
+        When ``dry_run`` is True, report what would be tracked vs skipped and
+        return without running any inference (lets you verify resumability).
+        """
         self.collect_videos(video_extension=video_extension)
         self.filter_tracked_videos(render=render)
+
+        if dry_run:
+            print("\n--- DRY RUN (no inference will be performed) ---")
+            print(
+                f"Backend: {self.backend} | "
+                f"already tracked (skip): {len(getattr(self, 'skipped_videos', []))} | "
+                f"to track: {len(self.videos_to_process)}"
+            )
+            if self.videos_to_process:
+                print("\nWould track:")
+                for video in self.videos_to_process:
+                    print(f"  + {video}")
+            else:
+                print("\nNothing to track — all collected videos already have "
+                      "*_tracked.slp + *_tracked.h5.")
+            return
+
         if not self.videos_to_process:
             print("No new videos to track.")
             return
@@ -340,6 +368,7 @@ def main():
     parser.add_argument("--yaml_file", type=str, help="YAML with directories/videos to process")
     parser.add_argument("--video_extension", type=str, default=".mp4", help="Video file extension to process")
     parser.add_argument("--render", action="store_true", help="Generate annotated video after tracking")
+    parser.add_argument("--dry_run", action="store_true", help="Report which videos would be tracked/skipped, then exit without running inference")
 
     args = parser.parse_args()
 
@@ -361,7 +390,7 @@ def main():
         yaml_file=args.yaml_file,
     )
 
-    tracker.run(video_extension=args.video_extension, render=args.render)
+    tracker.run(video_extension=args.video_extension, render=args.render, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
